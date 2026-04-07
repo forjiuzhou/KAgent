@@ -110,6 +110,48 @@ def cmd_chat(vault_path: Path) -> None:
             console.print(f"[red]Error: {e}[/red]")
 
 
+def cmd_status(vault_path: Path) -> None:
+    """Show vault status — page counts, recent activity, health."""
+    vault = Vault(vault_path)
+    if not vault.exists():
+        console.print("[red]No vault found.[/red] Run `nw init` first.")
+        sys.exit(1)
+
+    concepts = vault.list_files("wiki/concepts")
+    entities = vault.list_files("wiki/entities")
+    journals = vault.list_files("wiki/journals")
+    syntheses = vault.list_files("wiki/synthesis")
+    sources = vault.list_files("sources")
+    total = len(concepts) + len(entities) + len(journals) + len(syntheses)
+
+    console.print(
+        Panel(
+            f"[bold]Vault Status[/bold]  {vault_path}\n\n"
+            f"  Wiki pages:    [bold]{total}[/bold]\n"
+            f"    concepts/    {len(concepts)}\n"
+            f"    entities/    {len(entities)}\n"
+            f"    journals/    {len(journals)}\n"
+            f"    synthesis/   {len(syntheses)}\n"
+            f"  Source files:   {len(sources)}",
+            border_style="blue",
+        )
+    )
+
+    # Show last 5 log entries
+    try:
+        log_content = vault.read_file("wiki/log.md")
+        entries = [
+            line for line in log_content.split("\n")
+            if line.startswith("## [")
+        ]
+        if entries:
+            console.print("\n[bold]Recent activity:[/bold]")
+            for entry in entries[-5:]:
+                console.print(f"  {entry.lstrip('# ')}")
+    except FileNotFoundError:
+        pass
+
+
 def main() -> None:
     """Main CLI entry point."""
     args = sys.argv[1:]
@@ -120,14 +162,18 @@ def main() -> None:
     elif args[0] == "init":
         vault_path = resolve_vault_path()
         cmd_init(vault_path)
+    elif args[0] == "status":
+        vault_path = resolve_vault_path()
+        cmd_status(vault_path)
     elif args[0] == "help" or args[0] in ("-h", "--help"):
         console.print(
             Panel(
                 "[bold]NoteWeaver[/bold] — AI Knowledge Management Agent\n\n"
                 "Commands:\n"
-                "  [bold]nw init[/bold]     Initialize a new vault\n"
-                "  [bold]nw chat[/bold]     Chat with the agent (default)\n"
-                "  [bold]nw help[/bold]     Show this help\n\n"
+                "  [bold]nw init[/bold]       Initialize a new vault\n"
+                "  [bold]nw chat[/bold]       Chat with the agent (default)\n"
+                "  [bold]nw status[/bold]     Show vault status\n"
+                "  [bold]nw help[/bold]       Show this help\n\n"
                 "Environment:\n"
                 "  OPENAI_API_KEY    Required. Your LLM API key.\n"
                 "  OPENAI_BASE_URL   Optional. Custom API endpoint.\n"
