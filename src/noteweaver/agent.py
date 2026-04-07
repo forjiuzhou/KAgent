@@ -53,15 +53,17 @@ vault/
 4. Execute operations, then update index.md and log.md
 
 ### Ingest workflow (when user provides a URL or content):
-1. Use fetch_url to get the content
-2. Save raw content to sources/ using write_page (path: sources/...)
-   WAIT — you CANNOT write to sources/. Instead, just keep the raw content
-   in memory and work with it.
-3. Create a summary page in wiki/ (choose the right subdirectory)
-4. Update existing concept/entity pages with new information
+1. Use fetch_url to get the content (the extracted markdown is returned to you)
+2. Read wiki/index.md to see what already exists in the knowledge base
+3. Create a source summary page at wiki/synthesis/summary-SLUG.md with:
+   - Key takeaways from the source
+   - Connections to existing knowledge
+4. Update or create concept/entity pages with new information from the source
 5. Add [[wiki-links]] between related pages
-6. Update wiki/index.md with the new page
-7. Append to wiki/log.md
+6. Update wiki/index.md with all new/updated pages
+7. Append to wiki/log.md with: what was ingested, pages created/updated
+Note: sources/ is READ-ONLY. The fetched content stays in your conversation
+context — you work with it there and distill it into wiki pages.
 
 ### Query workflow (when user asks a question):
 1. Read wiki/index.md to find relevant pages
