@@ -45,6 +45,21 @@ vault/
 └── .meta/          ← 元数据
 ```
 
+## 技术栈
+
+| 层 | 选型 | 理由 |
+|---|---|---|
+| 运行时 | Bun | 8-15ms 冷启动，CLI 体感好；qmd/Claude Code 同生态 |
+| 语言 | TypeScript | LLM 工具链生态最丰富；开发速度优先 |
+| LLM 集成 | Vercel AI SDK | 多模型统一接口 + 原生 tool calling；不套 Mastra 等重框架 |
+| 搜索 | index.md → MiniSearch → qmd | 分层策略：小规模零 infra，大规模接入 Karpathy 推荐的 qmd |
+| Web 拉取 | Readdown | 单包替代 Readability+Turndown；内置 token 估算，为 LLM 设计 |
+| 版本控制 | simple-git（MVP）| 后续桌面阶段考虑零依赖方案 |
+| CLI | Commander.js + Ink | 命令模式 + 交互式对话，Ink 是 Claude Code 同款 |
+| 桌面（未来）| Tauri v2 | 3MB 包体 vs Electron 120MB；安全模型符合设计哲学 |
+
+详见 [DESIGN.md 第七章](./DESIGN.md#七技术栈选型逐项论证) 了解每项选型的完整论证。
+
 ## 灵感来源
 
 - [Karpathy 的 LLM Wiki](https://gist.github.com/karpathy/442a6bf555914893e9891c11519de94f) — 持续积累的知识编译模式

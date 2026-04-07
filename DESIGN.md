@@ -364,17 +364,150 @@ Fridman 的原话："I have the system generate a temporary focused mini-knowled
 
 ---
 
-## 七、技术栈建议
+## 七、技术栈选型（逐项论证）
+
+### 7.1 运行时：Bun
+
+| 选项 | 优势 | 劣势 |
+|------|------|------|
+| **Bun ✓** | 冷启动 8-15ms（CLI 体感好）；内置打包、测试；Karpathy 推荐的 qmd 就是 Bun 生态；Claude Code 也用 Bun | 98% Node 兼容但非 100%；生态比 Node 年轻 |
+| Node.js | 15 年生产验证；最大生态 | 冷启动 40-120ms；需要额外的打包/测试工具链 |
+
+**结论**：Bun。2026 年 Bun 已经是 greenfield 项目的合理默认选择。CLI 场景对冷启动敏感（用户每次执行命令都能感知到），Bun 的 8-15ms 对比 Node 的 40-120ms 差距显著。qmd 也是 Bun 生态，未来集成更自然。
+
+### 7.2 语言：TypeScript
+
+| 选项 | 优势 | 劣势 |
+|------|------|------|
+| **TypeScript ✓** | LLM 生态最丰富（Vercel AI SDK、Mastra 等都是 TS-first）；开发速度快；团队招聘容易 | IO 密集型没问题但 CPU 密集型弱于 Rust |
+| Rust | 极致性能；Tauri backend 天然适配 | 开发慢 2-3x；LLM 生态弱；对这个场景杀鸡用牛刀 |
+| Python | LLM/ML 生态最强 | 不适合做 CLI/桌面应用；类型系统弱 |
+
+**结论**：TypeScript。我们的核心瓶颈是 LLM API 调用（IO 密集），不是 CPU 计算。知识库规模在万级页面以下，TS 性能完全够用。关键是开发速度和 LLM 工具链生态——这两项 TS 都是最优的。
+
+### 7.3 LLM 集成层：Vercel AI SDK（直接使用，不套框架）
+
+| 选项 | 优势 | 劣势 |
+|------|------|------|
+| **Vercel AI SDK ✓** | 多模型统一接口（OpenAI/Anthropic/Google 等）；原生 tool calling + streaming；Zod schema 生成结构化输出 | 需要自己构建 Agent loop |
+| Mastra | 基于 Vercel AI SDK；内置 Agent/Workflow/Memory/RAG | 太重——它的 Memory 系统、RAG 管线、Workflow 编排，都是我们刻意不要的。我们的"记忆"就是 Wiki 本身 |
+| LangChain.js | 最大生态 | Python 移植味重；抽象层太厚；过度工程化 |
+| 直接调 HTTP API | 最轻量 | 每换一个模型就要重写适配层 |
+
+**结论**：Vercel AI SDK，但**不用** Mastra 封装。理由：
+
+1. Mastra 的核心卖点（Memory、RAG、Workflow 编排）恰好是我们不需要的。我们的 Agent 记忆就是 Wiki 文件本身，我们的检索是 index.md 驱动而非 RAG，我们的操作是 9 种固定原语而非通用 Workflow。用 Mastra 相当于带着一堆不用的抽象，反而增加理解和调试成本。
+
+2. Vercel AI SDK 的 `generateText()` / `streamText()` + tool calling 已经足够构建我们的 Agent loop。我们自己实现的 loop 大约 100-200 行代码，换来的是完全控制权。
+
+Agent loop 伪代码：
+```typescript
+async function agentLoop(userMessage: string, vault: Vault) {
+  const result = await streamText({
+    model: selectedModel,
+    system: buildSystemPrompt(vault.schema, vault.index),
+    messages: conversationHistory,
+    tools: knowledgeOperations, // 9 种操作，Zod schema 定义
+    maxSteps: 20,
+    onStepFinish: (step) => ui.showProgress(step),
+  });
+  // Vercel AI SDK 自动处理 tool calling loop：
+  // model 选择 tool → 执行 → 结果返回 model → 继续推理
+}
+```
+
+### 7.4 搜索引擎：分层策略
+
+| 规模 | 方案 | 理由 |
+|------|------|------|
+| 小（<500 页） | **index.md + LLM 导航** | Karpathy 在 ~100 篇/~400K 词时就靠 index 文件。LLM 读 index 后定位相关页面再深入读取，zero infra |
+| 中（500-5000 页） | **MiniSearch（内嵌）** | 轻量、零依赖、embeddable。657K 周下载量，API 简洁。在这个规模内性能足够 |
+| 大（5000+ 页） | **qmd（外部集成）** | Karpathy 直接推荐。BM25 + 向量 + LLM reranking 三合一。MCP server 支持 Agent 直接调用。Bun 生态 |
+
+**结论**：MVP 阶段只用 index.md + LLM 导航。这是 Karpathy 验证过的方案，在百级规模下足够好。当用户知识库增长后，先内嵌 MiniSearch（无外部依赖），再推荐集成 qmd（需要单独安装）。
+
+不在 MVP 引入 FlexSearch 的原因：虽然它在 100K+ 文档下性能更好，但 API 更复杂，而且我们在那个规模下会直接推 qmd（更适合 Markdown + Agent 场景）。
+
+### 7.5 Web 内容拉取：Readdown（而非 Readability + Turndown）
+
+| 选项 | 优势 | 劣势 |
+|------|------|------|
+| Readability + Turndown | 久经验证；Obsidian Web Clipper 就用这个 | 两个包组合；未专门为 LLM 优化 |
+| Defuddle | 更宽容的内容提取；更好的脚注/代码块支持 | 需要搭配 Turndown 做 Markdown 转换 |
+| **Readdown ✓** | 单包搞定（提取+转MD）；**内置 token 估算**（为 LLM 设计）；2026.3 benchmark 胜出；更好的结构保留 | 最新（2026.3），经验证少 |
+
+**结论**：Readdown。它是 2026 年 3 月发布的，专门为"网页 → Markdown → 喂给 LLM"这条链路设计。单包替代 Readability + Turndown 两包组合，内置 token 估算，benchmark 在 4/5 测试页面上胜出。虽然最新，但对我们的场景是最优匹配。
+
+### 7.6 版本控制：simple-git → 后续考虑无依赖方案
+
+| 选项 | 优势 | 劣势 |
+|------|------|------|
+| **simple-git ✓ (MVP)** | 封装好的 API；性能好（调用系统 git） | 要求用户安装 git |
+| isomorphic-git | 纯 JS，无外部依赖 | 大仓库性能差；API 更底层 |
+| 自建简易版本控制 | 零依赖；针对 MD 文件优化 | 工作量大；失去 git 生态互操作 |
+
+**结论**：MVP 阶段用 simple-git（要求系统装 git，对开发者 CLI 阶段可接受）。桌面应用阶段需要重新评估：要么 bundle git binary，要么用 isomorphic-git，要么退化为"每次操作保存快照"的简易版本控制。
+
+对 C 端用户来说，要求安装 git 是不可接受的。这是架构决策中需要留出的扩展点。
+
+### 7.7 CLI 框架：Commander.js + Ink（双模式）
+
+我们的 CLI 有两种交互模式，需要不同的工具：
+
+| 模式 | 例子 | 工具 |
+|------|------|------|
+| 命令模式 | `noteweaver init`, `noteweaver ingest <url>`, `noteweaver lint` | **Commander.js** — 经典 CLI 命令解析 |
+| 对话模式 | `noteweaver chat` → 进入交互式 REPL | **Ink**（React for CLI）— Claude Code 同款技术 |
+
+**结论**：Commander.js 处理命令路由，Ink 渲染交互式对话界面。Ink 让我们可以做到：
+- 实时进度展示（"正在更新 3 个页面..."）
+- 彩色结构化输出
+- 分栏显示（操作计划 | 执行进度）
+- 未来升级到桌面 UI 时，核心逻辑不变，只换渲染层
+
+不选 blessed/blessed-contrib 的原因：太底层，要自己管理状态。Ink 用 React 范式，和未来的 Web UI 共享心智模型。
+
+### 7.8 桌面应用：Web-first → Tauri（非 MVP）
+
+| 阶段 | 方案 | 理由 |
+|------|------|------|
+| MVP | **本地 Web 服务器 + 浏览器** | 零额外依赖；快速迭代；开发者用 CLI，普通用户访问 localhost |
+| 产品阶段 | **Tauri** | 3-10MB 包体 vs Electron 80-150MB；20-80MB 内存 vs Electron 100-300MB；200ms 启动 vs 1-2s；更好的安全模型 |
+
+**结论**：不在 MVP 做桌面应用。先做 CLI + 本地 Web UI。验证核心价值后再包 Tauri。
+
+选 Tauri 而非 Electron 的理由：知识管理工具应该轻量、安全。3MB 的安装包 vs 120MB 对 C 端分发来说差距巨大。Tauri 的安全模型（粒度权限控制）也更符合我们"操作即白名单"的设计哲学。
+
+Tauri 的 Rust backend 不会造成语言分裂——我们的核心逻辑全在 TypeScript（运行在 Bun sidecar 或内嵌 WebView 中），Rust 只做薄壳。
+
+### 7.9 Web UI：React + TailwindCSS
+
+这个选择比较直接，没有特别的争议：
+
+- **React**：最大生态；Ink（CLI）和 Web 共享 React 心智模型；Tauri 原生支持
+- **TailwindCSS**：快速迭代 UI；和 React 配合成熟
+- 后续可考虑 **Shadcn/UI** 做组件库，避免从零构建
+
+### 7.10 总览
 
 ```
-核心引擎:     TypeScript (Bun runtime)
-知识库:       Markdown 文件 + Git
-搜索:         MiniSearch (本地) / qmd (高级)
-LLM 集成:     Vercel AI SDK (多模型统一接口)
-Web 拉取:     Mozilla Readability + Turndown (HTML→MD)
-桌面应用:     Tauri (轻量跨平台)
-Web UI:       React + TailwindCSS
-CLI:          Commander.js (开发者可选)
+┌──────────────────────────────────────────────────────────────┐
+│                    技术栈总览                                  │
+├──────────────┬───────────────────────────────────────────────┤
+│ 运行时        │ Bun                                          │
+│ 语言          │ TypeScript                                   │
+│ LLM 集成      │ Vercel AI SDK（直接使用，不套 Mastra）         │
+│ Agent Loop   │ 自建（~200 行），基于 AI SDK tool calling      │
+│ 知识库存储     │ Markdown 文件 + Git（simple-git）             │
+│ 搜索（MVP）   │ index.md + LLM 导航                          │
+│ 搜索（增长后） │ MiniSearch（内嵌）→ qmd（外部，Karpathy 推荐）│
+│ Web 拉取      │ Readdown（单包，LLM 优化）                    │
+│ CLI 命令      │ Commander.js                                 │
+│ CLI 交互      │ Ink（React for CLI，Claude Code 同款）        │
+│ Web UI       │ React + TailwindCSS + Shadcn/UI              │
+│ 桌面（未来）   │ Tauri v2                                     │
+│ 测试          │ Bun 内置测试运行器 + Vitest（组件测试）         │
+└──────────────┴───────────────────────────────────────────────┘
 ```
 
 ---
