@@ -1,0 +1,227 @@
+"""Vault — the knowledge base on disk.
+
+A vault is a directory of Markdown files with a fixed structure:
+  vault/
+  ├── sources/        immutable raw materials
+  ├── wiki/           agent-maintained structured knowledge
+  │   ├── index.md    knowledge index
+  │   ├── log.md      operation log
+  │   ├── concepts/   concept pages
+  │   ├── entities/   entity pages
+  │   ├── journals/   daily journals & inbox
+  │   └── synthesis/  synthesis & analysis pages
+  ├── .schema/        vault constitution
+  │   └── schema.md   structure conventions
+  └── .meta/          derived data (rebuildable)
+"""
+
+from __future__ import annotations
+
+import os
+from datetime import datetime, timezone
+from pathlib import Path
+
+WIKI_DIRS = ["concepts", "entities", "journals", "synthesis"]
+
+INITIAL_SCHEMA = """\
+---
+title: Vault Schema
+updated: {date}
+---
+
+# Vault Schema
+
+This file defines the conventions the agent follows when maintaining the wiki.
+It evolves over time as you and the agent figure out what works.
+
+## Page Conventions
+
+Every wiki page uses YAML frontmatter:
+
+```yaml
+---
+title: Page Title
+type: concept | entity | source-summary | synthesis | journal
+sources: []       # raw/ files or URLs referenced
+related: []       # linked wiki pages
+created: YYYY-MM-DD
+updated: YYYY-MM-DD
+---
+```
+
+## Directory Conventions
+
+- `sources/` — immutable raw materials. The agent NEVER modifies these.
+- `wiki/concepts/` — concept pages (e.g. "Attention Mechanism")
+- `wiki/entities/` — entity pages (e.g. "OpenAI", "Karpathy")
+- `wiki/journals/` — daily journal entries and inbox
+- `wiki/synthesis/` — cross-cutting analysis and comparisons
+- `wiki/index.md` — master catalog of all wiki pages
+- `wiki/log.md` — chronological operation log
+
+## Link Conventions
+
+Use `[[wiki-link]]` syntax for internal links (Obsidian-compatible).
+"""
+
+INITIAL_INDEX = """\
+---
+title: Wiki Index
+updated: {date}
+---
+
+# Wiki Index
+
+Master catalog of all pages in this knowledge base.
+
+## Concepts
+
+(no pages yet)
+
+## Entities
+
+(no pages yet)
+
+## Sources
+
+(no pages yet)
+
+## Synthesis
+
+(no pages yet)
+"""
+
+INITIAL_LOG = """\
+---
+title: Operation Log
+---
+
+# Operation Log
+
+Chronological record of all agent operations.
+
+## [{date}] init | Vault Created
+
+Vault initialized. Ready for knowledge.
+"""
+
+
+class Vault:
+    """Handle to an on-disk knowledge vault."""
+
+    def __init__(self, root: str | Path) -> None:
+        self.root = Path(root).resolve()
+        self.sources_dir = self.root / "sources"
+        self.wiki_dir = self.root / "wiki"
+        self.schema_dir = self.root / ".schema"
+        self.meta_dir = self.root / ".meta"
+
+    # ------------------------------------------------------------------
+    # Initialization
+    # ------------------------------------------------------------------
+
+    def exists(self) -> bool:
+        return (self.schema_dir / "schema.md").is_file()
+
+    def init(self) -> None:
+        """Create the vault directory structure and seed files."""
+        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
+        self.sources_dir.mkdir(parents=True, exist_ok=True)
+        self.schema_dir.mkdir(parents=True, exist_ok=True)
+        self.meta_dir.mkdir(parents=True, exist_ok=True)
+
+        for sub in WIKI_DIRS:
+            (self.wiki_dir / sub).mkdir(parents=True, exist_ok=True)
+
+        self._write_if_missing(
+            self.schema_dir / "schema.md",
+            INITIAL_SCHEMA.format(date=today),
+        )
+        self._write_if_missing(
+            self.wiki_dir / "index.md",
+            INITIAL_INDEX.format(date=today),
+        )
+        self._write_if_missing(
+            self.wiki_dir / "log.md",
+            INITIAL_LOG.format(date=today),
+        )
+
+    # ------------------------------------------------------------------
+    # File operations (used by tools)
+    # ------------------------------------------------------------------
+
+    def read_file(self, rel_path: str) -> str:
+        """Read a file from the vault. Path is relative to vault root."""
+        path = self._resolve(rel_path)
+        return path.read_text(encoding="utf-8")
+
+    def write_file(self, rel_path: str, content: str) -> None:
+        """Write a file in the wiki area. Refuses to write into sources/."""
+        path = self._resolve(rel_path)
+        if self._is_in_sources(path):
+            raise PermissionError(
+                f"Cannot write to sources/ — it is immutable. Path: {rel_path}"
+            )
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content, encoding="utf-8")
+
+    def list_files(self, rel_dir: str = "wiki", pattern: str = "*.md") -> list[str]:
+        """List files matching a glob pattern under a vault subdirectory."""
+        base = self._resolve(rel_dir)
+        if not base.is_dir():
+            return []
+        return sorted(
+            str(p.relative_to(self.root))
+            for p in base.rglob(pattern)
+            if p.is_file()
+        )
+
+    def search_content(self, query: str, directory: str = "wiki") -> list[dict]:
+        """Naive full-text search across markdown files. Returns matches."""
+        results = []
+        query_lower = query.lower()
+        for rel_path in self.list_files(directory):
+            content = self.read_file(rel_path)
+            if query_lower in content.lower():
+                lines = content.split("\n")
+                matching_lines = [
+                    (i + 1, line.strip())
+                    for i, line in enumerate(lines)
+                    if query_lower in line.lower()
+                ]
+                results.append({
+                    "path": rel_path,
+                    "matches": matching_lines[:5],
+                })
+        return results
+
+    def append_log(self, entry_type: str, title: str, details: str = "") -> None:
+        """Append an entry to wiki/log.md."""
+        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        entry = f"\n## [{today}] {entry_type} | {title}\n"
+        if details:
+            entry += f"\n{details}\n"
+
+        log_path = self.wiki_dir / "log.md"
+        with open(log_path, "a", encoding="utf-8") as f:
+            f.write(entry)
+
+    # ------------------------------------------------------------------
+    # Helpers
+    # ------------------------------------------------------------------
+
+    def _resolve(self, rel_path: str) -> Path:
+        """Resolve a relative path within the vault, preventing escape."""
+        resolved = (self.root / rel_path).resolve()
+        if not str(resolved).startswith(str(self.root)):
+            raise PermissionError(f"Path escapes vault: {rel_path}")
+        return resolved
+
+    def _is_in_sources(self, path: Path) -> bool:
+        return str(path.resolve()).startswith(str(self.sources_dir.resolve()))
+
+    @staticmethod
+    def _write_if_missing(path: Path, content: str) -> None:
+        if not path.exists():
+            path.write_text(content, encoding="utf-8")
