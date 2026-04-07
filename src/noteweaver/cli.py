@@ -153,22 +153,18 @@ def cmd_status(vault_path: Path) -> None:
         console.print("[red]No vault found.[/red] Run `nw init` first.")
         sys.exit(1)
 
-    concepts = vault.list_files("wiki/concepts")
-    entities = vault.list_files("wiki/entities")
-    journals = vault.list_files("wiki/journals")
-    syntheses = vault.list_files("wiki/synthesis")
-    sources = vault.list_files("sources")
-    total = len(concepts) + len(entities) + len(journals) + len(syntheses)
+    s = vault.stats()
+    total = s["concepts"] + s["entities"] + s["journals"] + s["synthesis"]
 
     console.print(
         Panel(
             f"[bold]Vault Status[/bold]  {vault_path}\n\n"
             f"  Wiki pages:    [bold]{total}[/bold]\n"
-            f"    concepts/    {len(concepts)}\n"
-            f"    entities/    {len(entities)}\n"
-            f"    journals/    {len(journals)}\n"
-            f"    synthesis/   {len(syntheses)}\n"
-            f"  Source files:   {len(sources)}",
+            f"    concepts/    {s['concepts']}\n"
+            f"    entities/    {s['entities']}\n"
+            f"    journals/    {s['journals']}\n"
+            f"    synthesis/   {s['synthesis']}\n"
+            f"  Source files:   {s['sources']}",
             border_style="blue",
         )
     )

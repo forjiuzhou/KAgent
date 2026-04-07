@@ -211,6 +211,16 @@ class Vault:
                 })
         return results
 
+    def stats(self) -> dict:
+        """Return vault statistics."""
+        return {
+            "concepts": len(self.list_files("wiki/concepts")),
+            "entities": len(self.list_files("wiki/entities")),
+            "journals": len(self.list_files("wiki/journals")),
+            "synthesis": len(self.list_files("wiki/synthesis")),
+            "sources": len(self.list_files("sources")),
+        }
+
     def append_log(self, entry_type: str, title: str, details: str = "") -> None:
         """Append an entry to wiki/log.md."""
         today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
