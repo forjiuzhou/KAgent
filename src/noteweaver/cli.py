@@ -136,6 +136,32 @@ def cmd_ingest(vault_path: Path, url: str) -> None:
         sys.exit(1)
 
 
+def cmd_lint(vault_path: Path) -> None:
+    """Run a health check on the knowledge base."""
+    _vault, agent = _make_agent(vault_path)
+
+    console.print("[bold]Running knowledge base health check...[/bold]\n")
+    prompt = (
+        "Please lint/health-check the wiki. Scan for:\n"
+        "1. Orphan pages (no inbound [[links]] from other pages)\n"
+        "2. Mentioned but missing pages (concepts referenced via [[link]] but no page exists)\n"
+        "3. Stale or contradictory information across pages\n"
+        "4. Pages missing frontmatter or with incomplete metadata\n"
+        "5. Suggestions for new pages or connections\n"
+        "Read the index first, then spot-check pages. Report your findings."
+    )
+    try:
+        for chunk in agent.chat(prompt):
+            if chunk.startswith("  ↳ "):
+                console.print(f"[tool]{chunk}[/tool]")
+            else:
+                console.print()
+                console.print(Markdown(chunk))
+    except Exception as e:
+        console.print(f"[red]Error: {e}[/red]")
+        sys.exit(1)
+
+
 def cmd_status(vault_path: Path) -> None:
     """Show vault status — page counts, recent activity, health."""
     vault = Vault(vault_path)
@@ -190,6 +216,9 @@ def main() -> None:
             sys.exit(1)
         vault_path = resolve_vault_path()
         cmd_ingest(vault_path, args[1])
+    elif args[0] == "lint":
+        vault_path = resolve_vault_path()
+        cmd_lint(vault_path)
     elif args[0] == "status":
         vault_path = resolve_vault_path()
         cmd_status(vault_path)
@@ -201,6 +230,7 @@ def main() -> None:
                 "  [bold]nw init[/bold]            Initialize a new vault\n"
                 "  [bold]nw chat[/bold]            Chat with the agent (default)\n"
                 "  [bold]nw ingest <url>[/bold]    Import a web article\n"
+                "  [bold]nw lint[/bold]            Health-check the knowledge base\n"
                 "  [bold]nw status[/bold]          Show vault status\n"
                 "  [bold]nw help[/bold]            Show this help\n\n"
                 "Environment:\n"
