@@ -110,6 +110,42 @@ def cmd_chat(vault_path: Path) -> None:
             console.print(f"[red]Error: {e}[/red]")
 
 
+def cmd_ingest(vault_path: Path, url: str) -> None:
+    """Ingest a URL into the knowledge base (one-shot, no interactive chat)."""
+    vault = Vault(vault_path)
+    if not vault.exists():
+        console.print("[red]No vault found.[/red] Run `nw init` first.")
+        sys.exit(1)
+
+    api_key = os.environ.get("OPENAI_API_KEY")
+    base_url = os.environ.get("OPENAI_BASE_URL")
+    model = os.environ.get("NW_MODEL", "gpt-4o-mini")
+
+    if not api_key:
+        console.print("[red]OPENAI_API_KEY not set.[/red]")
+        sys.exit(1)
+
+    agent = KnowledgeAgent(
+        vault=vault, model=model, api_key=api_key, base_url=base_url,
+    )
+
+    console.print(f"[bold]Ingesting:[/bold] {url}")
+    prompt = (
+        f"Please ingest this URL into the knowledge base: {url}\n"
+        "Fetch the content, create appropriate wiki pages, update the index and log."
+    )
+    try:
+        for chunk in agent.chat(prompt):
+            if chunk.startswith("  ↳ "):
+                console.print(f"[tool]{chunk}[/tool]")
+            else:
+                console.print()
+                console.print(Markdown(chunk))
+    except Exception as e:
+        console.print(f"[red]Error: {e}[/red]")
+        sys.exit(1)
+
+
 def cmd_status(vault_path: Path) -> None:
     """Show vault status — page counts, recent activity, health."""
     vault = Vault(vault_path)
@@ -162,6 +198,12 @@ def main() -> None:
     elif args[0] == "init":
         vault_path = resolve_vault_path()
         cmd_init(vault_path)
+    elif args[0] == "ingest":
+        if len(args) < 2:
+            console.print("[red]Usage: nw ingest <url>[/red]")
+            sys.exit(1)
+        vault_path = resolve_vault_path()
+        cmd_ingest(vault_path, args[1])
     elif args[0] == "status":
         vault_path = resolve_vault_path()
         cmd_status(vault_path)
@@ -170,10 +212,11 @@ def main() -> None:
             Panel(
                 "[bold]NoteWeaver[/bold] — AI Knowledge Management Agent\n\n"
                 "Commands:\n"
-                "  [bold]nw init[/bold]       Initialize a new vault\n"
-                "  [bold]nw chat[/bold]       Chat with the agent (default)\n"
-                "  [bold]nw status[/bold]     Show vault status\n"
-                "  [bold]nw help[/bold]       Show this help\n\n"
+                "  [bold]nw init[/bold]            Initialize a new vault\n"
+                "  [bold]nw chat[/bold]            Chat with the agent (default)\n"
+                "  [bold]nw ingest <url>[/bold]    Import a web article\n"
+                "  [bold]nw status[/bold]          Show vault status\n"
+                "  [bold]nw help[/bold]            Show this help\n\n"
                 "Environment:\n"
                 "  OPENAI_API_KEY    Required. Your LLM API key.\n"
                 "  OPENAI_BASE_URL   Optional. Custom API endpoint.\n"
