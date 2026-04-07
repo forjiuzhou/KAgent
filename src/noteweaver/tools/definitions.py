@@ -216,18 +216,41 @@ def handle_fetch_url(vault: Vault, url: str) -> str:
         from readability import Document
         from markdownify import markdownify
 
-        resp = httpx.get(url, follow_redirects=True, timeout=30)
+        headers = {
+            "User-Agent": (
+                "Mozilla/5.0 (compatible; NoteWeaver/0.1; "
+                "+https://github.com/forjiuzhou/KAgent)"
+            ),
+        }
+        resp = httpx.get(
+            url, follow_redirects=True, timeout=30, headers=headers
+        )
         resp.raise_for_status()
 
+        content_type = resp.headers.get("content-type", "")
+        if "text/html" not in content_type and "text/" not in content_type:
+            return f"Error: URL returned non-text content ({content_type})"
+
         doc = Document(resp.text)
-        title = doc.title()
+        title = doc.title() or "Untitled"
         html_content = doc.summary()
         md_content = markdownify(html_content, heading_style="ATX", strip=["img"])
 
+        # Truncate extremely long pages to avoid blowing up context
+        max_chars = 15000
+        truncated = ""
+        if len(md_content) > max_chars:
+            md_content = md_content[:max_chars]
+            truncated = f"\n\n(Content truncated at {max_chars} characters)"
+
         header = f"# {title}\n\nSource: {url}\n\n---\n\n"
-        return header + md_content.strip()
+        return header + md_content.strip() + truncated
+    except httpx.TimeoutException:
+        return f"Error: timeout fetching {url} (30s limit)"
+    except httpx.HTTPStatusError as e:
+        return f"Error: HTTP {e.response.status_code} fetching {url}"
     except Exception as e:
-        return f"Error fetching {url}: {e}"
+        return f"Error fetching {url}: {type(e).__name__}: {e}"
 
 
 # ======================================================================
