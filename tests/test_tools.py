@@ -12,7 +12,7 @@ from noteweaver.tools.definitions import (
 
 @pytest.fixture
 def vault(tmp_path: Path) -> Vault:
-    v = Vault(tmp_path)
+    v = Vault(tmp_path, auto_git=False)
     v.init()
     return v
 

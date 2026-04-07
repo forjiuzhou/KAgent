@@ -17,9 +17,12 @@ A vault is a directory of Markdown files with a fixed structure:
 
 from __future__ import annotations
 
+import logging
 import os
 from datetime import datetime, timezone
 from pathlib import Path
+
+log = logging.getLogger(__name__)
 
 WIKI_DIRS = ["concepts", "entities", "journals", "synthesis"]
 
@@ -109,12 +112,14 @@ Vault initialized. Ready for knowledge.
 class Vault:
     """Handle to an on-disk knowledge vault."""
 
-    def __init__(self, root: str | Path) -> None:
+    def __init__(self, root: str | Path, auto_git: bool = True) -> None:
         self.root = Path(root).resolve()
         self.sources_dir = self.root / "sources"
         self.wiki_dir = self.root / "wiki"
         self.schema_dir = self.root / ".schema"
         self.meta_dir = self.root / ".meta"
+        self._auto_git = auto_git
+        self._repo = None
 
     # ------------------------------------------------------------------
     # Initialization
@@ -147,6 +152,15 @@ class Vault:
             INITIAL_LOG.format(date=today),
         )
 
+        # Write .gitignore for .meta/ (derived data, not versioned)
+        self._write_if_missing(
+            self.root / ".gitignore",
+            ".meta/\n",
+        )
+
+        self._git_init()
+        self._git_commit("Vault initialized")
+
     # ------------------------------------------------------------------
     # File operations (used by tools)
     # ------------------------------------------------------------------
@@ -165,6 +179,7 @@ class Vault:
             )
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(content, encoding="utf-8")
+        self._git_commit(f"Update {rel_path}")
 
     def list_files(self, rel_dir: str = "wiki", pattern: str = "*.md") -> list[str]:
         """List files matching a glob pattern under a vault subdirectory."""
@@ -220,6 +235,41 @@ class Vault:
 
     def _is_in_sources(self, path: Path) -> bool:
         return str(path.resolve()).startswith(str(self.sources_dir.resolve()))
+
+    # ------------------------------------------------------------------
+    # Git integration
+    # ------------------------------------------------------------------
+
+    def _git_init(self) -> None:
+        """Initialize a git repo in the vault if auto_git is enabled."""
+        if not self._auto_git:
+            return
+        try:
+            from git import Repo, InvalidGitRepositoryError
+            try:
+                self._repo = Repo(self.root)
+            except InvalidGitRepositoryError:
+                self._repo = Repo.init(self.root)
+                self._repo.config_writer().set_value(
+                    "user", "name", "NoteWeaver"
+                ).release()
+                self._repo.config_writer().set_value(
+                    "user", "email", "agent@noteweaver"
+                ).release()
+        except ImportError:
+            log.debug("gitpython not installed, git auto-commit disabled")
+            self._auto_git = False
+
+    def _git_commit(self, message: str) -> None:
+        """Stage all changes and commit if there are any."""
+        if not self._auto_git or self._repo is None:
+            return
+        try:
+            self._repo.git.add(A=True)
+            if self._repo.is_dirty(untracked_files=True):
+                self._repo.index.commit(message)
+        except Exception as e:
+            log.debug("git commit failed: %s", e)
 
     @staticmethod
     def _write_if_missing(path: Path, content: str) -> None:
