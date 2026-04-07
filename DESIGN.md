@@ -630,25 +630,29 @@ Tauri 的 Rust backend 不会造成语言分裂——我们的核心逻辑全在
 - **TailwindCSS**：快速迭代 UI；和 React 配合成熟
 - 后续可考虑 **Shadcn/UI** 做组件库，避免从零构建
 
-### 7.10 总览
+### 7.10 总览（最终选择：Python）
+
+经过讨论，最终选择 Python 而非 TypeScript。核心原因：
+- MVP 阶段验证核心价值最重要，Python 写 CLI + LLM 调用最快出活
+- Karpathy/Fridman 的生态就是 Python
+- Fine-tuning 方向只有 Python 能走
+- C 端分发是后面的问题
 
 ```
 ┌──────────────────────────────────────────────────────────────┐
 │                    技术栈总览                                  │
 ├──────────────┬───────────────────────────────────────────────┤
-│ 运行时        │ Bun                                          │
-│ 语言          │ TypeScript                                   │
-│ LLM 集成      │ Vercel AI SDK（直接使用，不套 Mastra）         │
-│ Agent Loop   │ 自建（~200 行），基于 AI SDK tool calling      │
-│ 知识库存储     │ Markdown 文件 + Git（simple-git）             │
-│ 搜索（MVP）   │ index.md + LLM 导航                          │
-│ 搜索（增长后） │ MiniSearch（内嵌）→ qmd（外部，Karpathy 推荐）│
-│ Web 拉取      │ Readdown（单包，LLM 优化）                    │
-│ CLI 命令      │ Commander.js                                 │
-│ CLI 交互      │ Ink（React for CLI，Claude Code 同款）        │
-│ Web UI       │ React + TailwindCSS + Shadcn/UI              │
-│ 桌面（未来）   │ Tauri v2                                     │
-│ 测试          │ Bun 内置测试运行器 + Vitest（组件测试）         │
+│ 语言          │ Python 3.11+                                 │
+│ LLM 集成      │ openai SDK（直接 tool calling，不套框架）      │
+│ Agent Loop   │ 自建（~120 行），基于 OpenAI tool calling      │
+│ 知识库存储     │ Markdown 文件 + Git（gitpython）              │
+│ 搜索（MVP）   │ index.md + LLM 导航 + 朴素全文搜索            │
+│ 搜索（增长后） │ qmd（Karpathy 推荐） / SQLite FTS5           │
+│ Web 拉取      │ readability-lxml + markdownify               │
+│ CLI 交互      │ rich + prompt-toolkit                        │
+│ Web UI（未来） │ 待定                                         │
+│ 桌面（未来）   │ 待定                                         │
+│ 打包          │ pyproject.toml + hatchling                   │
 └──────────────┴───────────────────────────────────────────────┘
 ```
 

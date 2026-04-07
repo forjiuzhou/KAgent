@@ -46,20 +46,32 @@ vault/
 └── .meta/          ← 元数据
 ```
 
+## 快速开始
+
+```bash
+# 安装
+pip install -e .
+
+# 初始化知识库
+nw init
+
+# 设置 API Key（支持任何 OpenAI 兼容 API）
+export OPENAI_API_KEY=sk-...
+
+# 开始对话
+nw chat
+```
+
 ## 技术栈
 
 | 层 | 选型 | 理由 |
 |---|---|---|
-| 运行时 | Bun | 8-15ms 冷启动，CLI 体感好；qmd/Claude Code 同生态 |
-| 语言 | TypeScript | LLM 工具链生态最丰富；开发速度优先 |
-| LLM 集成 | Vercel AI SDK | 多模型统一接口 + 原生 tool calling；不套 Mastra 等重框架 |
-| 搜索 | index.md → MiniSearch → qmd | 分层策略：小规模零 infra，大规模接入 Karpathy 推荐的 qmd |
-| Web 拉取 | Readdown | 单包替代 Readability+Turndown；内置 token 估算，为 LLM 设计 |
-| 版本控制 | simple-git（MVP）| 后续桌面阶段考虑零依赖方案 |
-| CLI | Commander.js + Ink | 命令模式 + 交互式对话，Ink 是 Claude Code 同款 |
-| 桌面（未来）| Tauri v2 | 3MB 包体 vs Electron 120MB；安全模型符合设计哲学 |
-
-详见 [DESIGN.md 第七章](./DESIGN.md#七技术栈选型逐项论证) 了解每项选型的完整论证。
+| 语言 | Python 3.11+ | Karpathy/Fridman 生态；LLM/ML 最强；验证最快 |
+| LLM 集成 | openai SDK | 直接 tool calling，不套框架 |
+| 搜索 | index.md + 朴素全文搜索 → qmd | 小规模零 infra，大规模接入 Karpathy 推荐的 qmd |
+| Web 拉取 | readability-lxml + markdownify | 网页 → 清洗 → Markdown |
+| CLI | rich + prompt-toolkit | 富文本输出 + 交互式输入 |
+| 版本控制 | gitpython | 自动 commit 所有变更 |
 
 ## 灵感来源
 
