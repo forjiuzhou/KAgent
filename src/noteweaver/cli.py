@@ -15,6 +15,7 @@ from prompt_toolkit.history import FileHistory
 
 from noteweaver.vault import Vault
 from noteweaver.agent import KnowledgeAgent
+from noteweaver.config import Config
 
 THEME = Theme({
     "tool": "dim cyan",
@@ -49,34 +50,14 @@ def cmd_init(vault_path: Path) -> None:
 
 def cmd_chat(vault_path: Path) -> None:
     """Interactive chat with the knowledge agent."""
-    vault = Vault(vault_path)
-    if not vault.exists():
-        console.print("[red]No vault found.[/red] Run `nw init` first.")
-        sys.exit(1)
-
-    api_key = os.environ.get("OPENAI_API_KEY")
-    base_url = os.environ.get("OPENAI_BASE_URL")
-    model = os.environ.get("NW_MODEL", "gpt-4o-mini")
-
-    if not api_key:
-        console.print(
-            "[red]OPENAI_API_KEY not set.[/red]\n"
-            "Export it: export OPENAI_API_KEY=sk-..."
-        )
-        sys.exit(1)
-
-    agent = KnowledgeAgent(
-        vault=vault,
-        model=model,
-        api_key=api_key,
-        base_url=base_url,
-    )
+    _vault, agent = _make_agent(vault_path)
+    cfg = Config.load(vault_path)
 
     console.print(
         Panel(
             f"[bold]NoteWeaver[/bold] — Knowledge Agent\n"
             f"[info]Vault: {vault_path}\n"
-            f"Model: {model}[/info]\n"
+            f"Model: {cfg.model}[/info]\n"
             f"Type your message. Ctrl+D or 'exit' to quit.",
             border_style="blue",
         )
@@ -110,24 +91,33 @@ def cmd_chat(vault_path: Path) -> None:
             console.print(f"[red]Error: {e}[/red]")
 
 
-def cmd_ingest(vault_path: Path, url: str) -> None:
-    """Ingest a URL into the knowledge base (one-shot, no interactive chat)."""
+def _make_agent(vault_path: Path) -> tuple[Vault, KnowledgeAgent]:
+    """Create a Vault and KnowledgeAgent, or exit with an error message."""
     vault = Vault(vault_path)
     if not vault.exists():
         console.print("[red]No vault found.[/red] Run `nw init` first.")
         sys.exit(1)
 
-    api_key = os.environ.get("OPENAI_API_KEY")
-    base_url = os.environ.get("OPENAI_BASE_URL")
-    model = os.environ.get("NW_MODEL", "gpt-4o-mini")
-
-    if not api_key:
-        console.print("[red]OPENAI_API_KEY not set.[/red]")
+    cfg = Config.load(vault_path)
+    if not cfg.api_key:
+        console.print(
+            "[red]OPENAI_API_KEY not set.[/red]\n"
+            "Export it: export OPENAI_API_KEY=sk-..."
+        )
         sys.exit(1)
 
     agent = KnowledgeAgent(
-        vault=vault, model=model, api_key=api_key, base_url=base_url,
+        vault=vault,
+        model=cfg.model,
+        api_key=cfg.api_key,
+        base_url=cfg.base_url or None,
     )
+    return vault, agent
+
+
+def cmd_ingest(vault_path: Path, url: str) -> None:
+    """Ingest a URL into the knowledge base (one-shot, no interactive chat)."""
+    _vault, agent = _make_agent(vault_path)
 
     console.print(f"[bold]Ingesting:[/bold] {url}")
     prompt = (
