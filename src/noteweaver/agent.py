@@ -97,44 +97,44 @@ class KnowledgeAgent:
         self.vault._in_operation = True
         self.vault._operation_dirty = False
 
-        max_steps = 25
-        for _ in range(max_steps):
-            completion, raw_message = self.provider.chat_completion(
-                model=self.model,
-                messages=self.messages,
-                tools=TOOL_SCHEMAS,
-            )
+        try:
+            max_steps = 25
+            for _ in range(max_steps):
+                completion, raw_message = self.provider.chat_completion(
+                    model=self.model,
+                    messages=self.messages,
+                    tools=TOOL_SCHEMAS,
+                )
 
-            # Append assistant message to history
-            self.messages.append(raw_message)
+                self.messages.append(raw_message)
 
-            if not completion.tool_calls:
-                self._end_operation(short_msg)
-                if completion.content:
-                    yield completion.content
-                return
+                if not completion.tool_calls:
+                    if completion.content:
+                        yield completion.content
+                    return
 
-            for tool_call in completion.tool_calls:
-                try:
-                    fn_args = json.loads(tool_call.arguments)
-                except json.JSONDecodeError:
-                    fn_args = {}
+                for tool_call in completion.tool_calls:
+                    try:
+                        fn_args = json.loads(tool_call.arguments)
+                    except json.JSONDecodeError:
+                        fn_args = {}
 
-                yield f"  ↳ {tool_call.name}({self._summarize_args(fn_args)})"
+                    yield f"  ↳ {tool_call.name}({self._summarize_args(fn_args)})"
 
-                result = dispatch_tool(self.vault, tool_call.name, fn_args)
+                    result = dispatch_tool(self.vault, tool_call.name, fn_args)
 
-                if len(result) > 8000:
-                    result = result[:8000] + "\n\n... (truncated)"
+                    if len(result) > 8000:
+                        result = result[:8000] + "\n\n... (truncated)"
 
-                self.messages.append({
-                    "role": "tool",
-                    "tool_call_id": tool_call.id,
-                    "content": result,
-                })
+                    self.messages.append({
+                        "role": "tool",
+                        "tool_call_id": tool_call.id,
+                        "content": result,
+                    })
 
-        self._end_operation(short_msg)
-        yield "(reached maximum steps)"
+            yield "(reached maximum steps)"
+        finally:
+            self._end_operation(short_msg)
 
     def _end_operation(self, message: str) -> None:
         """Finalize the operation — commit all batched writes."""
