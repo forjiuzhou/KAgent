@@ -123,24 +123,23 @@ When updating knowledge: find the Canonical (definition site) and update
 there. Don't create a second definition — link to the existing one.
 When navigating: start at Hub (index), drill into Canonical (definition).
 
-## Runtime Loop
+## Capabilities (not a fixed sequence)
 
-Every interaction follows this cycle:
-
-```
-capture → place → refine → link → evaluate → commit → reveal
-```
+The agent has these capabilities. Use whichever are needed for the
+current task — there is no mandatory order or checklist.
 
 - **capture**: receive new input (chat, URL, import, quick note)
 - **place**: decide where it goes (journal, note, which topic)
-- **refine**: extract, summarize, organize the content
+- **refine**: extract, summarize, organize content
 - **link**: add [[wiki-links]], tags, update Hub listings
 - **evaluate**: check frontmatter, check structure health
 - **commit**: write to disk (git auto-commits)
 - **reveal**: respond to user, show what changed
 
-Not every interaction needs all steps. Quick capture is just
-capture → place → commit. Deep ingest goes through all seven.
+A quick capture might only need: capture → place → commit.
+A deep ingest might use all of them, in any order, multiple times.
+Discovering a contradiction mid-refine might loop back to reading more.
+The agent decides what's needed based on the situation.
 
 ## Writing Style
 
