@@ -67,7 +67,7 @@ def cmd_chat(vault_path: Path) -> None:
     history_file.parent.mkdir(parents=True, exist_ok=True)
     session: PromptSession = PromptSession(history=FileHistory(str(history_file)))
 
-    topics_discussed = []
+    exchanges: list[dict] = []
 
     while True:
         try:
@@ -82,35 +82,54 @@ def cmd_chat(vault_path: Path) -> None:
             console.print("[info]Bye.[/info]")
             break
 
-        topics_discussed.append(user_input)
+        exchange: dict = {"user": user_input, "tools": [], "reply": ""}
         try:
             for chunk in agent.chat(user_input):
                 if chunk.startswith("  ↳ "):
                     console.print(f"[tool]{chunk}[/tool]")
+                    exchange["tools"].append(chunk.strip())
                 else:
+                    exchange["reply"] = chunk
                     console.print()
                     console.print(Markdown(chunk))
         except Exception as e:
             console.print(f"[red]Error: {e}[/red]")
+            exchange["reply"] = f"(error: {e})"
+        exchanges.append(exchange)
 
-    # Session journaling: record what was discussed
-    if topics_discussed:
-        _save_session_journal(vault, topics_discussed)
+    if exchanges:
+        _save_session_journal(vault, exchanges, "chat")
 
 
-def _save_session_journal(vault: Vault, topics: list[str]) -> None:
-    """Append a brief session record to today's journal."""
+def _save_session_journal(
+    vault: Vault,
+    exchanges: list[dict],
+    session_type: str = "chat",
+) -> None:
+    """Append a session record to today's journal.
+
+    Each exchange dict has: user (str), tools (list[str]), reply (str).
+    Records both user input AND agent responses for full traceability.
+    """
     from datetime import datetime, timezone
 
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    now = datetime.now(timezone.utc).strftime("%H:%M UTC")
     journal_path = f"wiki/journals/{today}.md"
 
-    # Build entry
-    summary_items = []
-    for t in topics[:10]:
-        short = t[:80] + "..." if len(t) > 80 else t
-        summary_items.append(f"- {short}")
-    entry = f"\n### Session ({datetime.now(timezone.utc).strftime('%H:%M UTC')})\n\n" + "\n".join(summary_items) + "\n"
+    lines = [f"\n### {session_type.title()} session ({now})\n"]
+    for ex in exchanges[:15]:
+        user_short = ex["user"][:120] + "..." if len(ex["user"]) > 120 else ex["user"]
+        lines.append(f"**User:** {user_short}")
+        if ex.get("tools"):
+            tools_str = ", ".join(t.lstrip("↳ ").split("(")[0].strip() for t in ex["tools"][:5])
+            lines.append(f"*Tools:* {tools_str}")
+        if ex.get("reply"):
+            reply_short = ex["reply"][:200] + "..." if len(ex["reply"]) > 200 else ex["reply"]
+            lines.append(f"**Agent:** {reply_short}")
+        lines.append("")
+
+    entry = "\n".join(lines)
 
     try:
         existing = vault.read_file(journal_path)
@@ -124,7 +143,11 @@ def _save_session_journal(vault: Vault, topics: list[str]) -> None:
         )
         vault.write_file(journal_path, header + entry)
 
-    vault.append_log("session", f"Chat session ({len(topics)} messages)", f"Journal: {journal_path}")
+    vault.append_log(
+        "session",
+        f"{session_type.title()} session ({len(exchanges)} exchanges)",
+        f"Journal: {journal_path}",
+    )
 
 
 def _make_agent(vault_path: Path) -> tuple[Vault, KnowledgeAgent]:
@@ -162,20 +185,24 @@ def _make_agent(vault_path: Path) -> tuple[Vault, KnowledgeAgent]:
 
 def cmd_ingest(vault_path: Path, url: str) -> None:
     """Ingest a URL into the knowledge base (one-shot, no interactive chat)."""
-    _vault, agent = _make_agent(vault_path)
+    vault, agent = _make_agent(vault_path)
 
     console.print(f"[bold]Ingesting:[/bold] {url}")
     prompt = (
         f"Please ingest this URL into the knowledge base: {url}\n"
         "Fetch the content, create appropriate wiki pages, update the index and log."
     )
+    exchange: dict = {"user": f"ingest {url}", "tools": [], "reply": ""}
     try:
         for chunk in agent.chat(prompt):
             if chunk.startswith("  ↳ "):
                 console.print(f"[tool]{chunk}[/tool]")
+                exchange["tools"].append(chunk.strip())
             else:
+                exchange["reply"] = chunk
                 console.print()
                 console.print(Markdown(chunk))
+        _save_session_journal(vault, [exchange], "ingest")
     except Exception as e:
         console.print(f"[red]Error: {e}[/red]")
         sys.exit(1)
@@ -197,22 +224,107 @@ def cmd_lint(vault_path: Path) -> None:
         "6. Suggestions for new pages or connections\n"
         "Report your findings and log them."
     )
+    exchange: dict = {"user": "lint", "tools": [], "reply": ""}
     try:
-        last_response = ""
         for chunk in agent.chat(prompt):
             if chunk.startswith("  ↳ "):
                 console.print(f"[tool]{chunk}[/tool]")
+                exchange["tools"].append(chunk.strip())
             else:
-                last_response = chunk
+                exchange["reply"] = chunk
                 console.print()
                 console.print(Markdown(chunk))
 
-        # Persist lint results to log
-        if last_response:
-            vault.append_log("lint", "Health check completed", last_response[:500])
+        if exchange["reply"]:
+            vault.append_log("lint", "Health check completed", exchange["reply"][:500])
+        _save_session_journal(vault, [exchange], "lint")
     except Exception as e:
         console.print(f"[red]Error: {e}[/red]")
         sys.exit(1)
+
+
+def cmd_import(vault_path: Path, source_path: str) -> None:
+    """Import existing markdown files into the vault.
+
+    Scans the source directory, classifies files by frontmatter,
+    copies them into appropriate vault locations, and rebuilds the index.
+    """
+    from noteweaver.frontmatter import extract_frontmatter
+
+    vault = Vault(vault_path)
+    if not vault.exists():
+        console.print("[red]No vault found.[/red] Run `nw init` first.")
+        sys.exit(1)
+
+    src = Path(source_path).resolve()
+    if not src.is_dir():
+        console.print(f"[red]Not a directory: {source_path}[/red]")
+        sys.exit(1)
+
+    md_files = sorted(src.rglob("*.md"))
+    if not md_files:
+        console.print(f"[info]No .md files found in {source_path}[/info]")
+        return
+
+    console.print(f"[bold]Scanning:[/bold] {src}")
+    console.print(f"[info]Found {len(md_files)} markdown files[/info]\n")
+
+    plan: list[dict] = []
+    for f in md_files:
+        content = f.read_text(encoding="utf-8", errors="replace")
+        fm = extract_frontmatter(content)
+        rel_name = f.name
+
+        if fm and fm.get("type") in ("hub", "canonical", "note", "synthesis"):
+            dest = f"wiki/concepts/{rel_name}"
+            obj_type = fm["type"]
+        elif fm and fm.get("type") == "journal":
+            dest = f"wiki/journals/{rel_name}"
+            obj_type = "journal"
+        else:
+            dest = f"wiki/concepts/{rel_name}"
+            obj_type = "note (no frontmatter — will be added)"
+
+        plan.append({
+            "source": str(f),
+            "dest": dest,
+            "type": obj_type,
+            "has_frontmatter": fm is not None,
+            "content": content,
+        })
+
+    console.print("[bold]Migration plan:[/bold]\n")
+    for p in plan:
+        fm_status = "[green]✓[/green]" if p["has_frontmatter"] else "[yellow]![/yellow]"
+        console.print(f"  {fm_status} {Path(p['source']).name} → {p['dest']} ({p['type']})")
+
+    console.print(f"\n[bold]{len(plan)} files to import.[/bold]")
+    console.print("[info]Importing...[/info]\n")
+
+    from datetime import datetime, timezone
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    imported = 0
+
+    for p in plan:
+        content = p["content"]
+        if not p["has_frontmatter"]:
+            title = Path(p["source"]).stem.replace("-", " ").replace("_", " ").title()
+            header = (
+                f"---\ntitle: {title}\ntype: note\n"
+                f"summary: Imported from {Path(p['source']).name}\n"
+                f"tags: [imported]\ncreated: {today}\nupdated: {today}\n---\n\n"
+            )
+            content = header + content
+
+        try:
+            vault.write_file(p["dest"], content)
+            imported += 1
+        except Exception as e:
+            console.print(f"[red]  Error importing {p['source']}: {e}[/red]")
+
+    vault.rebuild_index()
+    vault.append_log("import", f"Imported {imported} files from {source_path}")
+    console.print(f"\n[green]✓[/green] Imported {imported}/{len(plan)} files. Index rebuilt.")
 
 
 def cmd_rebuild_index(vault_path: Path) -> None:
@@ -252,6 +364,16 @@ def cmd_status(vault_path: Path) -> None:
         )
     )
 
+    # Health metrics
+    metrics = vault.health_metrics()
+    if metrics["total_pages"] > 0:
+        console.print("\n[bold]Health metrics:[/bold]")
+        console.print(f"  Hubs:                    {metrics['hubs']}")
+        console.print(f"  Canonicals:              {metrics['canonicals']}")
+        console.print(f"  Canonical source ratio:  {metrics['canonical_source_ratio']}")
+        console.print(f"  Orphan pages:            {metrics['orphan_rate']}")
+        console.print(f"  Missing summary:         {metrics['pages_without_summary']}")
+
     # Show last 5 log entries
     try:
         log_content = vault.read_file("wiki/log.md")
@@ -286,6 +408,12 @@ def main() -> None:
     elif args[0] == "lint":
         vault_path = resolve_vault_path()
         cmd_lint(vault_path)
+    elif args[0] == "import":
+        if len(args) < 2:
+            console.print("[red]Usage: nw import <path>[/red]")
+            sys.exit(1)
+        vault_path = resolve_vault_path()
+        cmd_import(vault_path, args[1])
     elif args[0] in ("rebuild-index", "rebuild"):
         vault_path = resolve_vault_path()
         cmd_rebuild_index(vault_path)
@@ -300,6 +428,7 @@ def main() -> None:
                 "  [bold]nw init[/bold]              Initialize a new vault\n"
                 "  [bold]nw chat[/bold]              Chat with the agent (default)\n"
                 "  [bold]nw ingest <url>[/bold]      Import a web article\n"
+                "  [bold]nw import <path>[/bold]     Import existing md files\n"
                 "  [bold]nw lint[/bold]              Health-check the knowledge base\n"
                 "  [bold]nw rebuild-index[/bold]     Rebuild index.md from file metadata\n"
                 "  [bold]nw status[/bold]            Show vault status\n"

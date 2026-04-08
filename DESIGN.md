@@ -1012,7 +1012,22 @@ NotebookLM                                      自动驾驶
 
 ---
 
-## 十二、下一步
+## 十二、Agent-First Software
+
+这个项目的本质不是"一个支持 AI 的笔记应用"，而是在探索**当 Agent 成为第一公民后，文档系统应该长什么样**。
+
+Agent-First 的含义不是"有个聊天框"，而是：
+- 数据结构适合模型读写（frontmatter、渐进式披露、三级读取）
+- 对象模型适合模型区分职责（Hub/Canonical/Note/Archive/Preference）
+- 操作边界适合模型稳定执行（8 种工具 + 硬约束校验）
+- 文档关系适合模型跟踪（声明/使用分离——Hub 是索引、Canonical 是定义、其他是引用）
+- 运行时适合模型评估（capture→place→refine→link→evaluate→commit→reveal）
+
+文档系统如果不按 Agent-First 设计，大模型能力就只能停留在表层问答，无法进入真正的维护、组织、重构和持续协作。
+
+---
+
+## 十三、下一步
 
 1. **执行成功标准测试**：10 篇文章 → 编译 wiki → 综合查询 → 对比 RAG
 2. 实现 Telegram Bot 网关（MVP v2）
