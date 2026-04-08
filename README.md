@@ -49,17 +49,14 @@ vault/
 ## 快速开始
 
 ```bash
-# 安装
 pip install -e .
-
-# 初始化知识库
-nw init
-
-# 设置 API Key（支持任何 OpenAI 兼容 API）
-export OPENAI_API_KEY=sk-...
-
-# 开始对话
-nw chat
+nw init                      # 创建知识库（自动初始化 Git）
+export OPENAI_API_KEY=sk-... # 支持任何 OpenAI 兼容 API
+nw chat                      # 交互式对话
+nw ingest <url>              # 导入网页文章
+nw lint                      # 知识库健康检查
+nw rebuild-index             # 从文件元数据重建索引
+nw status                    # 查看知识库状态
 ```
 
 ## 技术栈
@@ -72,6 +69,14 @@ nw chat
 | Web 拉取 | readability-lxml + markdownify | 网页 → 清洗 → Markdown |
 | CLI | rich + prompt-toolkit | 富文本输出 + 交互式输入 |
 | 版本控制 | gitpython | 自动 commit 所有变更 |
+
+## 核心设计原则
+
+**文档是主体，模型是维护者和执行者。** 知识库（结构化 Markdown 文件）是持久的一等资产；LLM 是可替换的工具。操作手册住在知识库自身（`.schema/schema.md`），不在代码里——你可以拿着 vault 去任何 LLM 工具使用。
+
+**三级渐进式披露**控制 token：scan（~30/页）→ shallow（~150/页）→ deep（~2000/页）。
+
+**三种导航**：树（index → Hub → Page）、标签（frontmatter tags）、链接（[[wiki-links]]）。
 
 ## 灵感来源
 

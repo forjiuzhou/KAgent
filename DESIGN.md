@@ -983,12 +983,37 @@ NotebookLM                                      自动驾驶
 
 ---
 
-## 十一、下一步
+## 十一、"文档是主体"原则的实现
 
-1. **确认产品定位**：A（Karpathy 的产品化）→ 决定了 MVP 形态
-2. 搭建项目骨架
-3. 实现 vault 初始化 + 基本 CRUD 操作
-4. 实现 Agent loop（LLM + 9 种知识操作）
-5. 实现 Web ingest
-6. **执行成功标准测试**：10 篇文章 → 编译 wiki → 综合查询 → 对比 RAG
-7. 迭代
+### 核心论断
+
+> 结构化文档是主体。大模型承担两种职责：一是在用户使用过程中持续维护该结构；二是在执行具体任务时，将模型参数与该结构化文档共同作为能力来源。文档是主体，模型是维护者和执行者。
+
+### 在代码中的体现
+
+1. **操作指令住在知识库里，不在代码里**：`.schema/schema.md` 是完整的操作手册。`SYSTEM_PROMPT` 只有 ~15 行 bootstrap。用户可以拿着 vault 去 Claude Code、Cursor 或任何其他工具使用——不依赖我们的软件。
+
+2. **三级渐进式披露控制 token**：
+   - Scan（`list_page_summaries`，~30 tokens/页）
+   - Shallow（`read_page(max_chars=500)`，~150 tokens/页）
+   - Deep（`read_page` 全文，~2000 tokens/页）
+
+3. **三种导航维度**：
+   - 树（index → Hub → Page）：垂直定位
+   - 标签（frontmatter `tags` 字段）：水平切片
+   - 链接（`[[wiki-links]]`）：联想关联
+
+4. **知识库自我描述和自愈**：
+   - `nw rebuild-index`：从文件 frontmatter 重建 index.md
+   - lint 结果沉淀到 log.md
+   - 会话摘要自动写入 journal
+
+5. **硬约束在代码层强制**：frontmatter 校验、sources/ 不可变、canonical 必须有 sources、删除→归档
+
+---
+
+## 十二、下一步
+
+1. **执行成功标准测试**：10 篇文章 → 编译 wiki → 综合查询 → 对比 RAG
+2. 实现 Telegram Bot 网关（MVP v2）
+3. 迭代

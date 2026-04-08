@@ -112,6 +112,59 @@ class TestSearch:
         assert "findme" in matches[0][1]
 
 
+class TestRebuildIndex:
+    def test_rebuild_index_with_hub(self, vault: Vault) -> None:
+        vault.write_file(
+            "wiki/concepts/ml-hub.md",
+            "---\ntitle: Machine Learning\ntype: hub\nsummary: ML overview\ntags: [ml]\n---\n# ML",
+        )
+        vault.write_file(
+            "wiki/concepts/attention.md",
+            "---\ntitle: Attention\ntype: canonical\nsummary: Attention mechanism\nsources: [paper.pdf]\ntags: [ml, pinned]\n---\n# Att",
+        )
+        content = vault.rebuild_index()
+        assert "Machine Learning" in content
+        assert "Attention" in content
+        assert "Pinned" in content  # pinned section for tagged pages
+
+    def test_rebuild_index_empty_vault(self, vault: Vault) -> None:
+        content = vault.rebuild_index()
+        assert "no hubs yet" in content
+
+    def test_rebuild_index_excludes_archive(self, vault: Vault) -> None:
+        vault.write_file(
+            "wiki/archive/old.md",
+            "---\ntitle: Old Page\ntype: archive\n---\n",
+        )
+        content = vault.rebuild_index()
+        assert "Old Page" not in content
+
+
+class TestReadPartial:
+    def test_read_partial(self, vault: Vault) -> None:
+        vault.write_file("wiki/concepts/big.md", "A" * 5000)
+        partial = vault.read_file_partial("wiki/concepts/big.md", 100)
+        assert len(partial) == 100
+
+    def test_read_partial_short_file(self, vault: Vault) -> None:
+        vault.write_file("wiki/concepts/tiny.md", "short")
+        partial = vault.read_file_partial("wiki/concepts/tiny.md", 1000)
+        assert partial == "short"
+
+
+class TestReadFrontmatters:
+    def test_read_frontmatters(self, vault: Vault) -> None:
+        vault.write_file(
+            "wiki/concepts/test.md",
+            "---\ntitle: Test\ntype: note\nsummary: A test\ntags: [x]\n---\n# Body",
+        )
+        results = vault.read_frontmatters("wiki/concepts")
+        assert len(results) == 1
+        assert results[0]["title"] == "Test"
+        assert results[0]["tags"] == ["x"]
+        assert results[0]["summary"] == "A test"
+
+
 class TestLog:
     def test_append_log(self, vault: Vault) -> None:
         vault.append_log("test", "My Test")

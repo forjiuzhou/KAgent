@@ -4,6 +4,43 @@ import pytest
 from noteweaver.frontmatter import validate_frontmatter, extract_frontmatter
 
 
+from noteweaver.frontmatter import PageSummary, page_summary_from_file
+
+
+class TestPageSummary:
+    def test_extract_summary(self) -> None:
+        content = "---\ntitle: Test\ntype: hub\nsummary: A test page\ntags: [a, b]\n---\n# Body"
+        ps = page_summary_from_file("wiki/concepts/test.md", content)
+        assert ps is not None
+        assert ps.title == "Test"
+        assert ps.type == "hub"
+        assert ps.summary == "A test page"
+        assert ps.tags == ["a", "b"]
+
+    def test_no_frontmatter_returns_none(self) -> None:
+        assert page_summary_from_file("x.md", "# No frontmatter") is None
+
+    def test_missing_optional_fields(self) -> None:
+        content = "---\ntitle: X\ntype: note\n---\n"
+        ps = page_summary_from_file("x.md", content)
+        assert ps is not None
+        assert ps.summary == ""
+        assert ps.tags == []
+
+
+class TestTagValidation:
+    def test_tags_must_be_list(self) -> None:
+        content = "---\ntitle: X\ntype: note\ntags: not-a-list\n---\n"
+        result = validate_frontmatter("wiki/concepts/x.md", content)
+        assert not result.valid
+        assert any("tags" in e for e in result.errors)
+
+    def test_tags_list_is_valid(self) -> None:
+        content = "---\ntitle: X\ntype: note\ntags: [a, b, c]\n---\n"
+        result = validate_frontmatter("wiki/concepts/x.md", content)
+        assert result.valid
+
+
 class TestExtract:
     def test_valid_frontmatter(self) -> None:
         content = "---\ntitle: Test\ntype: hub\n---\n# Content"

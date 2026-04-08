@@ -106,6 +106,39 @@ class TestDispatch:
         })
         assert "Wiki Index" in result
 
+    def test_read_page_partial(self, vault: Vault) -> None:
+        long_content = "---\ntitle: Long\ntype: note\n---\n# Long Page\n" + "x" * 5000
+        vault.write_file("wiki/concepts/long.md", long_content)
+        result = dispatch_tool(vault, "read_page", {
+            "path": "wiki/concepts/long.md",
+            "max_chars": 100,
+        })
+        assert len(result) < 200
+        assert "truncated" in result
+
+    def test_list_page_summaries(self, vault: Vault) -> None:
+        vault.write_file(
+            "wiki/concepts/ai.md",
+            "---\ntitle: AI\ntype: hub\nsummary: Artificial intelligence overview\ntags: [ai, ml]\n---\n# AI",
+        )
+        result = dispatch_tool(vault, "list_page_summaries", {"directory": "wiki"})
+        assert "AI" in result
+        assert "hub" in result
+        assert "ai, ml" in result
+        assert "Artificial intelligence overview" in result
+
+    def test_list_page_summaries_empty(self, vault: Vault) -> None:
+        result = dispatch_tool(vault, "list_page_summaries", {"directory": "wiki/concepts"})
+        assert "No pages" in result
+
+    def test_write_page_index_budget_warning(self, vault: Vault) -> None:
+        big_index = "# Index\n" + "- hub " * 2000
+        result = dispatch_tool(vault, "write_page", {
+            "path": "wiki/index.md",
+            "content": big_index,
+        })
+        assert "Warning" in result
+
     def test_archive_page(self, vault: Vault) -> None:
         vault.write_file("wiki/concepts/old.md", "---\ntitle: Old\ntype: note\n---\n# Old")
         result = dispatch_tool(vault, "archive_page", {
