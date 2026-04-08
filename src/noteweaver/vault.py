@@ -37,6 +37,27 @@ updated: {date}
 This file defines the conventions the agent follows when maintaining the wiki.
 It evolves over time as you and the agent figure out what works.
 
+## Core Principle: Progressive Disclosure
+
+The knowledge base is designed so that both LLMs and humans can navigate it
+by starting from a high-level overview and drilling down to specifics.
+
+The structure forms a **tree** (for O(log n) access) overlaid with a **graph**
+(cross-references via [[wiki-links]] for lateral discovery):
+
+```
+index.md (root — lists Hubs with one-line descriptions)
+  → Hub pages (navigation — overview + links to Canonicals)
+    → Canonical pages (content — authoritative documents)
+      → Sources (evidence — raw referenced materials)
+```
+
+Every page must follow the "inverted pyramid" rule:
+- First 1-2 sentences: self-contained summary answering "what is this page about?"
+- Then: organized detail, evidence, and cross-references
+- An LLM reading only the first paragraph of each page should be able to
+  judge relevance and decide whether to read further.
+
 ## Knowledge Object Types
 
 | Type | Role | Directory |
@@ -70,15 +91,21 @@ updated: YYYY-MM-DD
 - Canonical pages must have a non-empty `sources` field
 - Pages are never deleted — they are archived to `wiki/archive/`
 
-## Directory Conventions
+## Index Structure
 
-- `sources/` — immutable raw materials
-- `wiki/concepts/` — hub, canonical, and note pages
-- `wiki/journals/` — daily journal entries and inbox
-- `wiki/synthesis/` — cross-cutting analysis and source summaries
-- `wiki/archive/` — retired pages (preserved, not navigated)
-- `wiki/index.md` — master catalog of all active wiki pages
-- `wiki/log.md` — chronological operation log
+`wiki/index.md` is the root of the navigation tree. It should:
+- List each Hub with a one-line description (not a flat dump of all pages)
+- Stay concise (aim for <1000 tokens) so LLMs can read it in one pass
+- Group Hubs by broad domain if the knowledge base spans multiple areas
+
+Individual Hub pages then list the pages under their topic. This keeps
+index.md lightweight and gives the LLM a two-hop path to any content.
+
+## When to Create a Hub
+
+Create a new Hub when a topic area accumulates 3+ related pages (canonicals,
+notes, synthesis) that would benefit from a shared entry point. The Hub
+provides the overview and navigation; the individual pages provide depth.
 
 ## Link Conventions
 
@@ -93,21 +120,13 @@ updated: {date}
 
 # Wiki Index
 
-Master catalog of all pages in this knowledge base.
+Root of the knowledge base. Start here to navigate.
 
-## Concepts
+## Topics
 
-(no pages yet)
+(no hubs yet — as content grows, the agent creates Hub pages here)
 
-## Entities
-
-(no pages yet)
-
-## Sources
-
-(no pages yet)
-
-## Synthesis
+## Recent
 
 (no pages yet)
 """
