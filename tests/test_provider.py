@@ -176,6 +176,44 @@ class TestConfigProviderDetection:
             cfg = Config.load(tmp_path)
         assert cfg.model == "claude-3-haiku-20240307"
 
+    def test_auth_token_detected_as_anthropic(self, tmp_path: Path) -> None:
+        env = {"ANTHROPIC_AUTH_TOKEN": "token-from-proxy"}
+        with patch.dict("os.environ", env, clear=True):
+            cfg = Config.load(tmp_path)
+        assert cfg.provider == PROVIDER_ANTHROPIC
+        assert cfg.api_key == "token-from-proxy"
+
+    def test_auth_token_with_base_url(self, tmp_path: Path) -> None:
+        env = {
+            "ANTHROPIC_AUTH_TOKEN": "proxy-token",
+            "ANTHROPIC_BASE_URL": "http://127.0.0.1:8082",
+        }
+        with patch.dict("os.environ", env, clear=True):
+            cfg = Config.load(tmp_path)
+        assert cfg.provider == PROVIDER_ANTHROPIC
+        assert cfg.api_key == "proxy-token"
+        assert cfg.base_url == "http://127.0.0.1:8082"
+
+    def test_api_key_takes_precedence_over_auth_token(self, tmp_path: Path) -> None:
+        env = {
+            "ANTHROPIC_API_KEY": "the-real-key",
+            "ANTHROPIC_AUTH_TOKEN": "fallback-token",
+        }
+        with patch.dict("os.environ", env, clear=True):
+            cfg = Config.load(tmp_path)
+        assert cfg.api_key == "the-real-key"
+
+    def test_explicit_provider_with_auth_token(self, tmp_path: Path) -> None:
+        env = {
+            "NW_PROVIDER": "anthropic",
+            "ANTHROPIC_AUTH_TOKEN": "proxy-token",
+            "OPENAI_API_KEY": "sk-openai",
+        }
+        with patch.dict("os.environ", env, clear=True):
+            cfg = Config.load(tmp_path)
+        assert cfg.provider == PROVIDER_ANTHROPIC
+        assert cfg.api_key == "proxy-token"
+
 
 # ======================================================================
 # Provider factory

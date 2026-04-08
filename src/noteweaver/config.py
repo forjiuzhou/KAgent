@@ -6,8 +6,8 @@ Config sources (later overrides earlier):
 
 Provider detection:
 - NW_PROVIDER=openai|anthropic  (explicit override)
-- ANTHROPIC_API_KEY set         → anthropic
-- OPENAI_API_KEY set            → openai (default)
+- ANTHROPIC_API_KEY or ANTHROPIC_AUTH_TOKEN set → anthropic
+- OPENAI_API_KEY set                           → openai (default)
 """
 
 from __future__ import annotations
@@ -25,6 +25,15 @@ DEFAULT_MODELS = {
     PROVIDER_OPENAI: "gpt-4o-mini",
     PROVIDER_ANTHROPIC: "claude-sonnet-4-5-20250929",
 }
+
+
+def _anthropic_key_from_env() -> str:
+    """Read Anthropic API key from environment, checking both common names."""
+    return (
+        os.environ.get("ANTHROPIC_API_KEY")
+        or os.environ.get("ANTHROPIC_AUTH_TOKEN")
+        or ""
+    )
 
 
 @dataclass
@@ -52,17 +61,21 @@ class Config:
 
         # Detect provider from environment
         explicit_provider = os.environ.get("NW_PROVIDER", "").lower()
+        has_anthropic_key = bool(_anthropic_key_from_env())
+        has_openai_key = bool(os.environ.get("OPENAI_API_KEY"))
+
         if explicit_provider in (PROVIDER_OPENAI, PROVIDER_ANTHROPIC):
             cfg.provider = explicit_provider
-        elif os.environ.get("ANTHROPIC_API_KEY") and not os.environ.get("OPENAI_API_KEY"):
+        elif has_anthropic_key and not has_openai_key:
             cfg.provider = PROVIDER_ANTHROPIC
-        elif os.environ.get("OPENAI_API_KEY"):
+        elif has_openai_key:
             cfg.provider = PROVIDER_OPENAI
 
         # Load provider-specific env vars
         if cfg.provider == PROVIDER_ANTHROPIC:
-            if os.environ.get("ANTHROPIC_API_KEY"):
-                cfg.api_key = os.environ["ANTHROPIC_API_KEY"]
+            anthropic_key = _anthropic_key_from_env()
+            if anthropic_key:
+                cfg.api_key = anthropic_key
             if os.environ.get("ANTHROPIC_BASE_URL"):
                 cfg.base_url = os.environ["ANTHROPIC_BASE_URL"]
         else:

@@ -138,8 +138,10 @@ def _make_agent(vault_path: Path) -> tuple[Vault, KnowledgeAgent]:
     if not cfg.api_key:
         if cfg.provider == "anthropic":
             console.print(
-                "[red]ANTHROPIC_API_KEY not set.[/red]\n"
-                "Export it: export ANTHROPIC_API_KEY=sk-ant-..."
+                "[red]Anthropic API key not set.[/red]\n"
+                "Export one of:\n"
+                "  export ANTHROPIC_API_KEY=sk-ant-...\n"
+                "  export ANTHROPIC_AUTH_TOKEN=sk-ant-..."
             )
         else:
             console.print(
@@ -303,13 +305,14 @@ def main() -> None:
                 "  [bold]nw status[/bold]            Show vault status\n"
                 "  [bold]nw help[/bold]              Show this help\n\n"
                 "Environment:\n"
-                "  OPENAI_API_KEY      Your OpenAI API key.\n"
-                "  ANTHROPIC_API_KEY   Your Anthropic API key.\n"
-                "  OPENAI_BASE_URL     Custom OpenAI-compatible endpoint.\n"
-                "  ANTHROPIC_BASE_URL  Custom Anthropic-compatible endpoint.\n"
-                "  NW_PROVIDER         Force provider: 'openai' or 'anthropic'.\n"
-                "  NW_MODEL            Model name (auto-detected per provider).\n"
-                "  NW_VAULT            Vault path.",
+                "  OPENAI_API_KEY       Your OpenAI API key.\n"
+                "  ANTHROPIC_API_KEY    Your Anthropic API key.\n"
+                "  ANTHROPIC_AUTH_TOKEN Alternative to ANTHROPIC_API_KEY (for proxies).\n"
+                "  OPENAI_BASE_URL      Custom OpenAI-compatible endpoint.\n"
+                "  ANTHROPIC_BASE_URL   Custom Anthropic-compatible endpoint.\n"
+                "  NW_PROVIDER          Force provider: 'openai' or 'anthropic'.\n"
+                "  NW_MODEL             Model name (auto-detected per provider).\n"
+                "  NW_VAULT             Vault path.",
                 border_style="blue",
             )
         )
