@@ -364,6 +364,16 @@ def cmd_status(vault_path: Path) -> None:
         )
     )
 
+    # Health metrics
+    metrics = vault.health_metrics()
+    if metrics["total_pages"] > 0:
+        console.print("\n[bold]Health metrics:[/bold]")
+        console.print(f"  Hubs:                    {metrics['hubs']}")
+        console.print(f"  Canonicals:              {metrics['canonicals']}")
+        console.print(f"  Canonical source ratio:  {metrics['canonical_source_ratio']}")
+        console.print(f"  Orphan pages:            {metrics['orphan_rate']}")
+        console.print(f"  Missing summary:         {metrics['pages_without_summary']}")
+
     # Show last 5 log entries
     try:
         log_content = vault.read_file("wiki/log.md")

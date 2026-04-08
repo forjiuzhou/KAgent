@@ -490,6 +490,131 @@ class Vault:
             "sources": len(self.list_files("sources")),
         }
 
+    def health_metrics(self) -> dict:
+        """Compute quantitative health metrics for the knowledge base."""
+        import re
+        from noteweaver.frontmatter import page_summary_from_file
+
+        all_pages = []
+        all_content = {}
+        for rel_path in self.list_files("wiki"):
+            if rel_path in ("wiki/index.md", "wiki/log.md"):
+                continue
+            if "/archive/" in rel_path:
+                continue
+            try:
+                content = self.read_file(rel_path)
+                ps = page_summary_from_file(rel_path, content)
+                all_pages.append({"path": rel_path, "ps": ps, "content": content})
+                all_content[rel_path] = content
+            except (FileNotFoundError, PermissionError):
+                continue
+
+        total = len(all_pages)
+        if total == 0:
+            return {"total_pages": 0}
+
+        # Count types
+        hubs = [p for p in all_pages if p["ps"] and p["ps"].type == "hub"]
+        canonicals = [p for p in all_pages if p["ps"] and p["ps"].type == "canonical"]
+        canonicals_with_sources = [
+            c for c in canonicals if c["ps"].sources
+        ]
+
+        # Find pages linked from other pages
+        link_pattern = re.compile(r"\[\[([^\]]+)\]\]")
+        linked_titles = set()
+        for p in all_pages:
+            for m in link_pattern.finditer(p["content"]):
+                linked_titles.add(m.group(1))
+
+        page_titles = {p["ps"].title for p in all_pages if p["ps"] and p["ps"].title}
+        orphans = [
+            p for p in all_pages
+            if p["ps"] and p["ps"].title and p["ps"].title not in linked_titles
+            and p["ps"].type not in ("hub", "journal")
+        ]
+
+        # Pages missing summary
+        no_summary = [p for p in all_pages if p["ps"] and not p["ps"].summary]
+
+        return {
+            "total_pages": total,
+            "hubs": len(hubs),
+            "canonicals": len(canonicals),
+            "canonical_source_ratio": (
+                f"{len(canonicals_with_sources)}/{len(canonicals)}"
+                if canonicals else "n/a"
+            ),
+            "orphan_pages": len(orphans),
+            "orphan_rate": f"{len(orphans)}/{total}" if total else "n/a",
+            "pages_without_summary": len(no_summary),
+            "hub_coverage": (
+                f"{len(hubs)} hubs for {total - len(hubs)} content pages"
+            ),
+        }
+
+    def import_directory(self, source_dir: str) -> str:
+        """Import .md files from an external directory into the vault.
+
+        Reads files from outside the vault (limited external access for import).
+        Files with valid frontmatter are placed by type; files without get
+        note-type frontmatter auto-added. Returns a summary of what was imported.
+        """
+        from noteweaver.frontmatter import extract_frontmatter
+
+        src = Path(source_dir).resolve()
+        if not src.is_dir():
+            return f"Error: not a directory: {source_dir}"
+
+        md_files = sorted(src.rglob("*.md"))
+        if not md_files:
+            return f"No .md files found in {source_dir}"
+
+        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        imported = 0
+        results = []
+
+        for f in md_files:
+            try:
+                content = f.read_text(encoding="utf-8", errors="replace")
+            except Exception as e:
+                results.append(f"  Error reading {f.name}: {e}")
+                continue
+
+            fm = extract_frontmatter(content)
+            rel_name = f.name
+
+            if fm and fm.get("type") in ("hub", "canonical", "note", "synthesis"):
+                dest = f"wiki/concepts/{rel_name}"
+            elif fm and fm.get("type") == "journal":
+                dest = f"wiki/journals/{rel_name}"
+            else:
+                title = f.stem.replace("-", " ").replace("_", " ").title()
+                header = (
+                    f"---\ntitle: {title}\ntype: note\n"
+                    f"summary: Imported from {f.name}\n"
+                    f"tags: [imported]\ncreated: {today}\nupdated: {today}\n---\n\n"
+                )
+                content = header + content
+                dest = f"wiki/concepts/{rel_name}"
+
+            try:
+                self.write_file(dest, content)
+                imported += 1
+                results.append(f"  ✓ {f.name} → {dest}")
+            except Exception as e:
+                results.append(f"  Error writing {f.name}: {e}")
+
+        self.rebuild_index()
+        self.append_log("import", f"Imported {imported} files from {source_dir}")
+
+        summary = f"Imported {imported}/{len(md_files)} files from {source_dir}\n"
+        summary += "\n".join(results[:20])
+        if len(results) > 20:
+            summary += f"\n  ... and {len(results) - 20} more"
+        return summary
+
     def append_log(self, entry_type: str, title: str, details: str = "") -> None:
         """Append an entry to wiki/log.md."""
         today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
