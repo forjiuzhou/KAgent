@@ -34,82 +34,144 @@ updated: {date}
 
 # Vault Schema
 
-This file defines the conventions the agent follows when maintaining the wiki.
-It evolves over time as you and the agent figure out what works.
+This is the operating manual for this knowledge base. Any agent (LLM or human)
+maintaining this vault should read this file first.
+
+## Why This Design
+
+The structured document is the primary asset. The LLM is the maintainer and
+executor — it maintains the structure during use, and draws on the structure
+plus its own capabilities when executing tasks. The knowledge base must remain
+valuable even if the model is replaced, and navigable even without any model.
 
 ## Core Principle: Progressive Disclosure
 
-The knowledge base is designed so that both LLMs and humans can navigate it
-by starting from a high-level overview and drilling down to specifics.
-
-The structure forms a **tree** (for O(log n) access) overlaid with a **graph**
-(cross-references via [[wiki-links]] for lateral discovery):
+The knowledge base is a tree (hierarchy for top-down access) overlaid with
+a graph (cross-references) and tags (horizontal slicing). This gives O(log n)
+access to any knowledge:
 
 ```
-index.md (root — lists Hubs with one-line descriptions)
-  → Hub pages (navigation — overview + links to Canonicals)
-    → Canonical pages (content — authoritative documents)
-      → Sources (evidence — raw referenced materials)
+index.md  (root — Hubs + pinned pages, kept under ~1000 tokens)
+  → Hub   (topic entry — overview + child page links with descriptions)
+    → Canonical / Note / Synthesis  (actual content)
 ```
 
-Every page must follow the "inverted pyramid" rule:
-- First 1-2 sentences: self-contained summary answering "what is this page about?"
-- Then: organized detail, evidence, and cross-references
-- An LLM reading only the first paragraph of each page should be able to
-  judge relevance and decide whether to read further.
+Three navigation mechanisms:
+- **Tree** (index → Hub → Page): structured, top-down
+- **Tags** (frontmatter `tags` field): cross-cutting, horizontal
+- **Links** ([[wiki-links]]): associative, point-to-point
+
+**Inverted pyramid**: every page's first 1-2 sentences are a self-contained
+summary. Reading only summaries should be enough to judge relevance.
+
+## Three Levels of Reading
+
+| Level | How | Cost/page | When |
+|-------|-----|-----------|------|
+| Scan | `list_page_summaries` | ~30 tokens | Surveying, filtering by tag |
+| Shallow | `read_page(max_chars=500)` | ~150 tokens | Relevance check |
+| Deep | `read_page` (full) | ~2000 tokens | Reading relevant content |
+
+Always scan or shallow-read before deep-reading.
 
 ## Knowledge Object Types
 
-| Type | Role | Directory |
+| Type | Role | Key rules |
 |------|------|-----------|
-| `hub` | Navigation entry for a topic. Overview + links to related pages. | `wiki/concepts/` |
-| `canonical` | Authoritative main document. Must have sources. | `wiki/concepts/` |
-| `journal` | Time-ordered captures, daily logs. | `wiki/journals/` |
-| `synthesis` | Cross-cutting analysis, source summaries, comparisons. | `wiki/synthesis/` |
-| `note` | Work-in-progress, not yet mature. | `wiki/concepts/` |
-| `archive` | Retired page, preserved for history. | `wiki/archive/` |
+| `hub` | Navigation entry for a topic | Keep concise. List child pages with descriptions. |
+| `canonical` | Authoritative main document | MUST have `sources`. One per topic. |
+| `journal` | Time-ordered captures, daily logs | Preserve original expression. |
+| `synthesis` | Cross-cutting analysis, source summaries | Cite sources via [[links]]. |
+| `note` | Work-in-progress | Can be revised, merged, promoted. |
+| `archive` | Retired page | Created by archive_page tool only. |
 
-## Page Conventions
+Hub says "here's everything about X, go read these pages."
+Canonical says "here's the definitive explanation of X."
+If a page grows both navigation AND deep content, split it.
 
-Every wiki page uses YAML frontmatter:
+## Frontmatter
 
 ```yaml
 ---
 title: Page Title
 type: hub | canonical | journal | synthesis | note | archive
-sources: []       # URLs or source references (required for canonical)
-related: []       # [[wiki-links]] to related pages
+summary: One-sentence description of what this page covers
+tags: [topic-a, topic-b]      # cross-cutting labels, agent-managed
+sources: []                     # required for canonical
+related: []                     # [[wiki-links]]
 created: YYYY-MM-DD
 updated: YYYY-MM-DD
 ---
 ```
 
-## Hard Constraints (enforced by the system)
+## Tags
 
-- `sources/` is immutable — the agent cannot write to it
-- All wiki pages must have valid frontmatter with `title` and `type`
-- Canonical pages must have a non-empty `sources` field
-- Pages are never deleted — they are archived to `wiki/archive/`
+Tags provide horizontal navigation across the tree. Create and manage tags
+organically — no predefined taxonomy. Tags emerge from content.
 
-## Index Structure
+Special tag: `pinned` — these pages appear at the top of index.md.
 
-`wiki/index.md` is the root of the navigation tree. It should:
-- List each Hub with a one-line description (not a flat dump of all pages)
-- Stay concise (aim for <1000 tokens) so LLMs can read it in one pass
-- Group Hubs by broad domain if the knowledge base spans multiple areas
+## Writing Style
 
-Individual Hub pages then list the pages under their topic. This keeps
-index.md lightweight and gives the LLM a two-hop path to any content.
+- File names: lowercase, hyphenated (`attention-mechanism.md`)
+- Hub pages: short overview, then [[links]] with one-line descriptions
+- Canonical pages: summary → evidence → analysis → ## Related
+- Every page ends with `## Related` listing [[wiki-links]]
 
-## When to Create a Hub
+## Workflows
 
-Create a new Hub when a topic area accumulates 3+ related pages (canonicals,
-notes, synthesis) that would benefit from a shared entry point. The Hub
-provides the overview and navigation; the individual pages provide depth.
+### Ingest (URL or content)
+1. `fetch_url` to get content
+2. `list_page_summaries` to see what exists
+3. Create synthesis page at `wiki/synthesis/summary-SLUG.md`
+4. Update or create concept pages, add [[links]] and tags
+5. If 3+ pages on a topic and no Hub, create a Hub
+6. Update `wiki/index.md` and `append_log`
 
-## Link Conventions
+### Query
+1. `read_page("wiki/index.md")` → find relevant Hub
+2. Read Hub → scan child pages → deep-read relevant ones
+3. Synthesize answer with [[wiki-link]] citations
+4. Offer to file valuable answers as wiki pages
 
-Use `[[wiki-link]]` syntax for internal links (Obsidian-compatible).
+### Quick capture
+1. Append to today's journal (`wiki/journals/YYYY-MM-DD.md`)
+2. Add tags, note connections to existing pages
+3. Brief response: confirm + what it connects to
+
+### Lint
+1. `list_page_summaries("wiki")` for full scan
+2. Check: orphans, missing pages, contradictions, stale info
+3. Report findings, suggest improvements
+
+### Tree maintenance
+- index.md lists Hubs (not individual pages), under ~1000 tokens
+- Create Hub when 3+ related pages accumulate
+- Each Hub lists child pages with one-line descriptions
+
+## Hard Constraints (system-enforced)
+
+- `sources/` is immutable — writes rejected
+- Frontmatter must have `title` and `type`
+- Canonical must have non-empty `sources`
+- `tags` must be a list
+- Pages are never deleted — use `archive_page`
+
+## Directory Layout
+
+```
+vault/
+├── sources/          immutable raw materials
+├── wiki/
+│   ├── index.md      navigation root
+│   ├── log.md        operation log
+│   ├── concepts/     hub, canonical, note pages
+│   ├── journals/     daily entries, quick captures
+│   ├── synthesis/    analysis, source summaries
+│   └── archive/      retired pages
+└── .schema/
+    └── schema.md     this file
+```
 """
 
 INITIAL_INDEX = """\
