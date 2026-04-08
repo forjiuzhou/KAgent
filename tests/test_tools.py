@@ -32,7 +32,7 @@ class TestToolSchemas:
         assert schema_names == handler_names
 
     def test_schema_count(self) -> None:
-        assert len(TOOL_SCHEMAS) == 6
+        assert len(TOOL_SCHEMAS) == 7
 
 
 class TestDispatch:
@@ -45,12 +45,21 @@ class TestDispatch:
         assert "Error" in result
 
     def test_write_page(self, vault: Vault) -> None:
+        content = "---\ntitle: Test\ntype: note\n---\n# Test"
         result = dispatch_tool(vault, "write_page", {
             "path": "wiki/concepts/test.md",
-            "content": "# Test",
+            "content": content,
         })
         assert "OK" in result
-        assert vault.read_file("wiki/concepts/test.md") == "# Test"
+        assert vault.read_file("wiki/concepts/test.md") == content
+
+    def test_write_page_rejects_bad_frontmatter(self, vault: Vault) -> None:
+        result = dispatch_tool(vault, "write_page", {
+            "path": "wiki/concepts/bad.md",
+            "content": "# No frontmatter",
+        })
+        assert "Error" in result
+        assert "frontmatter" in result.lower()
 
     def test_write_page_sources_blocked(self, vault: Vault) -> None:
         result = dispatch_tool(vault, "write_page", {
@@ -60,7 +69,7 @@ class TestDispatch:
         assert "Error" in result
 
     def test_search_vault(self, vault: Vault) -> None:
-        vault.write_file("wiki/concepts/ai.md", "# AI\nNeural networks")
+        vault.write_file("wiki/concepts/ai.md", "---\ntitle: AI\ntype: note\n---\n# AI\nNeural networks")
         result = dispatch_tool(vault, "search_vault", {"query": "neural"})
         assert "ai.md" in result
 
@@ -69,7 +78,7 @@ class TestDispatch:
         assert "No results" in result
 
     def test_list_pages(self, vault: Vault) -> None:
-        vault.write_file("wiki/concepts/a.md", "a")
+        vault.write_file("wiki/concepts/a.md", "---\ntitle: A\ntype: note\n---\na")
         result = dispatch_tool(vault, "list_pages", {"directory": "wiki/concepts"})
         assert "a.md" in result
 
@@ -96,3 +105,14 @@ class TestDispatch:
             "extra_evil_param": "haha",
         })
         assert "Wiki Index" in result
+
+    def test_archive_page(self, vault: Vault) -> None:
+        vault.write_file("wiki/concepts/old.md", "---\ntitle: Old\ntype: note\n---\n# Old")
+        result = dispatch_tool(vault, "archive_page", {
+            "path": "wiki/concepts/old.md",
+            "reason": "replaced by new version",
+        })
+        assert "OK" in result
+        assert "archive" in result
+        archived = vault.read_file("wiki/archive/old.md")
+        assert "archive" in archived

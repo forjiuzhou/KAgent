@@ -24,7 +24,7 @@ from pathlib import Path
 
 log = logging.getLogger(__name__)
 
-WIKI_DIRS = ["concepts", "entities", "journals", "synthesis"]
+WIKI_DIRS = ["concepts", "entities", "journals", "synthesis", "archive"]
 
 INITIAL_SCHEMA = """\
 ---
@@ -37,6 +37,17 @@ updated: {date}
 This file defines the conventions the agent follows when maintaining the wiki.
 It evolves over time as you and the agent figure out what works.
 
+## Knowledge Object Types
+
+| Type | Role | Directory |
+|------|------|-----------|
+| `hub` | Navigation entry for a topic. Overview + links to related pages. | `wiki/concepts/` |
+| `canonical` | Authoritative main document. Must have sources. | `wiki/concepts/` |
+| `journal` | Time-ordered captures, daily logs. | `wiki/journals/` |
+| `synthesis` | Cross-cutting analysis, source summaries, comparisons. | `wiki/synthesis/` |
+| `note` | Work-in-progress, not yet mature. | `wiki/concepts/` |
+| `archive` | Retired page, preserved for history. | `wiki/archive/` |
+
 ## Page Conventions
 
 Every wiki page uses YAML frontmatter:
@@ -44,22 +55,29 @@ Every wiki page uses YAML frontmatter:
 ```yaml
 ---
 title: Page Title
-type: concept | entity | source-summary | synthesis | journal
-sources: []       # raw/ files or URLs referenced
-related: []       # linked wiki pages
+type: hub | canonical | journal | synthesis | note | archive
+sources: []       # URLs or source references (required for canonical)
+related: []       # [[wiki-links]] to related pages
 created: YYYY-MM-DD
 updated: YYYY-MM-DD
 ---
 ```
 
+## Hard Constraints (enforced by the system)
+
+- `sources/` is immutable — the agent cannot write to it
+- All wiki pages must have valid frontmatter with `title` and `type`
+- Canonical pages must have a non-empty `sources` field
+- Pages are never deleted — they are archived to `wiki/archive/`
+
 ## Directory Conventions
 
-- `sources/` — immutable raw materials. The agent NEVER modifies these.
-- `wiki/concepts/` — concept pages (e.g. "Attention Mechanism")
-- `wiki/entities/` — entity pages (e.g. "OpenAI", "Karpathy")
+- `sources/` — immutable raw materials
+- `wiki/concepts/` — hub, canonical, and note pages
 - `wiki/journals/` — daily journal entries and inbox
-- `wiki/synthesis/` — cross-cutting analysis and comparisons
-- `wiki/index.md` — master catalog of all wiki pages
+- `wiki/synthesis/` — cross-cutting analysis and source summaries
+- `wiki/archive/` — retired pages (preserved, not navigated)
+- `wiki/index.md` — master catalog of all active wiki pages
 - `wiki/log.md` — chronological operation log
 
 ## Link Conventions

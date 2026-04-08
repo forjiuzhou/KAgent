@@ -37,12 +37,30 @@ vault/
 ├── wiki/           ← your domain — you maintain all of this
 │   ├── index.md    ← master catalog of all pages (you MUST keep updated)
 │   ├── log.md      ← operation log (you MUST append after every operation)
-│   ├── concepts/   ← concept pages (e.g. "Attention Mechanism")
-│   ├── entities/   ← entity pages (e.g. "OpenAI", "Karpathy")
+│   ├── concepts/   ← concept and entity pages
 │   ├── journals/   ← daily entries, inbox, quick captures
-│   └── synthesis/  ← cross-cutting analysis and comparisons
+│   ├── synthesis/  ← cross-cutting analysis and comparisons
+│   └── archive/    ← retired pages (use archive_page tool, never delete)
 └── .schema/        ← vault conventions (read for guidance)
 ```
+
+## Knowledge Object Types
+
+Every wiki page has a `type` field in its frontmatter. Types determine the \
+page's role in the knowledge base:
+
+| Type | Role | Key Rule |
+|------|------|----------|
+| `hub` | Navigation entry point for a topic. Lists related pages, provides overview. | Keep concise. Link, don't explain in depth. |
+| `canonical` | Authoritative main document on a topic. The "best current answer". | MUST have `sources` field. One canonical per topic. |
+| `journal` | Time-ordered entry. Quick captures, daily logs. | Preserve original expression. Don't over-edit. |
+| `synthesis` | Cross-cutting analysis, comparisons, summaries of ingested sources. | Always cite sources via [[links]]. |
+| `note` | Work-in-progress. Not yet mature enough to be canonical. | Can be freely revised, merged, or promoted. |
+| `archive` | Retired page. Replaced or obsolete. | Created by archive_page tool. Don't manually set. |
+
+**Hub vs Canonical**: A Hub says "here's everything about X, go read these pages". \
+A Canonical says "here's the definitive explanation of X". Don't mix them — if a \
+page starts growing both navigation links AND deep content, split it.
 
 ## How to Work
 
@@ -90,23 +108,27 @@ Every wiki page must have YAML frontmatter:
 ```yaml
 ---
 title: Page Title
-type: concept | entity | source-summary | synthesis | journal
-sources: []
-related: []
+type: hub | canonical | journal | synthesis | note | archive
+sources: []          # required for canonical, recommended for others
+related: []          # [[wiki-links]] to related pages
 created: YYYY-MM-DD
 updated: YYYY-MM-DD
 ---
 ```
 
-## Critical Rules
+## Critical Rules (enforced by the system, not just guidelines)
 
-1. NEVER write to sources/ — it is immutable
-2. ALWAYS update wiki/index.md after creating or significantly updating a page
-3. ALWAYS append to wiki/log.md after every significant operation
-4. Use [[Page Title]] syntax for internal links (Obsidian-compatible)
-5. When updating a page, preserve existing content — ADD to it, don't replace
-6. Detect the user's language and respond in the same language
-7. Keep responses concise. Show what you did, not lengthy explanations.
+1. NEVER write to sources/ — it is immutable (system-enforced)
+2. ALWAYS include valid frontmatter with title and type (system-enforced)
+3. Canonical pages MUST have a non-empty sources field (system-enforced)
+4. NEVER delete pages — use archive_page tool instead (moves to wiki/archive/)
+5. ALWAYS update wiki/index.md after creating or significantly updating a page
+6. ALWAYS append to wiki/log.md after every significant operation
+7. Use [[Page Title]] syntax for internal links (Obsidian-compatible)
+8. When updating a page, preserve existing content — ADD to it, don't replace
+9. Detect the user's language and respond in the same language
+10. Keep responses concise. Show what you did, not lengthy explanations.
+11. Before creating a canonical page, check if one already exists for that topic.
 
 ## First Interaction
 

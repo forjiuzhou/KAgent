@@ -9,7 +9,10 @@ from __future__ import annotations
 
 from typing import Any
 
+import yaml
+
 from noteweaver.vault import Vault
+from noteweaver.frontmatter import validate_frontmatter
 
 # ======================================================================
 # Tool schemas (OpenAI function calling format)
@@ -141,6 +144,32 @@ TOOL_SCHEMAS: list[dict] = [
     {
         "type": "function",
         "function": {
+            "name": "archive_page",
+            "description": (
+                "Move a wiki page to the archive. Use this instead of deleting pages. "
+                "Archived pages are preserved but removed from main navigation. "
+                "The page's frontmatter type is changed to 'archive' and it is "
+                "moved to wiki/archive/. You should also remove it from index.md."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {
+                        "type": "string",
+                        "description": "Path of the page to archive, e.g. 'wiki/concepts/old-topic.md'",
+                    },
+                    "reason": {
+                        "type": "string",
+                        "description": "Why this page is being archived",
+                    },
+                },
+                "required": ["path", "reason"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "fetch_url",
             "description": (
                 "Fetch a web page and extract its main content as markdown. "
@@ -178,6 +207,12 @@ def handle_read_page(vault: Vault, path: str) -> str:
 
 def handle_write_page(vault: Vault, path: str, content: str) -> str:
     try:
+        # Hard constraint: validate frontmatter before writing
+        validation = validate_frontmatter(path, content)
+        if not validation.valid:
+            return "Error: frontmatter validation failed:\n" + "\n".join(
+                f"  - {e}" for e in validation.errors
+            )
         vault.write_file(path, content)
         return f"OK: written to {path} ({len(content)} chars)"
     except PermissionError as e:
@@ -208,6 +243,45 @@ def handle_append_log(
 ) -> str:
     vault.append_log(entry_type, title, details)
     return f"OK: logged [{entry_type}] {title}"
+
+
+def handle_archive_page(vault: Vault, path: str, reason: str = "") -> str:
+    try:
+        content = vault.read_file(path)
+    except FileNotFoundError:
+        return f"Error: file not found: {path}"
+
+    filename = path.rsplit("/", 1)[-1]
+    archive_path = f"wiki/archive/{filename}"
+
+    # Update frontmatter to mark as archived
+    from noteweaver.frontmatter import extract_frontmatter, FRONTMATTER_PATTERN
+    import re
+    from datetime import datetime, timezone
+
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    fm = extract_frontmatter(content)
+    if fm:
+        fm["type"] = "archive"
+        fm["archived"] = today
+        if reason:
+            fm["archive_reason"] = reason
+        fm_str = yaml.dump(fm, default_flow_style=False, allow_unicode=True).strip()
+        body = FRONTMATTER_PATTERN.sub("", content, count=1)
+        new_content = f"---\n{fm_str}\n---\n{body}"
+    else:
+        new_content = content
+
+    vault.write_file(archive_path, new_content)
+
+    # Remove original file
+    original = vault._resolve(path)
+    if original.is_file():
+        original.unlink()
+        vault._git_commit(f"Archive {path} -> {archive_path}")
+
+    vault.append_log("archive", path, reason)
+    return f"OK: archived {path} -> {archive_path}"
 
 
 def handle_fetch_url(vault: Vault, url: str) -> str:
@@ -263,6 +337,7 @@ TOOL_HANDLERS: dict[str, Any] = {
     "search_vault": handle_search_vault,
     "list_pages": handle_list_pages,
     "append_log": handle_append_log,
+    "archive_page": handle_archive_page,
     "fetch_url": handle_fetch_url,
 }
 
