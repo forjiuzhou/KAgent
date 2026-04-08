@@ -1,4 +1,4 @@
-"""Frontmatter validation for wiki pages.
+"""Frontmatter validation and extraction for wiki pages.
 
 Hard constraints that are enforced at write time, not just in the prompt.
 This ensures knowledge base invariants hold even if the LLM ignores instructions.
@@ -8,12 +8,12 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
+from pathlib import Path
 
 import yaml
 
 VALID_TYPES = {"source", "journal", "hub", "canonical", "archive", "note", "synthesis"}
 
-# Paths that are exempt from frontmatter validation (system files)
 EXEMPT_PATHS = {"wiki/index.md", "wiki/log.md"}
 
 FRONTMATTER_PATTERN = re.compile(r"^---\s*\n(.*?)\n---\s*\n", re.DOTALL)
@@ -23,6 +23,18 @@ FRONTMATTER_PATTERN = re.compile(r"^---\s*\n(.*?)\n---\s*\n", re.DOTALL)
 class ValidationResult:
     valid: bool
     errors: list[str]
+
+
+@dataclass
+class PageSummary:
+    """Lightweight representation of a page — frontmatter only, no body."""
+    path: str
+    title: str
+    type: str
+    summary: str
+    tags: list[str]
+    sources: list[str]
+    related: list[str]
 
 
 def extract_frontmatter(content: str) -> dict | None:
@@ -36,6 +48,22 @@ def extract_frontmatter(content: str) -> dict | None:
         return None
 
 
+def page_summary_from_file(rel_path: str, content: str) -> PageSummary | None:
+    """Extract a PageSummary from file content. Returns None if no frontmatter."""
+    fm = extract_frontmatter(content)
+    if fm is None:
+        return None
+    return PageSummary(
+        path=rel_path,
+        title=fm.get("title", ""),
+        type=fm.get("type", ""),
+        summary=fm.get("summary", ""),
+        tags=fm.get("tags", []) or [],
+        sources=fm.get("sources", []) or [],
+        related=fm.get("related", []) or [],
+    )
+
+
 def validate_frontmatter(path: str, content: str) -> ValidationResult:
     """Validate frontmatter for a wiki page.
 
@@ -44,6 +72,7 @@ def validate_frontmatter(path: str, content: str) -> ValidationResult:
     - Frontmatter must include 'title' and 'type'
     - 'type' must be one of the valid types
     - Canonical pages must have 'sources' field
+    - 'tags' must be a list if present
     """
     if path in EXEMPT_PATHS:
         return ValidationResult(valid=True, errors=[])
@@ -71,5 +100,9 @@ def validate_frontmatter(path: str, content: str) -> ValidationResult:
         sources = fm.get("sources")
         if not sources:
             errors.append("Canonical pages must have a non-empty 'sources' field for traceability")
+
+    tags = fm.get("tags")
+    if tags is not None and not isinstance(tags, list):
+        errors.append("'tags' must be a list, e.g. tags: [topic-a, topic-b]")
 
     return ValidationResult(valid=len(errors) == 0, errors=errors)

@@ -248,6 +248,104 @@ class Vault:
                 })
         return results
 
+    def read_file_partial(self, rel_path: str, max_chars: int) -> str:
+        """Read the first max_chars characters of a file."""
+        path = self._resolve(rel_path)
+        with open(path, encoding="utf-8") as f:
+            return f.read(max_chars)
+
+    def read_frontmatters(self, rel_dir: str = "wiki") -> list[dict]:
+        """Read frontmatter from all .md files in a directory. No body text."""
+        from noteweaver.frontmatter import page_summary_from_file
+
+        results = []
+        for rel_path in self.list_files(rel_dir):
+            try:
+                content = self.read_file(rel_path)
+                ps = page_summary_from_file(rel_path, content)
+                if ps is not None:
+                    results.append({
+                        "path": ps.path,
+                        "title": ps.title,
+                        "type": ps.type,
+                        "summary": ps.summary,
+                        "tags": ps.tags,
+                    })
+            except (FileNotFoundError, PermissionError):
+                continue
+        return results
+
+    def rebuild_index(self) -> str:
+        """Rebuild index.md from actual file frontmatter. Self-healing."""
+        from noteweaver.frontmatter import page_summary_from_file
+        from datetime import datetime, timezone
+
+        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        hubs = []
+        other_pages = []
+
+        for rel_path in self.list_files("wiki"):
+            if rel_path in ("wiki/index.md", "wiki/log.md"):
+                continue
+            if "/archive/" in rel_path:
+                continue
+            try:
+                content = self.read_file(rel_path)
+                ps = page_summary_from_file(rel_path, content)
+                if ps is None:
+                    continue
+                entry = {
+                    "path": rel_path,
+                    "title": ps.title or rel_path,
+                    "type": ps.type,
+                    "summary": ps.summary,
+                    "tags": ps.tags,
+                }
+                if ps.type == "hub":
+                    hubs.append(entry)
+                else:
+                    other_pages.append(entry)
+            except (FileNotFoundError, PermissionError):
+                continue
+
+        lines = [
+            f"---\ntitle: Wiki Index\nupdated: {today}\n---\n",
+            "# Wiki Index\n",
+            "Root of the knowledge base. Start here to navigate.\n",
+        ]
+
+        # Pinned pages
+        pinned = [p for p in (hubs + other_pages) if "pinned" in p["tags"]]
+        if pinned:
+            lines.append("## Pinned\n")
+            for p in pinned:
+                desc = f" — {p['summary']}" if p['summary'] else ""
+                lines.append(f"- [[{p['title']}]]{desc}")
+            lines.append("")
+
+        # Hubs
+        lines.append("## Topics\n")
+        if hubs:
+            for h in sorted(hubs, key=lambda x: x["title"]):
+                desc = f" — {h['summary']}" if h['summary'] else ""
+                lines.append(f"- [[{h['title']}]]{desc}")
+        else:
+            lines.append("(no hubs yet)")
+        lines.append("")
+
+        # Recent non-hub pages (last 10)
+        lines.append("## Recent\n")
+        if other_pages:
+            for p in other_pages[-10:]:
+                desc = f" — {p['summary']}" if p['summary'] else ""
+                lines.append(f"- [[{p['title']}]] ({p['type']}){desc}")
+        else:
+            lines.append("(no pages yet)")
+
+        content = "\n".join(lines) + "\n"
+        self.write_file("wiki/index.md", content)
+        return content
+
     def stats(self) -> dict:
         """Return vault statistics."""
         return {

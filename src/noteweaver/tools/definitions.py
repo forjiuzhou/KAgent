@@ -24,19 +24,47 @@ TOOL_SCHEMAS: list[dict] = [
         "function": {
             "name": "read_page",
             "description": (
-                "Read the content of a file in the vault. "
-                "Use this to read wiki pages, source documents, the index, "
-                "the log, or the schema. Path is relative to vault root."
+                "Read a file from the vault. By default reads the full content. "
+                "Use max_chars to read only the beginning (frontmatter + first "
+                "paragraph) for a quick relevance check before committing to "
+                "a full read. Path is relative to vault root."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
                     "path": {
                         "type": "string",
-                        "description": "Relative path from vault root, e.g. 'wiki/index.md' or 'wiki/concepts/attention.md'",
-                    }
+                        "description": "Relative path from vault root, e.g. 'wiki/index.md'",
+                    },
+                    "max_chars": {
+                        "type": "integer",
+                        "description": "Optional. Max characters to read. Use ~500 for a quick relevance check (frontmatter + summary). Omit for full content.",
+                    },
                 },
                 "required": ["path"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "list_page_summaries",
+            "description": (
+                "List all pages in a directory with their frontmatter metadata "
+                "(title, type, summary, tags). Does NOT read page bodies — very "
+                "cheap in tokens. Use this to scan what exists, find pages by "
+                "tag, or assess relevance before reading full pages."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "directory": {
+                        "type": "string",
+                        "description": "Directory to scan, relative to vault root. Default: 'wiki'",
+                        "default": "wiki",
+                    },
+                },
+                "required": [],
             },
         },
     },
@@ -196,13 +224,30 @@ TOOL_SCHEMAS: list[dict] = [
 # Tool handlers
 # ======================================================================
 
-def handle_read_page(vault: Vault, path: str) -> str:
+def handle_read_page(vault: Vault, path: str, max_chars: int = 0) -> str:
     try:
+        if max_chars and max_chars > 0:
+            content = vault.read_file_partial(path, max_chars)
+            if len(content) >= max_chars:
+                content += "\n\n... (truncated, use read_page without max_chars for full content)"
+            return content
         return vault.read_file(path)
     except FileNotFoundError:
         return f"Error: file not found: {path}"
     except PermissionError as e:
         return f"Error: {e}"
+
+
+def handle_list_page_summaries(vault: Vault, directory: str = "wiki") -> str:
+    results = vault.read_frontmatters(directory)
+    if not results:
+        return f"No pages with frontmatter in {directory}/"
+    lines = []
+    for r in results:
+        tags_str = f"  tags: {', '.join(r['tags'])}" if r['tags'] else ""
+        summary_str = f"\n    {r['summary']}" if r['summary'] else ""
+        lines.append(f"- [{r['type']}] **{r['title']}** ({r['path']}){tags_str}{summary_str}")
+    return "\n".join(lines)
 
 
 def handle_write_page(vault: Vault, path: str, content: str) -> str:
@@ -333,6 +378,7 @@ def handle_fetch_url(vault: Vault, url: str) -> str:
 
 TOOL_HANDLERS: dict[str, Any] = {
     "read_page": handle_read_page,
+    "list_page_summaries": handle_list_page_summaries,
     "write_page": handle_write_page,
     "search_vault": handle_search_vault,
     "list_pages": handle_list_pages,

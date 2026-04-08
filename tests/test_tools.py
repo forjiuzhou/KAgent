@@ -32,7 +32,7 @@ class TestToolSchemas:
         assert schema_names == handler_names
 
     def test_schema_count(self) -> None:
-        assert len(TOOL_SCHEMAS) == 7
+        assert len(TOOL_SCHEMAS) == 8
 
 
 class TestDispatch:
