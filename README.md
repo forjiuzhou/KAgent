@@ -52,8 +52,9 @@ vault/
 pip install -e .
 nw init                      # 创建知识库（自动初始化 Git）
 export OPENAI_API_KEY=sk-... # 支持任何 OpenAI 兼容 API
-nw chat                      # 交互式对话
+nw chat                      # 交互式对话（会话自动沉淀到 journal）
 nw ingest <url>              # 导入网页文章
+nw import <path>             # 导入已有 Markdown 文件
 nw lint                      # 知识库健康检查
 nw rebuild-index             # 从文件元数据重建索引
 nw status                    # 查看知识库状态
