@@ -111,6 +111,37 @@ organically — no predefined taxonomy. Tags emerge from content.
 
 Special tag: `pinned` — these pages appear at the top of index.md.
 
+## Declaration vs Use (like code)
+
+Think of the knowledge base like a codebase:
+- **Hub** = package index / directory. Entry point that organizes.
+- **Canonical** = main definition / implementation. Where a topic is defined.
+- **Other pages** (note, synthesis, journal) = usage sites. They reference
+  concepts but don't own the definition.
+
+When updating knowledge: find the Canonical (definition site) and update
+there. Don't create a second definition — link to the existing one.
+When navigating: start at Hub (index), drill into Canonical (definition).
+
+## Runtime Loop
+
+Every interaction follows this cycle:
+
+```
+capture → place → refine → link → evaluate → commit → reveal
+```
+
+- **capture**: receive new input (chat, URL, import, quick note)
+- **place**: decide where it goes (journal, note, which topic)
+- **refine**: extract, summarize, organize the content
+- **link**: add [[wiki-links]], tags, update Hub listings
+- **evaluate**: check frontmatter, check structure health
+- **commit**: write to disk (git auto-commits)
+- **reveal**: respond to user, show what changed
+
+Not every interaction needs all steps. Quick capture is just
+capture → place → commit. Deep ingest goes through all seven.
+
 ## Writing Style
 
 - File names: lowercase, hyphenated (`attention-mechanism.md`)
