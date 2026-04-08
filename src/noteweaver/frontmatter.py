@@ -12,7 +12,7 @@ from pathlib import Path
 
 import yaml
 
-VALID_TYPES = {"source", "journal", "hub", "canonical", "archive", "note", "synthesis"}
+VALID_TYPES = {"source", "journal", "hub", "canonical", "archive", "note", "synthesis", "preference"}
 
 EXEMPT_PATHS = {"wiki/index.md", "wiki/log.md"}
 

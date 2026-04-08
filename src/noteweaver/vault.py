@@ -170,8 +170,45 @@ vault/
 │   ├── synthesis/    analysis, source summaries
 │   └── archive/      retired pages
 └── .schema/
-    └── schema.md     this file
+    ├── schema.md        this file — operating manual
+    └── preferences.md   user preferences — how the agent should behave
 ```
+
+## User Preferences
+
+`.schema/preferences.md` records how this specific user wants the system to
+work. The agent reads it at startup and follows these preferences.
+
+Preferences are different from knowledge — they answer "how should the agent
+behave?" not "what is true about the world?". Examples:
+
+- Response language and style
+- Organization strategy (by topic, by project, by time)
+- Naming and tagging conventions
+- What's worth promoting to canonical vs keeping as notes
+- How proactive the agent should be
+"""
+
+INITIAL_PREFERENCES = """\
+---
+title: User Preferences
+type: preference
+updated: {date}
+---
+
+# User Preferences
+
+This file tells the agent how you want it to behave. Edit it anytime.
+The agent reads this at startup and adapts accordingly.
+
+## Language
+- Respond in: (auto-detect from user input)
+
+## Organization Style
+- (default: organize by topic, create Hubs when 3+ pages accumulate)
+
+## Other Preferences
+- (add your preferences here as you discover them)
 """
 
 INITIAL_INDEX = """\
@@ -249,6 +286,10 @@ class Vault:
         self._write_if_missing(
             self.wiki_dir / "log.md",
             INITIAL_LOG.format(date=today),
+        )
+        self._write_if_missing(
+            self.schema_dir / "preferences.md",
+            INITIAL_PREFERENCES.format(date=today),
         )
 
         # Write .gitignore for .meta/ (derived data, not versioned)
