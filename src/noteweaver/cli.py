@@ -67,7 +67,7 @@ def cmd_chat(vault_path: Path) -> None:
     history_file.parent.mkdir(parents=True, exist_ok=True)
     session: PromptSession = PromptSession(history=FileHistory(str(history_file)))
 
-    topics_discussed = []
+    exchanges: list[dict] = []
 
     while True:
         try:
@@ -82,35 +82,54 @@ def cmd_chat(vault_path: Path) -> None:
             console.print("[info]Bye.[/info]")
             break
 
-        topics_discussed.append(user_input)
+        exchange: dict = {"user": user_input, "tools": [], "reply": ""}
         try:
             for chunk in agent.chat(user_input):
                 if chunk.startswith("  ↳ "):
                     console.print(f"[tool]{chunk}[/tool]")
+                    exchange["tools"].append(chunk.strip())
                 else:
+                    exchange["reply"] = chunk
                     console.print()
                     console.print(Markdown(chunk))
         except Exception as e:
             console.print(f"[red]Error: {e}[/red]")
+            exchange["reply"] = f"(error: {e})"
+        exchanges.append(exchange)
 
-    # Session journaling: record what was discussed
-    if topics_discussed:
-        _save_session_journal(vault, topics_discussed)
+    if exchanges:
+        _save_session_journal(vault, exchanges, "chat")
 
 
-def _save_session_journal(vault: Vault, topics: list[str]) -> None:
-    """Append a brief session record to today's journal."""
+def _save_session_journal(
+    vault: Vault,
+    exchanges: list[dict],
+    session_type: str = "chat",
+) -> None:
+    """Append a session record to today's journal.
+
+    Each exchange dict has: user (str), tools (list[str]), reply (str).
+    Records both user input AND agent responses for full traceability.
+    """
     from datetime import datetime, timezone
 
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    now = datetime.now(timezone.utc).strftime("%H:%M UTC")
     journal_path = f"wiki/journals/{today}.md"
 
-    # Build entry
-    summary_items = []
-    for t in topics[:10]:
-        short = t[:80] + "..." if len(t) > 80 else t
-        summary_items.append(f"- {short}")
-    entry = f"\n### Session ({datetime.now(timezone.utc).strftime('%H:%M UTC')})\n\n" + "\n".join(summary_items) + "\n"
+    lines = [f"\n### {session_type.title()} session ({now})\n"]
+    for ex in exchanges[:15]:
+        user_short = ex["user"][:120] + "..." if len(ex["user"]) > 120 else ex["user"]
+        lines.append(f"**User:** {user_short}")
+        if ex.get("tools"):
+            tools_str = ", ".join(t.lstrip("↳ ").split("(")[0].strip() for t in ex["tools"][:5])
+            lines.append(f"*Tools:* {tools_str}")
+        if ex.get("reply"):
+            reply_short = ex["reply"][:200] + "..." if len(ex["reply"]) > 200 else ex["reply"]
+            lines.append(f"**Agent:** {reply_short}")
+        lines.append("")
+
+    entry = "\n".join(lines)
 
     try:
         existing = vault.read_file(journal_path)
@@ -124,7 +143,11 @@ def _save_session_journal(vault: Vault, topics: list[str]) -> None:
         )
         vault.write_file(journal_path, header + entry)
 
-    vault.append_log("session", f"Chat session ({len(topics)} messages)", f"Journal: {journal_path}")
+    vault.append_log(
+        "session",
+        f"{session_type.title()} session ({len(exchanges)} exchanges)",
+        f"Journal: {journal_path}",
+    )
 
 
 def _make_agent(vault_path: Path) -> tuple[Vault, KnowledgeAgent]:
@@ -162,20 +185,24 @@ def _make_agent(vault_path: Path) -> tuple[Vault, KnowledgeAgent]:
 
 def cmd_ingest(vault_path: Path, url: str) -> None:
     """Ingest a URL into the knowledge base (one-shot, no interactive chat)."""
-    _vault, agent = _make_agent(vault_path)
+    vault, agent = _make_agent(vault_path)
 
     console.print(f"[bold]Ingesting:[/bold] {url}")
     prompt = (
         f"Please ingest this URL into the knowledge base: {url}\n"
         "Fetch the content, create appropriate wiki pages, update the index and log."
     )
+    exchange: dict = {"user": f"ingest {url}", "tools": [], "reply": ""}
     try:
         for chunk in agent.chat(prompt):
             if chunk.startswith("  ↳ "):
                 console.print(f"[tool]{chunk}[/tool]")
+                exchange["tools"].append(chunk.strip())
             else:
+                exchange["reply"] = chunk
                 console.print()
                 console.print(Markdown(chunk))
+        _save_session_journal(vault, [exchange], "ingest")
     except Exception as e:
         console.print(f"[red]Error: {e}[/red]")
         sys.exit(1)
@@ -197,19 +224,20 @@ def cmd_lint(vault_path: Path) -> None:
         "6. Suggestions for new pages or connections\n"
         "Report your findings and log them."
     )
+    exchange: dict = {"user": "lint", "tools": [], "reply": ""}
     try:
-        last_response = ""
         for chunk in agent.chat(prompt):
             if chunk.startswith("  ↳ "):
                 console.print(f"[tool]{chunk}[/tool]")
+                exchange["tools"].append(chunk.strip())
             else:
-                last_response = chunk
+                exchange["reply"] = chunk
                 console.print()
                 console.print(Markdown(chunk))
 
-        # Persist lint results to log
-        if last_response:
-            vault.append_log("lint", "Health check completed", last_response[:500])
+        if exchange["reply"]:
+            vault.append_log("lint", "Health check completed", exchange["reply"][:500])
+        _save_session_journal(vault, [exchange], "lint")
     except Exception as e:
         console.print(f"[red]Error: {e}[/red]")
         sys.exit(1)
