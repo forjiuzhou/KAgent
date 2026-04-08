@@ -24,7 +24,7 @@ from pathlib import Path
 
 log = logging.getLogger(__name__)
 
-WIKI_DIRS = ["concepts", "entities", "journals", "synthesis", "archive"]
+WIKI_DIRS = ["concepts", "journals", "synthesis", "archive"]
 
 INITIAL_SCHEMA = """\
 ---
@@ -152,11 +152,12 @@ The agent decides what's needed based on the situation.
 
 ### Ingest (URL or content)
 1. `fetch_url` to get content
-2. `list_page_summaries` to see what exists
-3. Create synthesis page at `wiki/synthesis/summary-SLUG.md`
-4. Update or create concept pages, add [[links]] and tags
-5. If 3+ pages on a topic and no Hub, create a Hub
-6. Update `wiki/index.md` and `append_log`
+2. `save_source` to archive the raw content to sources/ (immutable)
+3. `list_page_summaries` to see what exists
+4. Create synthesis page at `wiki/synthesis/summary-SLUG.md`
+5. Update or create concept pages, add [[links]] and tags
+6. If 3+ pages on a topic and no Hub, create a Hub
+7. Update `wiki/index.md` and `append_log`
 
 ### Query
 1. `read_page("wiki/index.md")` → find relevant Hub
@@ -286,6 +287,8 @@ class Vault:
         self.meta_dir = self.root / ".meta"
         self._auto_git = auto_git
         self._repo = None
+        self._in_operation = False
+        self._operation_dirty = False
 
     # ------------------------------------------------------------------
     # Initialization
@@ -347,9 +350,30 @@ class Vault:
             raise PermissionError(
                 f"Cannot write to sources/ — it is immutable. Path: {rel_path}"
             )
+        if not rel_path.startswith("wiki/") and not rel_path.startswith(".schema/"):
+            raise PermissionError(
+                f"Can only write to wiki/ or .schema/. Path: {rel_path}"
+            )
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(content, encoding="utf-8")
-        self._git_commit(f"Update {rel_path}")
+        if self._in_operation:
+            self._operation_dirty = True
+        else:
+            self._git_commit(f"Update {rel_path}")
+
+    def save_source(self, rel_path: str, content: str) -> None:
+        """Write a file to sources/. Only creates new files, never overwrites."""
+        if not rel_path.startswith("sources/"):
+            raise PermissionError(f"save_source only writes to sources/. Path: {rel_path}")
+        path = self._resolve(rel_path)
+        if path.exists():
+            raise PermissionError(f"Source already exists and is immutable: {rel_path}")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content, encoding="utf-8")
+        if self._in_operation:
+            self._operation_dirty = True
+        else:
+            self._git_commit(f"Save source {rel_path}")
 
     def list_files(self, rel_dir: str = "wiki", pattern: str = "*.md") -> list[str]:
         """List files matching a glob pattern under a vault subdirectory."""
@@ -410,7 +434,7 @@ class Vault:
 
     def rebuild_index(self) -> str:
         """Rebuild index.md from actual file frontmatter. Self-healing."""
-        from noteweaver.frontmatter import page_summary_from_file
+        from noteweaver.frontmatter import page_summary_from_file, extract_frontmatter
         from datetime import datetime, timezone
 
         today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
@@ -427,12 +451,14 @@ class Vault:
                 ps = page_summary_from_file(rel_path, content)
                 if ps is None:
                     continue
+                fm = extract_frontmatter(content) or {}
                 entry = {
                     "path": rel_path,
                     "title": ps.title or rel_path,
                     "type": ps.type,
                     "summary": ps.summary,
                     "tags": ps.tags,
+                    "updated": str(fm.get("updated", "")),
                 }
                 if ps.type == "hub":
                     hubs.append(entry)
@@ -466,10 +492,15 @@ class Vault:
             lines.append("(no hubs yet)")
         lines.append("")
 
-        # Recent non-hub pages (last 10)
+        # Recent non-hub pages sorted by updated date (newest first, last 10)
         lines.append("## Recent\n")
         if other_pages:
-            for p in other_pages[-10:]:
+            sorted_pages = sorted(
+                other_pages,
+                key=lambda x: x.get("updated", ""),
+                reverse=True,
+            )
+            for p in sorted_pages[:10]:
                 desc = f" — {p['summary']}" if p['summary'] else ""
                 lines.append(f"- [[{p['title']}]] ({p['type']}){desc}")
         else:
@@ -483,7 +514,6 @@ class Vault:
         """Return vault statistics."""
         return {
             "concepts": len(self.list_files("wiki/concepts")),
-            "entities": len(self.list_files("wiki/entities")),
             "journals": len(self.list_files("wiki/journals")),
             "synthesis": len(self.list_files("wiki/synthesis")),
             "sources": len(self.list_files("sources")),
@@ -556,9 +586,7 @@ class Vault:
     def import_directory(self, source_dir: str) -> str:
         """Import .md files from an external directory into the vault.
 
-        Reads files from outside the vault (limited external access for import).
-        Files with valid frontmatter are placed by type; files without get
-        note-type frontmatter auto-added. Returns a summary of what was imported.
+        Uses an operation context so all writes produce a single git commit.
         """
         from noteweaver.frontmatter import extract_frontmatter
 
@@ -574,39 +602,40 @@ class Vault:
         imported = 0
         results = []
 
-        for f in md_files:
-            try:
-                content = f.read_text(encoding="utf-8", errors="replace")
-            except Exception as e:
-                results.append(f"  Error reading {f.name}: {e}")
-                continue
+        with self.operation(f"Import {len(md_files)} files from {source_dir}"):
+            for f in md_files:
+                try:
+                    content = f.read_text(encoding="utf-8", errors="replace")
+                except Exception as e:
+                    results.append(f"  Error reading {f.name}: {e}")
+                    continue
 
-            fm = extract_frontmatter(content)
-            rel_name = f.name
+                fm = extract_frontmatter(content)
+                rel_name = f.name
 
-            if fm and fm.get("type") in ("hub", "canonical", "note", "synthesis"):
-                dest = f"wiki/concepts/{rel_name}"
-            elif fm and fm.get("type") == "journal":
-                dest = f"wiki/journals/{rel_name}"
-            else:
-                title = f.stem.replace("-", " ").replace("_", " ").title()
-                header = (
-                    f"---\ntitle: {title}\ntype: note\n"
-                    f"summary: Imported from {f.name}\n"
-                    f"tags: [imported]\ncreated: {today}\nupdated: {today}\n---\n\n"
-                )
-                content = header + content
-                dest = f"wiki/concepts/{rel_name}"
+                if fm and fm.get("type") in ("hub", "canonical", "note", "synthesis"):
+                    dest = f"wiki/concepts/{rel_name}"
+                elif fm and fm.get("type") == "journal":
+                    dest = f"wiki/journals/{rel_name}"
+                else:
+                    title = f.stem.replace("-", " ").replace("_", " ").title()
+                    header = (
+                        f"---\ntitle: {title}\ntype: note\n"
+                        f"summary: Imported from {f.name}\n"
+                        f"tags: [imported]\ncreated: {today}\nupdated: {today}\n---\n\n"
+                    )
+                    content = header + content
+                    dest = f"wiki/concepts/{rel_name}"
 
-            try:
-                self.write_file(dest, content)
-                imported += 1
-                results.append(f"  ✓ {f.name} → {dest}")
-            except Exception as e:
-                results.append(f"  Error writing {f.name}: {e}")
+                try:
+                    self.write_file(dest, content)
+                    imported += 1
+                    results.append(f"  ✓ {f.name} → {dest}")
+                except Exception as e:
+                    results.append(f"  Error writing {f.name}: {e}")
 
-        self.rebuild_index()
-        self.append_log("import", f"Imported {imported} files from {source_dir}")
+            self.rebuild_index()
+            self.append_log("import", f"Imported {imported} files from {source_dir}")
 
         summary = f"Imported {imported}/{len(md_files)} files from {source_dir}\n"
         summary += "\n".join(results[:20])
@@ -624,7 +653,14 @@ class Vault:
         log_path = self.wiki_dir / "log.md"
         with open(log_path, "a", encoding="utf-8") as f:
             f.write(entry)
-        self._git_commit(f"Log: [{entry_type}] {title}")
+        if self._in_operation:
+            self._operation_dirty = True
+        else:
+            self._git_commit(f"Log: [{entry_type}] {title}")
+
+    def operation(self, message: str = "Agent operation"):
+        """Context manager for batching writes into a single git commit."""
+        return _OperationContext(self, message)
 
     # ------------------------------------------------------------------
     # Helpers
@@ -679,3 +715,23 @@ class Vault:
     def _write_if_missing(path: Path, content: str) -> None:
         if not path.exists():
             path.write_text(content, encoding="utf-8")
+
+
+class _OperationContext:
+    """Batches all vault writes into a single git commit."""
+
+    def __init__(self, vault: Vault, message: str) -> None:
+        self._vault = vault
+        self._message = message
+
+    def __enter__(self) -> Vault:
+        self._vault._in_operation = True
+        self._vault._operation_dirty = False
+        return self._vault
+
+    def __exit__(self, exc_type, exc_val, exc_tb) -> None:
+        self._vault._in_operation = False
+        if self._vault._operation_dirty:
+            self._vault._git_commit(self._message)
+            self._vault._operation_dirty = False
+        return None

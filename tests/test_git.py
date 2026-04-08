@@ -49,6 +49,24 @@ class TestGitIntegration:
         latest_msg = list(repo.iter_commits())[0].message
         assert "Log:" in latest_msg
 
+    def test_operation_batches_commits(self, git_vault: Vault) -> None:
+        from git import Repo
+        repo = Repo(git_vault.root)
+        before = len(list(repo.iter_commits()))
+
+        with git_vault.operation("Batch test"):
+            git_vault.write_file(
+                "wiki/concepts/a.md",
+                "---\ntitle: A\ntype: note\n---\na",
+            )
+            git_vault.write_file(
+                "wiki/concepts/b.md",
+                "---\ntitle: B\ntype: note\n---\nb",
+            )
+
+        after = len(list(repo.iter_commits()))
+        assert after == before + 1  # one commit, not two
+
     def test_auto_git_false_skips_git(self, tmp_path: Path) -> None:
         v = Vault(tmp_path, auto_git=False)
         v.init()
