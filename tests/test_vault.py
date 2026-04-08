@@ -112,6 +112,21 @@ class TestSearch:
         assert "findme" in matches[0][1]
 
 
+class TestPreferences:
+    def test_init_creates_preferences(self, vault: Vault) -> None:
+        prefs_path = vault.schema_dir / "preferences.md"
+        assert prefs_path.is_file()
+        content = prefs_path.read_text()
+        assert "User Preferences" in content
+        assert "preference" in content
+
+    def test_preferences_has_valid_frontmatter(self, vault: Vault) -> None:
+        from noteweaver.frontmatter import validate_frontmatter
+        content = vault.read_file(".schema/preferences.md")
+        result = validate_frontmatter(".schema/preferences.md", content)
+        assert result.valid
+
+
 class TestRebuildIndex:
     def test_rebuild_index_with_hub(self, vault: Vault) -> None:
         vault.write_file(
