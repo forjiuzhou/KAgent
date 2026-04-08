@@ -49,14 +49,45 @@ vault/
 ## 快速开始
 
 ```bash
+# 基础安装（OpenAI provider）
 pip install -e .
+
+# 如需使用 Anthropic / Claude，安装带可选依赖
+pip install -e ".[anthropic]"
+
 nw init                      # 创建知识库（自动初始化 Git）
-export OPENAI_API_KEY=sk-... # 支持任何 OpenAI 兼容 API
+nw status                    # 查看知识库状态
+nw rebuild-index             # 从文件元数据重建索引
+```
+
+### 配置 LLM Provider
+
+NoteWeaver 同时支持 OpenAI 和 Anthropic 两种 API 端点：
+
+```bash
+# OpenAI（默认）
+export OPENAI_API_KEY=sk-...
+nw chat
+
+# Anthropic
+export ANTHROPIC_API_KEY=sk-ant-...
+nw chat
+
+# 本地 Anthropic 代理（如 claude-proxy）
+export ANTHROPIC_AUTH_TOKEN=your-token
+export ANTHROPIC_BASE_URL=http://127.0.0.1:8082
+nw chat
+```
+
+Provider 自动检测：设置了 `ANTHROPIC_API_KEY` 或 `ANTHROPIC_AUTH_TOKEN` 即自动切换到 Anthropic。也可用 `NW_PROVIDER=anthropic` 显式指定。
+
+更多命令：
+
+```bash
 nw chat                      # 交互式对话
 nw ingest <url>              # 导入网页文章
-nw lint                      # 知识库健康检查
-nw rebuild-index             # 从文件元数据重建索引
-nw status                    # 查看知识库状态
+nw lint                      # 知识库健康检查（需要 LLM）
+nw help                      # 查看所有命令和环境变量
 ```
 
 ## 技术栈
@@ -64,7 +95,7 @@ nw status                    # 查看知识库状态
 | 层 | 选型 | 理由 |
 |---|---|---|
 | 语言 | Python 3.11+ | Karpathy/Fridman 生态；LLM/ML 最强；验证最快 |
-| LLM 集成 | openai SDK | 直接 tool calling，不套框架 |
+| LLM 集成 | openai + anthropic SDK | Provider 抽象，直接 tool calling，不套框架 |
 | 搜索 | index.md + 朴素全文搜索 → qmd | 小规模零 infra，大规模接入 Karpathy 推荐的 qmd |
 | Web 拉取 | readability-lxml + markdownify | 网页 → 清洗 → Markdown |
 | CLI | rich + prompt-toolkit | 富文本输出 + 交互式输入 |
