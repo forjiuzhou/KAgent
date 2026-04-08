@@ -55,11 +55,14 @@ class KnowledgeAgent:
 
     def _build_system_prompt(self) -> str:
         prompt = SYSTEM_PROMPT
-        # Append the current schema if it exists
         schema_path = self.vault.schema_dir / "schema.md"
         if schema_path.is_file():
             schema_content = schema_path.read_text(encoding="utf-8")
             prompt += f"\n\n## Vault-Specific Schema\n\n{schema_content}"
+        prefs_path = self.vault.schema_dir / "preferences.md"
+        if prefs_path.is_file():
+            prefs_content = prefs_path.read_text(encoding="utf-8")
+            prompt += f"\n\n## User Preferences\n\n{prefs_content}"
         return prompt
 
     def chat(self, user_message: str) -> Generator[str, None, None]:
