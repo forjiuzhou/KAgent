@@ -198,6 +198,46 @@ TOOL_SCHEMAS: list[dict] = [
     {
         "type": "function",
         "function": {
+            "name": "import_files",
+            "description": (
+                "Import markdown files from a local directory into the vault. "
+                "Scans the directory for .md files, auto-classifies them by "
+                "frontmatter, adds frontmatter to files that lack it, and "
+                "rebuilds the index. Use when the user wants to import existing "
+                "notes or documents."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "directory": {
+                        "type": "string",
+                        "description": "Absolute path to the directory to import from, e.g. '/home/user/notes'",
+                    },
+                },
+                "required": ["directory"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "vault_stats",
+            "description": (
+                "Get quantitative health metrics for the knowledge base. "
+                "Returns page counts, orphan rate, hub coverage, canonical "
+                "source ratio, and pages missing summaries. Use to assess "
+                "the state of the vault."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {},
+                "required": [],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "fetch_url",
             "description": (
                 "Fetch a web page and extract its main content as markdown. "
@@ -339,6 +379,21 @@ def handle_archive_page(vault: Vault, path: str, reason: str = "") -> str:
     return f"OK: archived {path} -> {archive_path}"
 
 
+def handle_import_files(vault: Vault, directory: str) -> str:
+    return vault.import_directory(directory)
+
+
+def handle_vault_stats(vault: Vault) -> str:
+    metrics = vault.health_metrics()
+    if metrics["total_pages"] == 0:
+        return "Vault is empty (no wiki pages yet)."
+    lines = ["Vault Health Metrics:"]
+    for k, v in metrics.items():
+        label = k.replace("_", " ").title()
+        lines.append(f"  {label}: {v}")
+    return "\n".join(lines)
+
+
 def handle_fetch_url(vault: Vault, url: str) -> str:
     try:
         import httpx
@@ -394,6 +449,8 @@ TOOL_HANDLERS: dict[str, Any] = {
     "list_pages": handle_list_pages,
     "append_log": handle_append_log,
     "archive_page": handle_archive_page,
+    "import_files": handle_import_files,
+    "vault_stats": handle_vault_stats,
     "fetch_url": handle_fetch_url,
 }
 

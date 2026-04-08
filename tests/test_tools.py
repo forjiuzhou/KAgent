@@ -32,7 +32,7 @@ class TestToolSchemas:
         assert schema_names == handler_names
 
     def test_schema_count(self) -> None:
-        assert len(TOOL_SCHEMAS) == 8
+        assert len(TOOL_SCHEMAS) == 10
 
 
 class TestDispatch:
@@ -164,6 +164,34 @@ class TestDispatch:
             "content": big_index,
         })
         assert "Warning" in result
+
+    def test_vault_stats_empty(self, vault: Vault) -> None:
+        result = dispatch_tool(vault, "vault_stats", {})
+        assert "empty" in result.lower()
+
+    def test_vault_stats_with_pages(self, vault: Vault) -> None:
+        vault.write_file(
+            "wiki/concepts/test.md",
+            "---\ntitle: Test\ntype: canonical\nsummary: x\nsources: [a]\n---\n# T",
+        )
+        result = dispatch_tool(vault, "vault_stats", {})
+        assert "Total Pages" in result
+        assert "Canonicals" in result
+
+    def test_import_files(self, vault: Vault, tmp_path: Path) -> None:
+        import_dir = tmp_path / "ext_notes"
+        import_dir.mkdir()
+        (import_dir / "note1.md").write_text("# My Note\nSome content")
+        (import_dir / "note2.md").write_text(
+            "---\ntitle: Existing\ntype: note\nsummary: s\n---\n# Existing"
+        )
+        result = dispatch_tool(vault, "import_files", {"directory": str(import_dir)})
+        assert "Imported 2" in result
+        assert vault.list_files("wiki/concepts")
+
+    def test_import_files_bad_dir(self, vault: Vault) -> None:
+        result = dispatch_tool(vault, "import_files", {"directory": "/nonexistent"})
+        assert "Error" in result or "not a directory" in result
 
     def test_archive_page(self, vault: Vault) -> None:
         vault.write_file("wiki/concepts/old.md", "---\ntitle: Old\ntype: note\n---\n# Old")
