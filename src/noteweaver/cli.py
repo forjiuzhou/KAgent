@@ -265,7 +265,7 @@ def cmd_rebuild_index(vault_path: Path) -> None:
     content = vault.rebuild_index()
     console.print("[green]✓[/green] index.md rebuilt from file frontmatter.")
     s = vault.stats()
-    total = s["concepts"] + s["entities"] + s["journals"] + s["synthesis"]
+    total = s["concepts"] + s["journals"] + s["synthesis"]
     console.print(f"[info]  {total} pages indexed[/info]")
 
 
