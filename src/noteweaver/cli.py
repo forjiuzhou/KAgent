@@ -50,14 +50,14 @@ def cmd_init(vault_path: Path) -> None:
 
 def cmd_chat(vault_path: Path) -> None:
     """Interactive chat with the knowledge agent."""
-    _vault, agent = _make_agent(vault_path)
+    vault, agent = _make_agent(vault_path)
     cfg = Config.load(vault_path)
 
     console.print(
         Panel(
             f"[bold]NoteWeaver[/bold] — Knowledge Agent\n"
             f"[info]Vault: {vault_path}\n"
-            f"Model: {cfg.model}[/info]\n"
+            f"Provider: {cfg.provider} | Model: {cfg.model}[/info]\n"
             f"Type your message. Ctrl+D or 'exit' to quit.",
             border_style="blue",
         )
@@ -136,10 +136,18 @@ def _make_agent(vault_path: Path) -> tuple[Vault, KnowledgeAgent]:
 
     cfg = Config.load(vault_path)
     if not cfg.api_key:
-        console.print(
-            "[red]OPENAI_API_KEY not set.[/red]\n"
-            "Export it: export OPENAI_API_KEY=sk-..."
-        )
+        if cfg.provider == "anthropic":
+            console.print(
+                "[red]Anthropic API key not set.[/red]\n"
+                "Export one of:\n"
+                "  export ANTHROPIC_API_KEY=sk-ant-...\n"
+                "  export ANTHROPIC_AUTH_TOKEN=sk-ant-..."
+            )
+        else:
+            console.print(
+                "[red]OPENAI_API_KEY not set.[/red]\n"
+                "Export it: export OPENAI_API_KEY=sk-..."
+            )
         sys.exit(1)
 
     agent = KnowledgeAgent(
@@ -147,6 +155,7 @@ def _make_agent(vault_path: Path) -> tuple[Vault, KnowledgeAgent]:
         model=cfg.model,
         api_key=cfg.api_key,
         base_url=cfg.base_url or None,
+        provider_name=cfg.provider,
     )
     return vault, agent
 
@@ -296,10 +305,14 @@ def main() -> None:
                 "  [bold]nw status[/bold]            Show vault status\n"
                 "  [bold]nw help[/bold]              Show this help\n\n"
                 "Environment:\n"
-                "  OPENAI_API_KEY    Required. Your LLM API key.\n"
-                "  OPENAI_BASE_URL   Optional. Custom API endpoint.\n"
-                "  NW_MODEL          Optional. Model name (default: gpt-4o-mini)\n"
-                "  NW_VAULT          Optional. Vault path.",
+                "  OPENAI_API_KEY       Your OpenAI API key.\n"
+                "  ANTHROPIC_API_KEY    Your Anthropic API key.\n"
+                "  ANTHROPIC_AUTH_TOKEN Alternative to ANTHROPIC_API_KEY (for proxies).\n"
+                "  OPENAI_BASE_URL      Custom OpenAI-compatible endpoint.\n"
+                "  ANTHROPIC_BASE_URL   Custom Anthropic-compatible endpoint.\n"
+                "  NW_PROVIDER          Force provider: 'openai' or 'anthropic'.\n"
+                "  NW_MODEL             Model name (auto-detected per provider).\n"
+                "  NW_VAULT             Vault path.",
                 border_style="blue",
             )
         )

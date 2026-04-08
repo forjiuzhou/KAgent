@@ -10,8 +10,7 @@ from __future__ import annotations
 import json
 from typing import Generator
 
-from openai import OpenAI
-
+from noteweaver.adapters.provider import LLMProvider
 from noteweaver.vault import Vault
 from noteweaver.tools.definitions import TOOL_SCHEMAS, dispatch_tool
 
@@ -38,6 +37,20 @@ If the vault is empty, welcome the user and suggest:
 """
 
 
+def create_provider(
+    provider_name: str,
+    api_key: str,
+    base_url: str | None = None,
+) -> LLMProvider:
+    """Factory: create the appropriate LLM provider."""
+    if provider_name == "anthropic":
+        from noteweaver.adapters.anthropic_provider import AnthropicProvider
+        return AnthropicProvider(api_key=api_key, base_url=base_url)
+    else:
+        from noteweaver.adapters.openai_provider import OpenAIProvider
+        return OpenAIProvider(api_key=api_key, base_url=base_url)
+
+
 class KnowledgeAgent:
     """The core agent that operates on a Vault via LLM tool calling."""
 
@@ -45,12 +58,20 @@ class KnowledgeAgent:
         self,
         vault: Vault,
         model: str = "gpt-4o-mini",
+        provider: LLMProvider | None = None,
+        *,
         api_key: str | None = None,
         base_url: str | None = None,
+        provider_name: str = "openai",
     ) -> None:
         self.vault = vault
         self.model = model
-        self.client = OpenAI(api_key=api_key, base_url=base_url)
+        if provider is not None:
+            self.provider = provider
+        else:
+            self.provider = create_provider(
+                provider_name, api_key=api_key or "", base_url=base_url
+            )
         self.messages: list[dict] = [{"role": "system", "content": self._build_system_prompt()}]
 
     def _build_system_prompt(self) -> str:
@@ -68,35 +89,31 @@ class KnowledgeAgent:
 
         max_steps = 25
         for _ in range(max_steps):
-            response = self.client.chat.completions.create(
+            completion, raw_message = self.provider.chat_completion(
                 model=self.model,
                 messages=self.messages,
                 tools=TOOL_SCHEMAS,
             )
 
-            choice = response.choices[0]
-            message = choice.message
-
             # Append assistant message to history
-            self.messages.append(message.model_dump())
+            self.messages.append(raw_message)
 
             # If no tool calls, we're done — yield the final text
-            if not message.tool_calls:
-                if message.content:
-                    yield message.content
+            if not completion.tool_calls:
+                if completion.content:
+                    yield completion.content
                 return
 
             # Execute tool calls
-            for tool_call in message.tool_calls:
-                fn_name = tool_call.function.name
+            for tool_call in completion.tool_calls:
                 try:
-                    fn_args = json.loads(tool_call.function.arguments)
+                    fn_args = json.loads(tool_call.arguments)
                 except json.JSONDecodeError:
                     fn_args = {}
 
-                yield f"  ↳ {fn_name}({self._summarize_args(fn_args)})"
+                yield f"  ↳ {tool_call.name}({self._summarize_args(fn_args)})"
 
-                result = dispatch_tool(self.vault, fn_name, fn_args)
+                result = dispatch_tool(self.vault, tool_call.name, fn_args)
 
                 # Truncate very long results to avoid context overflow
                 if len(result) > 8000:

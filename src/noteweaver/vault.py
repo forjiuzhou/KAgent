@@ -428,6 +428,7 @@ class Vault:
         log_path = self.wiki_dir / "log.md"
         with open(log_path, "a", encoding="utf-8") as f:
             f.write(entry)
+        self._git_commit(f"Log: [{entry_type}] {title}")
 
     # ------------------------------------------------------------------
     # Helpers
