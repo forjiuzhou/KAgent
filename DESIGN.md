@@ -881,7 +881,61 @@ NotebookLM                                      自动驾驶
 
 ---
 
-## 十、开放问题（剩余）
+## 十、知识对象模型
+
+### 已采纳（基于外部设计评审反馈）
+
+经过评审，我们引入了**按知识职责区分**（而非仅按内容类别区分）的对象模型。每个 wiki 页面通过 frontmatter 的 `type` 字段标记其角色：
+
+| 类型 | 职责 | 核心规则 |
+|------|------|----------|
+| `hub` | 导航入口——组织和指向相关页面 | 保持简洁，链接为主，不做深度论证 |
+| `canonical` | 结论文档——某主题当前最成熟的表述 | **必须有 sources 字段**（系统强制），同一主题不应有多个 canonical |
+| `journal` | 时间流记录——快速捕获，日志 | 保留原始表达，不过度编辑 |
+| `synthesis` | 综合分析——跨文章比较，源文档摘要 | 始终引用来源 |
+| `note` | 工作中间态——尚未成熟的内容 | 可自由修改、合并、提升为 canonical |
+| `archive` | 退场——被替代或过时的页面 | 由 archive_page 工具创建，保留不删除 |
+
+### Hub vs Canonical 的区分
+
+这是模型中最重要的区分。Hub 说"关于 X，去读这些页面"，Canonical 说"这是 X 的权威解释"。
+如果一个页面既在做导航又在做深度论证，说明它需要拆分。
+
+### 硬约束下沉到代码层
+
+以下规则不只存在于 system prompt 中，而是在 `write_page` 执行时由 `frontmatter.py` 强制校验：
+- 所有 wiki 页面必须有包含 `title` 和 `type` 的合法 frontmatter
+- Canonical 页面必须有非空的 `sources` 字段
+- `type` 必须是已定义的合法类型之一
+- 系统文件（index.md, log.md）豁免校验
+
+### Archive 替代删除
+
+知识库中永远不应该物理删除页面。`archive_page` 工具将页面移动到 `wiki/archive/`，更新其 frontmatter type 为 `archive`，并记录归档原因和日期。
+
+### 关于 Skill 层的取舍
+
+评审建议将低层工具（read_page, write_page）替换为高层语义技能（CaptureToJournal, PromoteToCanonical）。我们选择**不采纳这个建议**，理由：
+
+1. LLM 擅长理解"用 write_page 写一个 journal 条目"——智能在模型里，不需要硬编码到工具名里
+2. Claude Code/Codex 也用低层工具（read_file, write_file），效果很好
+3. 原子工具的组合性更强。`CaptureToJournal` 固化了 capture 的含义，减少了灵活性
+4. 我们通过**在低层工具中嵌入硬约束**（frontmatter 校验）来获得 Skill 层的安全性，同时保留灵活性
+
+### 关于 plan → apply → evaluate → commit 流程
+
+评审建议所有重要修改后必须经过 evaluate 阶段。我们部分采纳——**分级执行**：
+
+| 操作类型 | 评估级别 |
+|---|---|
+| Journal 条目、快速捕获 | 无（直接写入） |
+| 更新已有页面 | 轻量（frontmatter 校验，系统自动） |
+| 新建/修改 Hub 或 Canonical | 完整评估（由系统 prompt 引导 Agent 自查） |
+| 结构重组（归档、合并） | 完整评估 + 用户确认 |
+
+---
+
+## 十一、开放问题（剩余）
 
 1. **RENDER 的安全边界**：Fridman 的 "generate dynamic html (with js)" 很有吸引力，但生成的 JS 代码如何安全执行？需要 iframe sandbox 或类似机制。
 
