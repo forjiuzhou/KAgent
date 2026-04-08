@@ -67,6 +67,8 @@ def cmd_chat(vault_path: Path) -> None:
     history_file.parent.mkdir(parents=True, exist_ok=True)
     session: PromptSession = PromptSession(history=FileHistory(str(history_file)))
 
+    topics_discussed = []
+
     while True:
         try:
             user_input = session.prompt("\nyou> ").strip()
@@ -80,6 +82,7 @@ def cmd_chat(vault_path: Path) -> None:
             console.print("[info]Bye.[/info]")
             break
 
+        topics_discussed.append(user_input)
         try:
             for chunk in agent.chat(user_input):
                 if chunk.startswith("  ↳ "):
@@ -89,6 +92,39 @@ def cmd_chat(vault_path: Path) -> None:
                     console.print(Markdown(chunk))
         except Exception as e:
             console.print(f"[red]Error: {e}[/red]")
+
+    # Session journaling: record what was discussed
+    if topics_discussed:
+        _save_session_journal(vault, topics_discussed)
+
+
+def _save_session_journal(vault: Vault, topics: list[str]) -> None:
+    """Append a brief session record to today's journal."""
+    from datetime import datetime, timezone
+
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    journal_path = f"wiki/journals/{today}.md"
+
+    # Build entry
+    summary_items = []
+    for t in topics[:10]:
+        short = t[:80] + "..." if len(t) > 80 else t
+        summary_items.append(f"- {short}")
+    entry = f"\n### Session ({datetime.now(timezone.utc).strftime('%H:%M UTC')})\n\n" + "\n".join(summary_items) + "\n"
+
+    try:
+        existing = vault.read_file(journal_path)
+        vault.write_file(journal_path, existing + entry)
+    except FileNotFoundError:
+        header = (
+            f"---\ntitle: Journal {today}\ntype: journal\n"
+            f"summary: Daily journal for {today}\ntags: [journal]\n"
+            f"created: {today}\nupdated: {today}\n---\n\n"
+            f"# {today}\n"
+        )
+        vault.write_file(journal_path, header + entry)
+
+    vault.append_log("session", f"Chat session ({len(topics)} messages)", f"Journal: {journal_path}")
 
 
 def _make_agent(vault_path: Path) -> tuple[Vault, KnowledgeAgent]:
@@ -138,28 +174,50 @@ def cmd_ingest(vault_path: Path, url: str) -> None:
 
 def cmd_lint(vault_path: Path) -> None:
     """Run a health check on the knowledge base."""
-    _vault, agent = _make_agent(vault_path)
+    vault, agent = _make_agent(vault_path)
 
     console.print("[bold]Running knowledge base health check...[/bold]\n")
     prompt = (
-        "Please lint/health-check the wiki. Scan for:\n"
+        "Please lint/health-check the wiki. Use list_page_summaries to scan "
+        "all pages, then check for:\n"
         "1. Orphan pages (no inbound [[links]] from other pages)\n"
-        "2. Mentioned but missing pages (concepts referenced via [[link]] but no page exists)\n"
+        "2. Mentioned but missing pages (referenced via [[link]] but no page exists)\n"
         "3. Stale or contradictory information across pages\n"
-        "4. Pages missing frontmatter or with incomplete metadata\n"
-        "5. Suggestions for new pages or connections\n"
-        "Read the index first, then spot-check pages. Report your findings."
+        "4. Pages missing summary or tags in frontmatter\n"
+        "5. Topics with 3+ pages but no Hub\n"
+        "6. Suggestions for new pages or connections\n"
+        "Report your findings and log them."
     )
     try:
+        last_response = ""
         for chunk in agent.chat(prompt):
             if chunk.startswith("  ↳ "):
                 console.print(f"[tool]{chunk}[/tool]")
             else:
+                last_response = chunk
                 console.print()
                 console.print(Markdown(chunk))
+
+        # Persist lint results to log
+        if last_response:
+            vault.append_log("lint", "Health check completed", last_response[:500])
     except Exception as e:
         console.print(f"[red]Error: {e}[/red]")
         sys.exit(1)
+
+
+def cmd_rebuild_index(vault_path: Path) -> None:
+    """Rebuild index.md from actual file frontmatter."""
+    vault = Vault(vault_path)
+    if not vault.exists():
+        console.print("[red]No vault found.[/red] Run `nw init` first.")
+        sys.exit(1)
+
+    content = vault.rebuild_index()
+    console.print("[green]✓[/green] index.md rebuilt from file frontmatter.")
+    s = vault.stats()
+    total = s["concepts"] + s["entities"] + s["journals"] + s["synthesis"]
+    console.print(f"[info]  {total} pages indexed[/info]")
 
 
 def cmd_status(vault_path: Path) -> None:
@@ -219,6 +277,9 @@ def main() -> None:
     elif args[0] == "lint":
         vault_path = resolve_vault_path()
         cmd_lint(vault_path)
+    elif args[0] in ("rebuild-index", "rebuild"):
+        vault_path = resolve_vault_path()
+        cmd_rebuild_index(vault_path)
     elif args[0] == "status":
         vault_path = resolve_vault_path()
         cmd_status(vault_path)
@@ -227,12 +288,13 @@ def main() -> None:
             Panel(
                 "[bold]NoteWeaver[/bold] — AI Knowledge Management Agent\n\n"
                 "Commands:\n"
-                "  [bold]nw init[/bold]            Initialize a new vault\n"
-                "  [bold]nw chat[/bold]            Chat with the agent (default)\n"
-                "  [bold]nw ingest <url>[/bold]    Import a web article\n"
-                "  [bold]nw lint[/bold]            Health-check the knowledge base\n"
-                "  [bold]nw status[/bold]          Show vault status\n"
-                "  [bold]nw help[/bold]            Show this help\n\n"
+                "  [bold]nw init[/bold]              Initialize a new vault\n"
+                "  [bold]nw chat[/bold]              Chat with the agent (default)\n"
+                "  [bold]nw ingest <url>[/bold]      Import a web article\n"
+                "  [bold]nw lint[/bold]              Health-check the knowledge base\n"
+                "  [bold]nw rebuild-index[/bold]     Rebuild index.md from file metadata\n"
+                "  [bold]nw status[/bold]            Show vault status\n"
+                "  [bold]nw help[/bold]              Show this help\n\n"
                 "Environment:\n"
                 "  OPENAI_API_KEY    Required. Your LLM API key.\n"
                 "  OPENAI_BASE_URL   Optional. Custom API endpoint.\n"

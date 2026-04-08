@@ -250,16 +250,24 @@ def handle_list_page_summaries(vault: Vault, directory: str = "wiki") -> str:
     return "\n".join(lines)
 
 
+INDEX_TOKEN_BUDGET = 4000  # ~1000 tokens ≈ ~4000 chars
+
 def handle_write_page(vault: Vault, path: str, content: str) -> str:
     try:
-        # Hard constraint: validate frontmatter before writing
         validation = validate_frontmatter(path, content)
         if not validation.valid:
             return "Error: frontmatter validation failed:\n" + "\n".join(
                 f"  - {e}" for e in validation.errors
             )
         vault.write_file(path, content)
-        return f"OK: written to {path} ({len(content)} chars)"
+        result = f"OK: written to {path} ({len(content)} chars)"
+
+        if path == "wiki/index.md" and len(content) > INDEX_TOKEN_BUDGET:
+            result += (
+                f"\n\nWarning: index.md is {len(content)} chars (target: <{INDEX_TOKEN_BUDGET}). "
+                "Consider creating Hubs to move detail out of the root index."
+            )
+        return result
     except PermissionError as e:
         return f"Error: {e}"
 
