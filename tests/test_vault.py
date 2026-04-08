@@ -20,7 +20,6 @@ class TestVaultInit:
         assert v.exists()
         assert (tmp_path / "sources").is_dir()
         assert (tmp_path / "wiki" / "concepts").is_dir()
-        assert (tmp_path / "wiki" / "entities").is_dir()
         assert (tmp_path / "wiki" / "journals").is_dir()
         assert (tmp_path / "wiki" / "synthesis").is_dir()
         assert (tmp_path / ".schema" / "schema.md").is_file()

@@ -108,13 +108,13 @@ def _save_session_journal(
 ) -> None:
     """Append a session record to today's journal.
 
-    Each exchange dict has: user (str), tools (list[str]), reply (str).
-    Records both user input AND agent responses for full traceability.
+    Uses local time for journal dates (a user at UTC+8 at 11pm should get
+    today's date, not tomorrow's UTC date).
     """
-    from datetime import datetime, timezone
+    from datetime import datetime
 
-    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-    now = datetime.now(timezone.utc).strftime("%H:%M UTC")
+    today = datetime.now().strftime("%Y-%m-%d")
+    now = datetime.now().strftime("%H:%M")
     journal_path = f"wiki/journals/{today}.md"
 
     lines = [f"\n### {session_type.title()} session ({now})\n"]
@@ -244,87 +244,15 @@ def cmd_lint(vault_path: Path) -> None:
 
 
 def cmd_import(vault_path: Path, source_path: str) -> None:
-    """Import existing markdown files into the vault.
-
-    Scans the source directory, classifies files by frontmatter,
-    copies them into appropriate vault locations, and rebuilds the index.
-    """
-    from noteweaver.frontmatter import extract_frontmatter
-
+    """Import existing markdown files into the vault."""
     vault = Vault(vault_path)
     if not vault.exists():
         console.print("[red]No vault found.[/red] Run `nw init` first.")
         sys.exit(1)
 
-    src = Path(source_path).resolve()
-    if not src.is_dir():
-        console.print(f"[red]Not a directory: {source_path}[/red]")
-        sys.exit(1)
-
-    md_files = sorted(src.rglob("*.md"))
-    if not md_files:
-        console.print(f"[info]No .md files found in {source_path}[/info]")
-        return
-
-    console.print(f"[bold]Scanning:[/bold] {src}")
-    console.print(f"[info]Found {len(md_files)} markdown files[/info]\n")
-
-    plan: list[dict] = []
-    for f in md_files:
-        content = f.read_text(encoding="utf-8", errors="replace")
-        fm = extract_frontmatter(content)
-        rel_name = f.name
-
-        if fm and fm.get("type") in ("hub", "canonical", "note", "synthesis"):
-            dest = f"wiki/concepts/{rel_name}"
-            obj_type = fm["type"]
-        elif fm and fm.get("type") == "journal":
-            dest = f"wiki/journals/{rel_name}"
-            obj_type = "journal"
-        else:
-            dest = f"wiki/concepts/{rel_name}"
-            obj_type = "note (no frontmatter — will be added)"
-
-        plan.append({
-            "source": str(f),
-            "dest": dest,
-            "type": obj_type,
-            "has_frontmatter": fm is not None,
-            "content": content,
-        })
-
-    console.print("[bold]Migration plan:[/bold]\n")
-    for p in plan:
-        fm_status = "[green]✓[/green]" if p["has_frontmatter"] else "[yellow]![/yellow]"
-        console.print(f"  {fm_status} {Path(p['source']).name} → {p['dest']} ({p['type']})")
-
-    console.print(f"\n[bold]{len(plan)} files to import.[/bold]")
-    console.print("[info]Importing...[/info]\n")
-
-    from datetime import datetime, timezone
-    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-    imported = 0
-
-    for p in plan:
-        content = p["content"]
-        if not p["has_frontmatter"]:
-            title = Path(p["source"]).stem.replace("-", " ").replace("_", " ").title()
-            header = (
-                f"---\ntitle: {title}\ntype: note\n"
-                f"summary: Imported from {Path(p['source']).name}\n"
-                f"tags: [imported]\ncreated: {today}\nupdated: {today}\n---\n\n"
-            )
-            content = header + content
-
-        try:
-            vault.write_file(p["dest"], content)
-            imported += 1
-        except Exception as e:
-            console.print(f"[red]  Error importing {p['source']}: {e}[/red]")
-
-    vault.rebuild_index()
-    vault.append_log("import", f"Imported {imported} files from {source_path}")
-    console.print(f"\n[green]✓[/green] Imported {imported}/{len(plan)} files. Index rebuilt.")
+    console.print(f"[bold]Importing from:[/bold] {source_path}")
+    result = vault.import_directory(source_path)
+    console.print(result)
 
 
 def cmd_rebuild_index(vault_path: Path) -> None:
@@ -349,14 +277,13 @@ def cmd_status(vault_path: Path) -> None:
         sys.exit(1)
 
     s = vault.stats()
-    total = s["concepts"] + s["entities"] + s["journals"] + s["synthesis"]
+    total = s["concepts"] + s["journals"] + s["synthesis"]
 
     console.print(
         Panel(
             f"[bold]Vault Status[/bold]  {vault_path}\n\n"
             f"  Wiki pages:    [bold]{total}[/bold]\n"
             f"    concepts/    {s['concepts']}\n"
-            f"    entities/    {s['entities']}\n"
             f"    journals/    {s['journals']}\n"
             f"    synthesis/   {s['synthesis']}\n"
             f"  Source files:   {s['sources']}",

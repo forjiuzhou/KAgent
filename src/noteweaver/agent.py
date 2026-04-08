@@ -87,8 +87,15 @@ class KnowledgeAgent:
         return prompt
 
     def chat(self, user_message: str) -> Generator[str, None, None]:
-        """Send a user message and yield agent responses (including tool call progress)."""
+        """Send a user message and yield agent responses (including tool call progress).
+
+        All writes within a single chat turn are batched into one git commit.
+        """
         self.messages.append({"role": "user", "content": user_message})
+
+        short_msg = user_message[:60] + "..." if len(user_message) > 60 else user_message
+        self.vault._in_operation = True
+        self.vault._operation_dirty = False
 
         max_steps = 25
         for _ in range(max_steps):
@@ -101,13 +108,12 @@ class KnowledgeAgent:
             # Append assistant message to history
             self.messages.append(raw_message)
 
-            # If no tool calls, we're done — yield the final text
             if not completion.tool_calls:
+                self._end_operation(short_msg)
                 if completion.content:
                     yield completion.content
                 return
 
-            # Execute tool calls
             for tool_call in completion.tool_calls:
                 try:
                     fn_args = json.loads(tool_call.arguments)
@@ -118,7 +124,6 @@ class KnowledgeAgent:
 
                 result = dispatch_tool(self.vault, tool_call.name, fn_args)
 
-                # Truncate very long results to avoid context overflow
                 if len(result) > 8000:
                     result = result[:8000] + "\n\n... (truncated)"
 
@@ -128,7 +133,15 @@ class KnowledgeAgent:
                     "content": result,
                 })
 
+        self._end_operation(short_msg)
         yield "(reached maximum steps)"
+
+    def _end_operation(self, message: str) -> None:
+        """Finalize the operation — commit all batched writes."""
+        self.vault._in_operation = False
+        if self.vault._operation_dirty:
+            self.vault._git_commit(message)
+            self.vault._operation_dirty = False
 
     @staticmethod
     def _summarize_args(args: dict) -> str:

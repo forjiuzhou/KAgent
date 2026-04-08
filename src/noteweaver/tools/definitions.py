@@ -198,6 +198,32 @@ TOOL_SCHEMAS: list[dict] = [
     {
         "type": "function",
         "function": {
+            "name": "save_source",
+            "description": (
+                "Save raw content to sources/ for permanent archival. "
+                "Sources are immutable — once saved, they cannot be modified or "
+                "overwritten. Use this to preserve the original text of fetched "
+                "web pages, imported documents, etc. as evidence."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {
+                        "type": "string",
+                        "description": "Path under sources/, e.g. 'sources/articles/my-article.md'",
+                    },
+                    "content": {
+                        "type": "string",
+                        "description": "Raw content to save",
+                    },
+                },
+                "required": ["path", "content"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "import_files",
             "description": (
                 "Import markdown files from a local directory into the vault. "
@@ -379,6 +405,14 @@ def handle_archive_page(vault: Vault, path: str, reason: str = "") -> str:
     return f"OK: archived {path} -> {archive_path}"
 
 
+def handle_save_source(vault: Vault, path: str, content: str) -> str:
+    try:
+        vault.save_source(path, content)
+        return f"OK: source saved to {path} ({len(content)} chars, immutable)"
+    except PermissionError as e:
+        return f"Error: {e}"
+
+
 def handle_import_files(vault: Vault, directory: str) -> str:
     return vault.import_directory(directory)
 
@@ -449,6 +483,7 @@ TOOL_HANDLERS: dict[str, Any] = {
     "list_pages": handle_list_pages,
     "append_log": handle_append_log,
     "archive_page": handle_archive_page,
+    "save_source": handle_save_source,
     "import_files": handle_import_files,
     "vault_stats": handle_vault_stats,
     "fetch_url": handle_fetch_url,

@@ -32,7 +32,7 @@ class TestToolSchemas:
         assert schema_names == handler_names
 
     def test_schema_count(self) -> None:
-        assert len(TOOL_SCHEMAS) == 10
+        assert len(TOOL_SCHEMAS) == 11
 
 
 class TestDispatch:
@@ -192,6 +192,24 @@ class TestDispatch:
     def test_import_files_bad_dir(self, vault: Vault) -> None:
         result = dispatch_tool(vault, "import_files", {"directory": "/nonexistent"})
         assert "Error" in result or "not a directory" in result
+
+    def test_save_source(self, vault: Vault) -> None:
+        result = dispatch_tool(vault, "save_source", {
+            "path": "sources/articles/test.md",
+            "content": "# Raw Article Content",
+        })
+        assert "OK" in result
+        assert "immutable" in result
+        assert vault.read_file("sources/articles/test.md") == "# Raw Article Content"
+
+    def test_save_source_no_overwrite(self, vault: Vault) -> None:
+        vault.save_source("sources/x.md", "original")
+        result = dispatch_tool(vault, "save_source", {
+            "path": "sources/x.md",
+            "content": "overwrite attempt",
+        })
+        assert "Error" in result
+        assert vault.read_file("sources/x.md") == "original"
 
     def test_archive_page(self, vault: Vault) -> None:
         vault.write_file("wiki/concepts/old.md", "---\ntitle: Old\ntype: note\n---\n# Old")
