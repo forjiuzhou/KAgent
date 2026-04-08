@@ -122,7 +122,7 @@ class AnthropicProvider(LLMProvider):
         except ImportError:
             raise ImportError(
                 "anthropic package is required for Anthropic provider. "
-                "Install it with: pip install anthropic"
+                'Install it with: pip install -e ".[anthropic]"'
             )
 
         kwargs: dict[str, Any] = {"api_key": api_key}
