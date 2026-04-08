@@ -254,6 +254,8 @@ INDEX_TOKEN_BUDGET = 4000  # ~1000 tokens ≈ ~4000 chars
 
 def handle_write_page(vault: Vault, path: str, content: str) -> str:
     try:
+        if not path.startswith("wiki/"):
+            return f"Error: write_page can only write to wiki/. Rejected path: {path}"
         validation = validate_frontmatter(path, content)
         if not validation.valid:
             return "Error: frontmatter validation failed:\n" + "\n".join(

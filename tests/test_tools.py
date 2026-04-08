@@ -68,6 +68,32 @@ class TestDispatch:
         })
         assert "Error" in result
 
+    def test_write_page_rejects_schema_path(self, vault: Vault) -> None:
+        result = dispatch_tool(vault, "write_page", {
+            "path": ".schema/schema.md",
+            "content": "overwritten",
+        })
+        assert "Error" in result
+        assert "wiki/" in result
+        original = vault.read_file(".schema/schema.md")
+        assert "Vault Schema" in original
+
+    def test_write_page_rejects_meta_path(self, vault: Vault) -> None:
+        result = dispatch_tool(vault, "write_page", {
+            "path": ".meta/config.yaml",
+            "content": "evil: true",
+        })
+        assert "Error" in result
+        assert "wiki/" in result
+
+    def test_write_page_rejects_root_path(self, vault: Vault) -> None:
+        result = dispatch_tool(vault, "write_page", {
+            "path": "random.md",
+            "content": "# Nope",
+        })
+        assert "Error" in result
+        assert "wiki/" in result
+
     def test_search_vault(self, vault: Vault) -> None:
         vault.write_file("wiki/concepts/ai.md", "---\ntitle: AI\ntype: note\n---\n# AI\nNeural networks")
         result = dispatch_tool(vault, "search_vault", {"query": "neural"})

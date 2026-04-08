@@ -37,6 +37,18 @@ class TestGitIntegration:
         gitignore = (git_vault.root / ".gitignore").read_text()
         assert ".meta/" in gitignore
 
+    def test_append_log_creates_commit(self, git_vault: Vault) -> None:
+        from git import Repo
+        repo = Repo(git_vault.root)
+        before = len(list(repo.iter_commits()))
+
+        git_vault.append_log("test", "Log commit test")
+
+        after = len(list(repo.iter_commits()))
+        assert after > before
+        latest_msg = list(repo.iter_commits())[0].message
+        assert "Log:" in latest_msg
+
     def test_auto_git_false_skips_git(self, tmp_path: Path) -> None:
         v = Vault(tmp_path, auto_git=False)
         v.init()

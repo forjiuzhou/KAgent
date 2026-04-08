@@ -50,7 +50,7 @@ def cmd_init(vault_path: Path) -> None:
 
 def cmd_chat(vault_path: Path) -> None:
     """Interactive chat with the knowledge agent."""
-    _vault, agent = _make_agent(vault_path)
+    vault, agent = _make_agent(vault_path)
     cfg = Config.load(vault_path)
 
     console.print(
