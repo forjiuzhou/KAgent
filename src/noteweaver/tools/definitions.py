@@ -496,10 +496,12 @@ def dispatch_tool(vault: Vault, name: str, arguments: dict) -> str:
     if handler is None:
         return f"Error: unknown tool '{name}'"
 
-    # Filter arguments to only those the handler accepts
     import inspect
     sig = inspect.signature(handler)
     valid_params = set(sig.parameters.keys()) - {"vault"}
     filtered_args = {k: v for k, v in arguments.items() if k in valid_params}
 
-    return handler(vault, **filtered_args)
+    try:
+        return handler(vault, **filtered_args)
+    except TypeError as e:
+        return f"Error calling {name}: {e}. Arguments received: {list(arguments.keys())}"
