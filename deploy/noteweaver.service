@@ -6,15 +6,9 @@ After=network.target
 Type=simple
 User=noteweaver
 WorkingDirectory=/home/noteweaver
+EnvironmentFile=/home/noteweaver/.noteweaver.env
 Environment=NW_VAULT=/home/noteweaver/vault
-Environment=OPENAI_API_KEY=your-key-here
-Environment=NW_TELEGRAM_TOKEN=your-bot-token-here
-# Optional: restrict to specific Telegram users
-# Environment=NW_TELEGRAM_ALLOWED_USERS=123456789
-# Optional: cron intervals (defaults: digest 6h, lint 24h)
-# Environment=NW_DIGEST_INTERVAL_HOURS=6
-# Environment=NW_LINT_INTERVAL_HOURS=24
-ExecStart=/home/noteweaver/.local/bin/nw gateway
+ExecStart=/home/noteweaver/.nw-venv/bin/nw gateway
 Restart=always
 RestartSec=10
 
