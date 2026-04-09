@@ -67,7 +67,10 @@ nw help                      # 查看所有命令和环境变量
 | `ANTHROPIC_API_KEY` | 二选一* | — | Anthropic API key |
 | `ANTHROPIC_AUTH_TOKEN` | — | — | Anthropic 代理 token（替代 `ANTHROPIC_API_KEY`） |
 | `OPENAI_BASE_URL` | 否 | — | 自定义 OpenAI 兼容端点 |
-| `ANTHROPIC_BASE_URL` | 否 | — | 自定义 Anthropic 端点 |
+| `OPENAI_API_BASE` | 否 | — | 与 `OPENAI_BASE_URL` 同义 |
+| `ANTHROPIC_BASE_URL` | 否 | — | 自定义 Anthropic / Claude 端点 |
+| `ANTHROPIC_API_URL` | 否 | — | 与 `ANTHROPIC_BASE_URL` 同义 |
+| `CLAUDE_API_URL` | 否 | — | 与 `ANTHROPIC_BASE_URL` 同义 |
 | `NW_PROVIDER` | 否 | auto | 强制指定 `openai` 或 `anthropic` |
 | `NW_MODEL` | 否 | auto | LLM 模型名称 |
 | `NW_VAULT` | 否 | ./vault | 知识库路径 |
@@ -107,7 +110,7 @@ nw help                      # 查看所有命令和环境变量
 
 ## 部署
 
-支持 Docker Compose 和 VPS/systemd 两种部署方式。本地 Vault 与远端 Gateway 之间可通过 Syncthing 同步。详见 [deploy/README.md](./deploy/README.md)。
+支持 Docker Compose、Debian/Ubuntu（apt）与 RHEL 系（yum/dnf）的 VPS/systemd 部署。本地 Vault 与远端 Gateway 之间可通过 Syncthing 同步。详见 [deploy/README.md](./deploy/README.md)（含 `deploy/setup-yum.sh` 一键脚本与自定义 API URL 说明）。
 
 ## 状态
 

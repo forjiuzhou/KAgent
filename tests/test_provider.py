@@ -170,6 +170,35 @@ class TestConfigProviderDetection:
             cfg = Config.load(tmp_path)
         assert cfg.base_url == "http://127.0.0.1:8082"
 
+    def test_openai_api_base_alias(self, tmp_path: Path) -> None:
+        env = {
+            "OPENAI_API_KEY": "sk-o",
+            "OPENAI_API_BASE": "https://gateway.example/v1",
+        }
+        with patch.dict("os.environ", env, clear=True):
+            cfg = Config.load(tmp_path)
+        assert cfg.base_url == "https://gateway.example/v1"
+
+    def test_openai_base_url_precedence_over_api_base(self, tmp_path: Path) -> None:
+        env = {
+            "OPENAI_API_KEY": "sk-o",
+            "OPENAI_BASE_URL": "https://primary.example/v1",
+            "OPENAI_API_BASE": "https://fallback.example/v1",
+        }
+        with patch.dict("os.environ", env, clear=True):
+            cfg = Config.load(tmp_path)
+        assert cfg.base_url == "https://primary.example/v1"
+
+    def test_claude_api_url_alias(self, tmp_path: Path) -> None:
+        env = {
+            "NW_PROVIDER": "anthropic",
+            "ANTHROPIC_API_KEY": "sk-ant",
+            "CLAUDE_API_URL": "http://127.0.0.1:9999",
+        }
+        with patch.dict("os.environ", env, clear=True):
+            cfg = Config.load(tmp_path)
+        assert cfg.base_url == "http://127.0.0.1:9999"
+
     def test_nw_model_overrides_default(self, tmp_path: Path) -> None:
         env = {"ANTHROPIC_API_KEY": "sk-ant", "NW_MODEL": "claude-3-haiku-20240307"}
         with patch.dict("os.environ", env, clear=True):
