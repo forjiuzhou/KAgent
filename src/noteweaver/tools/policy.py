@@ -13,15 +13,17 @@ Two orthogonal dimensions of control:
    - attended (nw chat, nw ingest run by user in terminal): content writes allowed
    - unattended (gateway cron digest): content writes blocked, only proposals
 
-Combined rule:
-  attended   + structure → allow
-  attended   + content   → allow (with dedup / read-before-write checks)
-  unattended + structure → allow
-  unattended + content   → BLOCK, return proposal guidance to LLM
+Content-layer gates (attended mode):
+   - All content writes: target page must have been read in this session
+   - write_page (new file): find_existing_page must have been called
+   - write_page (note): content body ≥ 200 chars (not a fragment)
+   - write_page (synthesis): must contain ≥ 2 [[wiki-links]]
+   - .schema/preferences.md: only when user explicitly requests it
 """
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from enum import Enum
 
@@ -41,6 +43,18 @@ class WriteTarget(Enum):
 _STRUCTURE_PATHS = frozenset({"wiki/index.md", "wiki/log.md"})
 
 _STRUCTURE_TOOLS = frozenset({"append_log", "add_related_link"})
+
+_PREFERENCES_PATH = ".schema/preferences.md"
+
+# Minimum body length for a new note page (below frontmatter).
+# Fragments shorter than this should be appended to an existing page
+# or captured in a journal instead.
+MIN_NOTE_BODY_CHARS = 200
+
+# Minimum number of [[wiki-links]] required in synthesis content.
+MIN_SYNTHESIS_LINKS = 2
+
+_WIKI_LINK_RE = re.compile(r"\[\[([^\]]+)\]\]")
 
 
 def classify_write_target(tool_name: str, path: str) -> WriteTarget:
@@ -116,6 +130,7 @@ class PolicyContext:
     pages_written: list[str] = field(default_factory=list)
     tools_called: list[str] = field(default_factory=list)
     navigation_done: bool = False
+    user_requested_prefs_edit: bool = False
 
     def record_tool_call(self, name: str, args: dict) -> None:
         """Record a tool invocation for policy tracking."""
@@ -189,11 +204,55 @@ def check_pre_dispatch(
     if not ctx.attended and target in (WriteTarget.CONTENT, WriteTarget.SOURCE):
         return PolicyVerdict(allowed=False, warning=_UNATTENDED_CONTENT_MSG)
 
-    # Content in attended mode: apply per-tool checks
+    # --- Attended mode, content/source target: per-type gates ---
+
+    # preferences.md: only when user explicitly requested
+    if path == _PREFERENCES_PATH and not ctx.user_requested_prefs_edit:
+        return PolicyVerdict(
+            allowed=False,
+            warning=(
+                "Policy: .schema/preferences.md can only be modified when the "
+                "user explicitly asks to change their preferences. Ask the user "
+                "first, e.g. 'Would you like me to update your preferences?'"
+            ),
+        )
+
+    # write_page gets the heaviest checks
     if name == "write_page":
         return _check_write_page(path, args, ctx)
 
+    # All other content-targeting tools: read-before-write
+    if target == WriteTarget.CONTENT:
+        return _check_read_before_write(name, path, ctx)
+
     return PolicyVerdict(allowed=True)
+
+
+def _check_read_before_write(
+    name: str,
+    path: str,
+    ctx: PolicyContext,
+) -> PolicyVerdict:
+    """Require that the target page has been read in this session.
+
+    This prevents blind edits to content pages the agent hasn't seen.
+    Exemptions: if the page was previously written in this session
+    (the agent created it and knows its content).
+    """
+    if not path:
+        return PolicyVerdict(allowed=True)
+
+    if path in ctx.pages_read or path in ctx.pages_written:
+        return PolicyVerdict(allowed=True)
+
+    return PolicyVerdict(
+        allowed=False,
+        warning=(
+            f"Policy: read the target page before editing it. "
+            f"Call read_page('{path}') first to see the current content, "
+            f"then retry {name}."
+        ),
+    )
 
 
 def _check_write_page(
@@ -201,13 +260,21 @@ def _check_write_page(
     args: dict,
     ctx: PolicyContext,
 ) -> PolicyVerdict:
-    """Enforce dedup-before-create for write_page in attended mode."""
+    """Full gate for write_page to content targets.
+
+    Checks applied in order:
+    1. Known-page exemption (read or written before)
+    2. Dedup check (find_existing_page called)
+    3. Type-specific content quality gates
+    """
     if path in _STRUCTURE_PATHS:
         return PolicyVerdict(allowed=True)
 
+    # Overwriting a page we already know about is fine
     if path in ctx.pages_read or path in ctx.pages_written:
         return PolicyVerdict(allowed=True)
 
+    # New page: must have checked for duplicates
     if not ctx.dedup_checked_titles:
         return PolicyVerdict(
             allowed=False,
@@ -219,4 +286,75 @@ def _check_write_page(
             ),
         )
 
+    # Type-specific quality gates on the content being written
+    content = args.get("content", "")
+    return _check_content_quality(path, content)
+
+
+def _check_content_quality(path: str, content: str) -> PolicyVerdict:
+    """Type-specific quality checks on page content.
+
+    - note: body must be ≥ MIN_NOTE_BODY_CHARS
+    - synthesis: must contain ≥ MIN_SYNTHESIS_LINKS [[wiki-links]]
+    - canonical: sources checked by frontmatter.py (not duplicated here)
+    """
+    if not content:
+        return PolicyVerdict(allowed=True)
+
+    # Extract type from frontmatter (lightweight parse)
+    page_type = _extract_type(content)
+
+    if page_type == "note":
+        body = _strip_frontmatter(content)
+        if len(body.strip()) < MIN_NOTE_BODY_CHARS:
+            return PolicyVerdict(
+                allowed=False,
+                warning=(
+                    f"Policy: note pages must have ≥{MIN_NOTE_BODY_CHARS} chars "
+                    f"of body content (currently {len(body.strip())}). "
+                    "Short fragments should be appended to an existing page "
+                    "(append_section) or captured in a journal instead."
+                ),
+            )
+
+    if page_type == "synthesis":
+        link_count = len(_WIKI_LINK_RE.findall(content))
+        if link_count < MIN_SYNTHESIS_LINKS:
+            return PolicyVerdict(
+                allowed=False,
+                warning=(
+                    f"Policy: synthesis pages must reference ≥{MIN_SYNTHESIS_LINKS} "
+                    f"existing pages via [[wiki-links]] (found {link_count}). "
+                    "A synthesis that doesn't connect multiple sources should "
+                    "be a note instead."
+                ),
+            )
+
     return PolicyVerdict(allowed=True)
+
+
+# ======================================================================
+# Helpers
+# ======================================================================
+
+_FM_PATTERN = re.compile(r"^---\s*\n(.*?)\n---\s*\n", re.DOTALL)
+
+
+def _extract_type(content: str) -> str:
+    """Quick extraction of the type field from frontmatter."""
+    m = _FM_PATTERN.match(content)
+    if not m:
+        return ""
+    for line in m.group(1).split("\n"):
+        stripped = line.strip()
+        if stripped.startswith("type:"):
+            return stripped.split(":", 1)[1].strip()
+    return ""
+
+
+def _strip_frontmatter(content: str) -> str:
+    """Return content with frontmatter removed."""
+    m = _FM_PATTERN.match(content)
+    if m:
+        return content[m.end():]
+    return content

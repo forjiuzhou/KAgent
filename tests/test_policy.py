@@ -80,9 +80,19 @@ class TestCheckPreDispatch:
         v = check_pre_dispatch("read_page", {"path": "wiki/index.md"}, ctx)
         assert v.allowed
 
-    def test_low_write_always_allowed(self) -> None:
+    def test_low_write_structure_always_allowed(self) -> None:
+        """Structure-targeting low writes pass without prior read."""
         ctx = PolicyContext()
-        v = check_pre_dispatch("update_frontmatter", {"path": "wiki/x.md"}, ctx)
+        v = check_pre_dispatch("append_log", {"entry_type": "test", "title": "x"}, ctx)
+        assert v.allowed
+
+    def test_low_write_content_needs_read(self) -> None:
+        """Content-targeting low writes need read-before-write."""
+        ctx = PolicyContext()
+        v = check_pre_dispatch("update_frontmatter", {"path": "wiki/concepts/x.md"}, ctx)
+        assert not v.allowed
+        ctx.record_tool_call("read_page", {"path": "wiki/concepts/x.md"})
+        v = check_pre_dispatch("update_frontmatter", {"path": "wiki/concepts/x.md"}, ctx)
         assert v.allowed
 
     def test_write_page_blocked_without_dedup(self) -> None:
