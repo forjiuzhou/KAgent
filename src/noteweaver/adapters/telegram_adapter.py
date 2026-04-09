@@ -72,9 +72,10 @@ class TelegramAdapter(BaseAdapter):
 
             try:
                 reply = await self._on_message(msg)
-                # Telegram has a 4096 char limit per message
+                # Plain text only: LLM output often contains _, *, ` etc. Telegram Markdown
+                # would treat them as formatting and fail with "Can't parse entities".
                 for chunk in _split_message(reply, 4000):
-                    await update.message.reply_text(chunk, parse_mode="Markdown")
+                    await update.message.reply_text(chunk)
             except Exception as e:
                 log.error("Error handling message: %s", e)
                 await update.message.reply_text(f"Error: {e}")
@@ -96,11 +97,7 @@ class TelegramAdapter(BaseAdapter):
     async def send(self, message: OutgoingMessage) -> None:
         if self._app:
             for chunk in _split_message(message.text, 4000):
-                await self._app.bot.send_message(
-                    chat_id=message.chat_id,
-                    text=chunk,
-                    parse_mode="Markdown",
-                )
+                await self._app.bot.send_message(chat_id=message.chat_id, text=chunk)
 
 
 def _split_message(text: str, max_len: int) -> list[str]:
@@ -114,7 +111,10 @@ def _split_message(text: str, max_len: int) -> list[str]:
             break
         split_at = text.rfind("\n", 0, max_len)
         if split_at == -1:
-            split_at = max_len
-        chunks.append(text[:split_at])
-        text = text[split_at:].lstrip("\n")
+            chunks.append(text[:max_len])
+            text = text[max_len:]
+        else:
+            # Include the newline so we do not drop it (old code used lstrip and lost \n).
+            chunks.append(text[: split_at + 1])
+            text = text[split_at + 1 :]
     return chunks
