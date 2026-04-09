@@ -287,8 +287,9 @@ class Vault:
         self.meta_dir = self.root / ".meta"
         self._auto_git = auto_git
         self._repo = None
-        self._in_operation = False
+        self._operation_depth = 0
         self._operation_dirty = False
+        self._search_index = None
 
     # ------------------------------------------------------------------
     # Initialization
@@ -333,6 +334,55 @@ class Vault:
 
         self._git_init()
         self._git_commit("Vault initialized")
+        self.rebuild_search_index()
+
+    # ------------------------------------------------------------------
+    # Search index
+    # ------------------------------------------------------------------
+
+    @property
+    def search(self):
+        """Lazy-initialized FTS5 search index."""
+        if self._search_index is None:
+            from noteweaver.search import SearchIndex
+            self._search_index = SearchIndex(self.meta_dir)
+        return self._search_index
+
+    def _index_file(self, rel_path: str, content: str) -> None:
+        """Update the search index for a single file."""
+        from noteweaver.frontmatter import extract_frontmatter
+        fm = extract_frontmatter(content) or {}
+        tags = fm.get("tags", [])
+        self.search.upsert(
+            path=rel_path,
+            title=fm.get("title", ""),
+            type=fm.get("type", ""),
+            summary=fm.get("summary", ""),
+            tags=", ".join(tags) if isinstance(tags, list) else str(tags),
+            body=content,
+        )
+
+    def rebuild_search_index(self) -> int:
+        """Rebuild the entire search index from vault files."""
+        from noteweaver.frontmatter import extract_frontmatter
+        pages = []
+        for rel_path in self.list_files("wiki"):
+            try:
+                content = self.read_file(rel_path)
+                fm = extract_frontmatter(content) or {}
+                tags = fm.get("tags", [])
+                pages.append({
+                    "path": rel_path,
+                    "title": fm.get("title", ""),
+                    "type": fm.get("type", ""),
+                    "summary": fm.get("summary", ""),
+                    "tags": ", ".join(tags) if isinstance(tags, list) else str(tags),
+                    "body": content,
+                })
+            except (FileNotFoundError, PermissionError):
+                continue
+        self.search.rebuild(pages)
+        return len(pages)
 
     # ------------------------------------------------------------------
     # File operations (used by tools)
@@ -356,7 +406,8 @@ class Vault:
             )
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(content, encoding="utf-8")
-        if self._in_operation:
+        self._index_file(rel_path, content)
+        if self._operation_depth > 0:
             self._operation_dirty = True
         else:
             self._git_commit(f"Update {rel_path}")
@@ -370,7 +421,7 @@ class Vault:
             raise PermissionError(f"Source already exists and is immutable: {rel_path}")
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(content, encoding="utf-8")
-        if self._in_operation:
+        if self._operation_depth > 0:
             self._operation_dirty = True
         else:
             self._git_commit(f"Save source {rel_path}")
@@ -387,7 +438,23 @@ class Vault:
         )
 
     def search_content(self, query: str, directory: str = "wiki") -> list[dict]:
-        """Naive full-text search across markdown files. Returns matches."""
+        """Full-text search using SQLite FTS5 index.
+
+        Returns ranked results with snippets. Falls back to brute-force
+        scan if FTS index is empty or returns no results.
+        """
+        # Try FTS first
+        fts_results = self.search.search(query)
+        if fts_results:
+            # Filter by directory prefix
+            filtered = [r for r in fts_results if r["path"].startswith(directory)]
+            if filtered:
+                return [
+                    {"path": r["path"], "matches": [(0, r["snippet"])]}
+                    for r in filtered
+                ]
+
+        # Fallback: brute-force scan (covers unindexed files)
         results = []
         query_lower = query.lower()
         for rel_path in self.list_files(directory):
@@ -653,7 +720,7 @@ class Vault:
         log_path = self.wiki_dir / "log.md"
         with open(log_path, "a", encoding="utf-8") as f:
             f.write(entry)
-        if self._in_operation:
+        if self._operation_depth > 0:
             self._operation_dirty = True
         else:
             self._git_commit(f"Log: [{entry_type}] {title}")
@@ -709,7 +776,7 @@ class Vault:
             if self._repo.is_dirty(untracked_files=True):
                 self._repo.index.commit(message)
         except Exception as e:
-            log.debug("git commit failed: %s", e)
+            log.warning("git commit failed: %s", e)
 
     @staticmethod
     def _write_if_missing(path: Path, content: str) -> None:
@@ -718,20 +785,22 @@ class Vault:
 
 
 class _OperationContext:
-    """Batches all vault writes into a single git commit."""
+    """Batches all vault writes into a single git commit.
+
+    Supports nesting: only the outermost context triggers the commit.
+    """
 
     def __init__(self, vault: Vault, message: str) -> None:
         self._vault = vault
         self._message = message
 
     def __enter__(self) -> Vault:
-        self._vault._in_operation = True
-        self._vault._operation_dirty = False
+        self._vault._operation_depth += 1
         return self._vault
 
     def __exit__(self, exc_type, exc_val, exc_tb) -> None:
-        self._vault._in_operation = False
-        if self._vault._operation_dirty:
+        self._vault._operation_depth -= 1
+        if self._vault._operation_depth == 0 and self._vault._operation_dirty:
             self._vault._git_commit(self._message)
             self._vault._operation_dirty = False
         return None
