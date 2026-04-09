@@ -5,6 +5,7 @@ from __future__ import annotations
 from openai import OpenAI
 
 from noteweaver.adapters.provider import LLMProvider, CompletionResult, ToolCall
+from noteweaver.adapters.retry import with_retry
 
 
 class OpenAIProvider(LLMProvider):
@@ -19,7 +20,8 @@ class OpenAIProvider(LLMProvider):
         messages: list[dict],
         tools: list[dict],
     ) -> tuple[CompletionResult, dict]:
-        response = self.client.chat.completions.create(
+        response = with_retry(
+            self.client.chat.completions.create,
             model=model,
             messages=messages,
             tools=tools,
@@ -41,3 +43,12 @@ class OpenAIProvider(LLMProvider):
             tool_calls=tool_calls,
         )
         return result, message.model_dump()
+
+    def simple_completion(self, model: str, messages: list[dict]) -> str | None:
+        """Simple completion without tools — used for journal generation."""
+        response = with_retry(
+            self.client.chat.completions.create,
+            model=model,
+            messages=messages,
+        )
+        return response.choices[0].message.content

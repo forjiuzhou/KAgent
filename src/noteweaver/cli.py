@@ -221,10 +221,39 @@ def _save_session_journal(
         lines.append(f"{', '.join(tools_used)}")
         lines.append("")
 
-    # Follow-ups slot (populated from last agent message if it contains suggestions)
-    lines.append("#### Follow-ups")
-    lines.append("*(to be filled by digest)*")
-    lines.append("")
+    # LLM-generated structured slots
+    try:
+        journal_data = agent.generate_journal_summary()
+    except Exception:
+        journal_data = {"insights": [], "decisions": [], "open_questions": [], "follow_ups": []}
+
+    if journal_data.get("insights"):
+        lines.append("#### Insights")
+        for item in journal_data["insights"]:
+            lines.append(f"- {item}")
+        lines.append("")
+
+    if journal_data.get("decisions"):
+        lines.append("#### Decisions")
+        for item in journal_data["decisions"]:
+            lines.append(f"- {item}")
+        lines.append("")
+
+    if journal_data.get("open_questions"):
+        lines.append("#### Open Questions")
+        for item in journal_data["open_questions"]:
+            lines.append(f"- {item}")
+        lines.append("")
+
+    if journal_data.get("follow_ups"):
+        lines.append("#### Follow-ups")
+        for item in journal_data["follow_ups"]:
+            lines.append(f"- {item}")
+        lines.append("")
+    else:
+        lines.append("#### Follow-ups")
+        lines.append("*(none identified)*")
+        lines.append("")
 
     if transcript_ref:
         lines.append(f"*Transcript:* `{transcript_ref}`")

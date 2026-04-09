@@ -43,3 +43,12 @@ class LLMProvider(ABC):
             append to conversation history.
         """
         ...
+
+    def simple_completion(self, model: str, messages: list[dict]) -> str | None:
+        """Simple completion without tools — used for journal generation.
+
+        Default implementation uses chat_completion with empty tools list
+        and discards the raw message.
+        """
+        result, _ = self.chat_completion(model, messages, tools=[])
+        return result.content
