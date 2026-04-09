@@ -42,6 +42,10 @@ class WriteTarget(Enum):
 _STRUCTURE_PATHS = frozenset({"wiki/index.md", "wiki/log.md"})
 
 _STRUCTURE_TOOLS = frozenset({"append_log", "add_related_link"})
+# add_related_link is classified as STRUCTURE (not CONTENT) intentionally:
+# Related links are structural metadata (page topology), not knowledge content.
+# This means it is allowed in unattended mode — the operation is idempotent
+# (duplicate links are skipped) and low-risk.
 
 _PREFERENCES_PATH = ".schema/preferences.md"
 
