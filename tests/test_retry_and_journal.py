@@ -262,10 +262,19 @@ class TestFinalizationWithJournal:
             "FOLLOW_UPS:\n- Check X next time\n"
         )
         agent = KnowledgeAgent(vault=vault, provider=provider)
-        agent.messages.append({"role": "user", "content": "hello"})
+        # Include a write tool call so the session is considered substantial
+        agent.messages.append({"role": "user", "content": "create a note"})
+        agent.messages.append({
+            "role": "assistant", "content": None,
+            "tool_calls": [{"id": "tc1", "function": {
+                "name": "write_page",
+                "arguments": '{"path": "wiki/concepts/t.md", "content": "x"}',
+            }}],
+        })
+        agent.messages.append({"role": "tool", "tool_call_id": "tc1", "content": "OK"})
         agent.messages.append({"role": "assistant", "content": "world"})
 
-        exchanges = [{"user": "hello", "tools": [], "reply": "world"}]
+        exchanges = [{"user": "create a note", "tools": ["write_page"], "reply": "world"}]
         _finalize_session(vault, agent, exchanges, "chat")
 
         from datetime import datetime

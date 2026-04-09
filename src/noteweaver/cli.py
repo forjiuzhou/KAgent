@@ -51,13 +51,47 @@ def cmd_init(vault_path: Path) -> None:
     console.print("[info]  .schema/   — vault conventions[/info]")
 
 
+_WRITE_TOOLS = frozenset({
+    "write_page", "append_section", "append_to_section",
+    "update_frontmatter", "add_related_link", "save_source",
+    "archive_page", "import_files",
+})
+
+_MIN_EXCHANGES_FOR_JOURNAL = 3
+
+
+def _session_has_substance(agent: KnowledgeAgent, exchanges: list[dict]) -> bool:
+    """Decide whether this session is worth journaling.
+
+    A session has substance if ANY of the following are true:
+    - A write tool was invoked (vault was modified)
+    - There were enough exchanges to constitute a real conversation
+    - The session type is a system-initiated operation (ingest/lint/digest)
+    """
+    for m in agent.messages[1:]:
+        if not isinstance(m, dict):
+            continue
+        if m.get("role") == "assistant" and m.get("tool_calls"):
+            for tc in m["tool_calls"]:
+                fn = tc.get("function", {}) if isinstance(tc, dict) else {}
+                if fn.get("name", "") in _WRITE_TOOLS:
+                    return True
+    return len(exchanges) >= _MIN_EXCHANGES_FOR_JOURNAL
+
+
 def _finalize_session(
     vault: Vault,
     agent: KnowledgeAgent,
     exchanges: list[dict],
     session_type: str = "chat",
 ) -> None:
-    """Save transcript, session memory, and journal at end of a session."""
+    """Save transcript, session memory, and (conditionally) journal.
+
+    Transcript and session memory are always saved.
+    Journal is only written when the session has substance: a write
+    operation occurred, there were enough exchanges, or it's a
+    system-initiated command (ingest/lint/digest).
+    """
     try:
         transcript_path = agent.save_transcript()
         log.debug("Transcript saved to %s", transcript_path)
@@ -70,7 +104,10 @@ def _finalize_session(
     except Exception as e:
         log.warning("Failed to save session memory: %s", e)
 
-    if exchanges:
+    # System-initiated commands (ingest, lint, digest) always journal
+    should_journal = session_type != "chat" or _session_has_substance(agent, exchanges)
+
+    if exchanges and should_journal:
         _save_session_journal(
             vault, agent, exchanges, session_type,
             transcript_ref=str(transcript_path) if transcript_path else None,
