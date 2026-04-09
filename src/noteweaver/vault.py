@@ -123,23 +123,48 @@ When updating knowledge: find the Canonical (definition site) and update
 there. Don't create a second definition — link to the existing one.
 When navigating: start at Hub (index), drill into Canonical (definition).
 
-## Capabilities (not a fixed sequence)
+## Three Modes of Operation
 
-The agent has these capabilities. Use whichever are needed for the
-current task — there is no mandatory order or checklist.
+### Mode 1: Conversation (default)
+The user is thinking, discussing, exploring. The agent responds naturally.
+It may reference the knowledge base when relevant, but does NOT need to
+touch the vault on every message. Most interactions are just conversations.
 
-- **capture**: receive new input (chat, URL, import, quick note)
-- **place**: decide where it goes (journal, note, which topic)
-- **refine**: extract, summarize, organize content
-- **link**: add [[wiki-links]], tags, update Hub listings
-- **evaluate**: check frontmatter, check structure health
-- **commit**: write to disk (git auto-commits)
-- **reveal**: respond to user, show what changed
+If a discussion produces a valuable insight, the agent OFFERS to capture
+it — it does not silently write.
 
-A quick capture might only need: capture → place → commit.
-A deep ingest might use all of them, in any order, multiple times.
-Discovering a contradiction mid-refine might loop back to reading more.
-The agent decides what's needed based on the situation.
+### Mode 2: Capture
+Triggered by explicit requests ("remember this", "import this URL") or
+by the agent recognizing something worth recording.
+
+Two sub-types:
+- **Immediate capture**: user explicitly asks, or a clear conclusion emerges
+- **Journal capture**: quick thoughts → append to `wiki/journals/YYYY-MM-DD.md`
+
+### Mode 3: Organize
+Triggered by explicit requests ("clean up", "check health") or by the
+system (`nw lint`, `nw digest`).
+
+Includes: ingest, import, lint, digest (journal→knowledge promotion),
+archive, tree maintenance (Hub creation, index updates).
+
+## Journal → Knowledge Pipeline
+
+Journals are the raw material pool for knowledge. The flow:
+
+```
+Conversation → Journal (raw log, low cost)
+                 ↓
+              Digest (periodic review, extracts insights)
+                 ↓
+           Note / Canonical (structured knowledge)
+```
+
+The `digest` operation reviews recent journals looking for:
+- Conclusions worth promoting to Notes
+- Topics mentioned repeatedly that deserve their own page
+- Connections between conversations not yet linked
+- User preferences or patterns to record
 
 ## Writing Style
 
@@ -152,8 +177,8 @@ The agent decides what's needed based on the situation.
 
 ### Ingest a URL
 1. `fetch_url` to get content
-2. `save_source` to archive raw content to sources/ (immutable evidence)
-3. `list_page_summaries` to see what already exists
+2. `save_source` to archive raw content to sources/
+3. `list_page_summaries` to see what exists
 4. Create synthesis page at `wiki/synthesis/summary-SLUG.md`
 5. Update or create concept pages, add [[links]] and tags
 6. If 3+ pages on a topic and no Hub, create a Hub
@@ -161,28 +186,32 @@ The agent decides what's needed based on the situation.
 
 ### Import local files
 1. `import_files(directory)` — batch imports all .md files
-2. Review the import summary
-3. Optionally reorganize: create Hubs, update index
+2. Review summary, optionally reorganize
 
-### Query
-1. `list_page_summaries` to survey → `read_page` relevant pages
+### Query (within conversation)
+1. Search or scan pages relevant to the question
 2. Synthesize answer with [[wiki-link]] citations
 3. Offer to file valuable answers as wiki pages
 
 ### Quick capture
 1. Append to today's journal (`wiki/journals/YYYY-MM-DD.md`)
-2. Add tags, note connections to existing pages
-3. Brief response: confirm + what it connects to
+2. Add tags, note connections
+3. Brief confirmation
+
+### Digest (journal → knowledge)
+1. Scan recent journals
+2. Identify insights worth promoting
+3. Create Note/Canonical pages, or ask user to confirm
+4. Update index and log
 
 ### Health check
-1. `vault_stats` for quantitative overview
-2. `list_page_summaries("wiki")` for detailed scan
-3. Check: orphans, missing pages, contradictions, stale info
-4. Report findings, suggest improvements, `append_log`
+1. `vault_stats` for overview
+2. Scan for orphans, missing pages, contradictions
+3. Report findings
 
 ### Archive
-1. `archive_page(path, reason)` — moves page to wiki/archive/
-2. Update index.md to remove the archived page
+1. `archive_page(path, reason)`
+2. Update index.md
 3. `append_log`
 
 ### Tree maintenance
