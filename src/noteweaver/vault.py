@@ -150,30 +150,40 @@ The agent decides what's needed based on the situation.
 
 ## Workflows
 
-### Ingest (URL or content)
+### Ingest a URL
 1. `fetch_url` to get content
-2. `save_source` to archive the raw content to sources/ (immutable)
-3. `list_page_summaries` to see what exists
+2. `save_source` to archive raw content to sources/ (immutable evidence)
+3. `list_page_summaries` to see what already exists
 4. Create synthesis page at `wiki/synthesis/summary-SLUG.md`
 5. Update or create concept pages, add [[links]] and tags
 6. If 3+ pages on a topic and no Hub, create a Hub
 7. Update `wiki/index.md` and `append_log`
 
+### Import local files
+1. `import_files(directory)` — batch imports all .md files
+2. Review the import summary
+3. Optionally reorganize: create Hubs, update index
+
 ### Query
-1. `read_page("wiki/index.md")` → find relevant Hub
-2. Read Hub → scan child pages → deep-read relevant ones
-3. Synthesize answer with [[wiki-link]] citations
-4. Offer to file valuable answers as wiki pages
+1. `list_page_summaries` to survey → `read_page` relevant pages
+2. Synthesize answer with [[wiki-link]] citations
+3. Offer to file valuable answers as wiki pages
 
 ### Quick capture
 1. Append to today's journal (`wiki/journals/YYYY-MM-DD.md`)
 2. Add tags, note connections to existing pages
 3. Brief response: confirm + what it connects to
 
-### Lint
-1. `list_page_summaries("wiki")` for full scan
-2. Check: orphans, missing pages, contradictions, stale info
-3. Report findings, suggest improvements
+### Health check
+1. `vault_stats` for quantitative overview
+2. `list_page_summaries("wiki")` for detailed scan
+3. Check: orphans, missing pages, contradictions, stale info
+4. Report findings, suggest improvements, `append_log`
+
+### Archive
+1. `archive_page(path, reason)` — moves page to wiki/archive/
+2. Update index.md to remove the archived page
+3. `append_log`
 
 ### Tree maintenance
 - index.md lists Hubs (not individual pages), under ~1000 tokens
