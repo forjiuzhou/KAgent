@@ -347,6 +347,10 @@ def main() -> None:
     elif args[0] == "status":
         vault_path = resolve_vault_path()
         cmd_status(vault_path)
+    elif args[0] == "gateway":
+        vault_path = resolve_vault_path()
+        from noteweaver.gateway import run_gateway
+        run_gateway(vault_path)
     elif args[0] == "help" or args[0] in ("-h", "--help"):
         console.print(
             Panel(
@@ -359,16 +363,16 @@ def main() -> None:
                 "  [bold]nw lint[/bold]              Health-check the knowledge base\n"
                 "  [bold]nw rebuild-index[/bold]     Rebuild index.md from file metadata\n"
                 "  [bold]nw status[/bold]            Show vault status\n"
+                "  [bold]nw gateway[/bold]           Start IM gateway (Telegram/Feishu)\n"
                 "  [bold]nw help[/bold]              Show this help\n\n"
                 "Environment:\n"
-                "  OPENAI_API_KEY       Your OpenAI API key.\n"
-                "  ANTHROPIC_API_KEY    Your Anthropic API key.\n"
-                "  ANTHROPIC_AUTH_TOKEN Alternative to ANTHROPIC_API_KEY (for proxies).\n"
-                "  OPENAI_BASE_URL      Custom OpenAI-compatible endpoint.\n"
-                "  ANTHROPIC_BASE_URL   Custom Anthropic-compatible endpoint.\n"
-                "  NW_PROVIDER          Force provider: 'openai' or 'anthropic'.\n"
-                "  NW_MODEL             Model name (auto-detected per provider).\n"
-                "  NW_VAULT             Vault path.",
+                "  OPENAI_API_KEY         Your OpenAI API key.\n"
+                "  ANTHROPIC_API_KEY      Your Anthropic API key.\n"
+                "  NW_PROVIDER            Force provider: 'openai' or 'anthropic'.\n"
+                "  NW_MODEL               Model name (auto-detected per provider).\n"
+                "  NW_VAULT               Vault path.\n"
+                "  NW_TELEGRAM_TOKEN      Telegram bot token (enables Telegram adapter).\n"
+                "  NW_TELEGRAM_ALLOWED_USERS  Comma-separated Telegram user IDs.",
                 border_style="blue",
             )
         )
