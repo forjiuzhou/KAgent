@@ -432,6 +432,42 @@ TOOL_SCHEMAS: list[dict] = [
     {
         "type": "function",
         "function": {
+            "name": "promote_insight",
+            "description": (
+                "Promote an insight from a journal entry to a wiki page. "
+                "Searches for an existing page on the topic first. If found, "
+                "appends the insight as a new section. If not found, creates "
+                "a new note page. This is the standard journal→wiki promotion "
+                "path — prefer this over manual write_page for digest results."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "title": {
+                        "type": "string",
+                        "description": "Title or topic of the insight",
+                    },
+                    "content": {
+                        "type": "string",
+                        "description": "The insight content (markdown)",
+                    },
+                    "source_journal": {
+                        "type": "string",
+                        "description": "Path to the journal entry this came from, e.g. 'wiki/journals/2025-04-09.md'",
+                    },
+                    "tags": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Tags for the insight",
+                    },
+                },
+                "required": ["title", "content"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "fetch_url",
             "description": (
                 "Fetch a web page and extract its main content as markdown. "
@@ -837,6 +873,90 @@ def handle_read_transcript(vault: Vault, filename: str, max_chars: int = 0) -> s
     return result
 
 
+def handle_promote_insight(
+    vault: Vault,
+    title: str,
+    content: str,
+    source_journal: str = "",
+    tags: list | None = None,
+) -> str:
+    """Promote a journal insight to a wiki page.
+
+    Searches for an existing page first. If found, appends the insight.
+    If not, creates a new note page. This is the controlled promotion
+    path: journal → candidate note/canonical update → wiki page.
+    """
+    from datetime import datetime, timezone
+
+    # Step 1: check for existing page
+    candidates = vault.search.search(title, limit=5)
+    all_pages = vault.read_frontmatters("wiki")
+    title_lower = title.lower()
+
+    existing_path = None
+    for c in candidates:
+        if title_lower in c.get("title", "").lower():
+            existing_path = c["path"]
+            break
+
+    if not existing_path:
+        for p in all_pages:
+            if title_lower in p["title"].lower() or p["title"].lower() in title_lower:
+                existing_path = p["path"]
+                break
+
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    source_ref = f"\n\n*Promoted from:* `{source_journal}`" if source_journal else ""
+
+    if existing_path:
+        section_content = content + source_ref
+        try:
+            existing = vault.read_file(existing_path)
+        except FileNotFoundError:
+            existing_path = None
+        else:
+            heading = "Promoted Insight"
+            section_text = f"\n## {heading} ({today})\n\n{section_content}\n"
+            related_pattern = re.compile(r"(\n## Related\b)", re.IGNORECASE)
+            match = related_pattern.search(existing)
+            if match:
+                insert_pos = match.start()
+                new_content = existing[:insert_pos] + section_text + existing[insert_pos:]
+            else:
+                new_content = existing.rstrip() + "\n" + section_text
+
+            vault.write_file(existing_path, new_content)
+            return (
+                f"OK: promoted insight to existing page {existing_path} "
+                f"(appended section '## {heading} ({today})')"
+            )
+
+    # Step 2: create new note page
+    slug = title.lower().replace(" ", "-").replace("/", "-")
+    slug = re.sub(r"[^a-z0-9-]", "", slug)[:60]
+    path = f"wiki/concepts/{slug}.md"
+    tag_list = tags or []
+    tag_str = ", ".join(tag_list) if tag_list else ""
+
+    fm = (
+        f"---\ntitle: {title}\ntype: note\n"
+        f"summary: Insight promoted from journal\n"
+        f"tags: [{tag_str}]\n"
+        f"created: {today}\nupdated: {today}\n---\n\n"
+    )
+    body = f"# {title}\n\n{content}{source_ref}\n\n## Related\n"
+    new_content = fm + body
+
+    validation = validate_frontmatter(path, new_content)
+    if not validation.valid:
+        return "Error: frontmatter validation failed:\n" + "\n".join(
+            f"  - {e}" for e in validation.errors
+        )
+
+    vault.write_file(path, new_content)
+    return f"OK: created new note {path} from promoted insight"
+
+
 def handle_fetch_url(vault: Vault, url: str) -> str:
     try:
         import httpx
@@ -901,6 +1021,7 @@ TOOL_HANDLERS: dict[str, Any] = {
     "add_related_link": handle_add_related_link,
     "find_existing_page": handle_find_existing_page,
     "read_transcript": handle_read_transcript,
+    "promote_insight": handle_promote_insight,
     "fetch_url": handle_fetch_url,
 }
 

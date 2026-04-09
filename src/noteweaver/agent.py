@@ -27,6 +27,7 @@ from typing import Generator
 from noteweaver.adapters.provider import LLMProvider
 from noteweaver.vault import Vault
 from noteweaver.tools.definitions import TOOL_SCHEMAS, dispatch_tool
+from noteweaver.tools.policy import PolicyContext, check_pre_dispatch
 
 # ======================================================================
 # System prompt — split into static parts for cache efficiency
@@ -121,7 +122,8 @@ PROMPT_TOOLS = """\
 | `append_to_section(path, heading, content)` | Add content to an existing section. |
 | `update_frontmatter(path, fields)` | Update metadata without touching body. |
 | `add_related_link(path, title)` | Add a [[link]] to Related section. |
-| `search_vault(query)` | FTS5 keyword search across all pages. |
+| `search_vault(query)` | FTS5 keyword search — supplement, not main path. |
+| `promote_insight(title, content, ...)` | Promote journal insight to wiki. Auto-dedup. |
 | `save_source(path, content)` | Save to sources/ (immutable, create-only). |
 | `fetch_url(url)` | Fetch web page → markdown. Then save_source + wiki pages. |
 | `import_files(directory)` | Batch import .md files. Auto-classifies. |
@@ -131,19 +133,40 @@ PROMPT_TOOLS = """\
 | `read_transcript(filename)` | Read a saved conversation transcript (for digest). |
 | `append_log(type, title)` | Log what you did. After significant ops only. |
 
+## Retrieval Strategy: Navigate, Don't Just Search
+
+Follow this evidence-gathering sequence — do NOT skip steps:
+
+1. **Session workset first**: check what's already known from previous turns \
+   and session memory (topics, active pages).
+2. **Navigate the tree**: `list_page_summaries` or read a Hub page to survey \
+   what exists on the topic. This is cheap (~30 tok/page) and gives structure.
+3. **Shallow-read candidates**: `read_page(path, max_chars=500)` on 2-3 \
+   promising pages to check relevance before committing to full reads.
+4. **Deep-read**: `read_page(path)` only pages confirmed relevant.
+5. **Search as supplement**: `search_vault` fills gaps — it finds pages the \
+   tree navigation missed. It is NOT the primary evidence path.
+6. **Expand via links**: if a page references other pages via [[wiki-links]], \
+   consider following those links for additional context.
+
+**search_vault is a candidate layer, not the evidence backbone.** \
+Navigate first, search to fill gaps.
+
 ## Rules
 
 - DON'T read index.md on every message. Only when you need to navigate the KB.
 - Update index.md and append_log only after Mode 2/3 operations, not after chat.
-- Read efficiently: scan → shallow-read → deep-read only what's relevant.
 - Create Hub when 3+ pages accumulate on a topic.
 - Respond in user's language. Be concise.
 - For detailed conventions: `read_page(".schema/schema.md")`
 - **Before creating a page**: call `find_existing_page` to check for duplicates. \
+  The system enforces this — write_page will be blocked if you skip it. \
   Update existing pages (append_section) rather than creating new ones.
 - **Prefer fine-grained edits**: use `append_section`, `append_to_section`, \
   `update_frontmatter`, `add_related_link` instead of full-page `write_page` \
   when you only need to add or update part of a page.
+- **Default to read-only**: in Mode 1 (conversation), enhance your answers \
+  with knowledge base content, but do NOT write unless there's a real reason.
 
 If vault is empty, welcome the user and suggest what they can do.
 """
@@ -242,6 +265,7 @@ class KnowledgeAgent:
         ]
         self._session_summary: dict | None = None
         self._summary_boundary: int = 1  # messages[1:boundary] are summarised
+        self._policy_ctx = PolicyContext()
 
     # ------------------------------------------------------------------
     # System prompt
@@ -390,11 +414,56 @@ class KnowledgeAgent:
                 lines.append(f"Active pages: {', '.join(wiki_pages[:8])}")
             lines.append("")
 
+        # Carry forward unresolved open questions / follow-ups
+        prev_open = self._extract_open_items(prev_mem) if prev_mem else []
+        new_open = self._extract_open_items_from_transcript()
+        merged_open = list(dict.fromkeys(new_open + prev_open))[:8]
+        if merged_open:
+            lines.append("## Open Items")
+            for item in merged_open:
+                lines.append(f"- {item}")
+            lines.append("")
+
         result = "\n".join(lines) + "\n"
         mem_path = self.vault.meta_dir / "session-memory.md"
         mem_path.parent.mkdir(parents=True, exist_ok=True)
         mem_path.write_text(result, encoding="utf-8")
         return mem_path
+
+    @staticmethod
+    def _extract_open_items(memory_text: str | None) -> list[str]:
+        """Extract open question / follow-up items from session memory text."""
+        if not memory_text:
+            return []
+        items: list[str] = []
+        in_section = False
+        for line in memory_text.split("\n"):
+            stripped = line.strip()
+            if stripped.startswith("## Open Items"):
+                in_section = True
+                continue
+            if in_section and stripped.startswith("##"):
+                break
+            if in_section and stripped.startswith("- "):
+                items.append(stripped[2:].strip())
+        return items
+
+    def _extract_open_items_from_transcript(self) -> list[str]:
+        """Scan transcript for question marks in user messages (heuristic).
+
+        Gathers short versions of user questions that weren't directly
+        answered by a subsequent write operation — i.e. things the user
+        asked that might still be open.
+        """
+        items: list[str] = []
+        for m in self.messages[1:]:
+            role = _msg_role(m)
+            content = _msg_content(m)
+            if role == "user" and content and "?" in content:
+                short = content.split("?")[0].strip()
+                if len(short) > 10:
+                    items.append(short[:120] + "?")
+        return items[-5:]
 
     # ------------------------------------------------------------------
     # Transcript persistence
@@ -733,15 +802,24 @@ class KnowledgeAgent:
 
                     yield f"  ↳ {tool_call.name}({self._summarize_args(fn_args)})"
 
-                    try:
-                        result = dispatch_tool(
-                            self.vault, tool_call.name, fn_args
-                        )
-                    except Exception as exc:
-                        result = (
-                            f"Error executing {tool_call.name}: "
-                            f"{type(exc).__name__}: {exc}"
-                        )
+                    verdict = check_pre_dispatch(
+                        tool_call.name, fn_args, self._policy_ctx,
+                    )
+                    if not verdict.allowed:
+                        result = verdict.warning or "Policy: action blocked."
+                    else:
+                        try:
+                            result = dispatch_tool(
+                                self.vault, tool_call.name, fn_args
+                            )
+                        except Exception as exc:
+                            result = (
+                                f"Error executing {tool_call.name}: "
+                                f"{type(exc).__name__}: {exc}"
+                            )
+                    self._policy_ctx.record_tool_call(
+                        tool_call.name, fn_args,
+                    )
 
                     if len(result) > self._TOOL_RESULT_MAX:
                         result = (
