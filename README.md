@@ -9,7 +9,7 @@
 NoteWeaver 不是通用 Agent——它只做一件事：**帮你管理知识**。
 
 - **知识编译器**，不是知识检索器：持续构建结构化 Wiki，而非每次查询临时拼凑
-- **领域专用操作**，不是 Shell：10 种知识操作工具构成全部能力边界，安全由设计保证
+- **领域专用操作**，不是 Shell：18 种知识操作工具构成全部能力边界，安全由设计保证
 - **本地优先**：所有数据都是本地 Markdown 文件 + Git，数据主权完全在你手中
 - **电脑整理 + 手机记录**：电脑上深度整理，Telegram 上随手记录，Agent 打通两端
 - **零配置**：打开就能用，不需要理解配置文件或权限模型
@@ -51,11 +51,33 @@ Provider 自动检测：设置了 `ANTHROPIC_API_KEY` 或 `ANTHROPIC_AUTH_TOKEN`
 nw chat                      # 交互式对话（会话自动沉淀到 journal）
 nw ingest <url>              # 导入网页文章
 nw import <path>             # 导入已有 Markdown 文件
-nw lint                      # 知识库健康检查
+nw lint                      # 知识库健康检查（LLM 驱动）
+nw digest                    # 审阅近期 journal，提取值得沉淀的洞见
 nw rebuild-index             # 从文件元数据重建索引
 nw status                    # 查看知识库状态 + 量化健康指标
+nw gateway                   # 启动 IM 网关（Telegram）+ 定时 digest/lint
 nw help                      # 查看所有命令和环境变量
 ```
+
+### 环境变量
+
+| 变量 | 必需 | 默认值 | 说明 |
+|------|------|--------|------|
+| `OPENAI_API_KEY` | 二选一* | — | OpenAI API key |
+| `ANTHROPIC_API_KEY` | 二选一* | — | Anthropic API key |
+| `ANTHROPIC_AUTH_TOKEN` | — | — | Anthropic 代理 token（替代 `ANTHROPIC_API_KEY`） |
+| `OPENAI_BASE_URL` | 否 | — | 自定义 OpenAI 兼容端点 |
+| `ANTHROPIC_BASE_URL` | 否 | — | 自定义 Anthropic 端点 |
+| `NW_PROVIDER` | 否 | auto | 强制指定 `openai` 或 `anthropic` |
+| `NW_MODEL` | 否 | auto | LLM 模型名称 |
+| `NW_VAULT` | 否 | ./vault | 知识库路径 |
+| `NW_TELEGRAM_TOKEN` | Gateway 必需 | — | Telegram Bot token |
+| `NW_TELEGRAM_ALLOWED_USERS` | 否 | 全部 | 允许的 Telegram 用户 ID（逗号分隔） |
+| `NW_DIGEST_INTERVAL_HOURS` | 否 | 6 | Gateway 自动 digest 间隔（小时） |
+| `NW_LINT_INTERVAL_HOURS` | 否 | 24 | Gateway 自动 lint 间隔（小时） |
+| `NW_NOTIFY_HOUR` | 否 | 9 | Gateway 发送通知的时间（24h 制） |
+
+\* `OPENAI_API_KEY` 和 `ANTHROPIC_API_KEY`/`ANTHROPIC_AUTH_TOKEN` 至少设置一个。
 
 ## 核心设计原则
 
@@ -83,9 +105,13 @@ nw help                      # 查看所有命令和环境变量
 - Claude Code 的权限管线 — 简化为领域专用的操作白名单
 - OpenClaw 的安全模型 — 层次化安全的思想，但大幅简化
 
+## 部署
+
+支持 Docker Compose 和 VPS/systemd 两种部署方式。本地 Vault 与远端 Gateway 之间可通过 Syncthing 同步。详见 [deploy/README.md](./deploy/README.md)。
+
 ## 状态
 
-🚧 早期设计阶段。详见 [DESIGN.md](./DESIGN.md) 了解完整的设计讨论。
+核心功能已实现：CLI 交互、Web 导入、lint/digest、Telegram 网关、定时任务。详见 [DESIGN.md](./DESIGN.md) 了解设计讨论与产品决策。
 
 ## License
 

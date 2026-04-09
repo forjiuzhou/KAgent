@@ -19,6 +19,7 @@ USER noteweaver
 
 ENV NW_VAULT=/data/vault
 
+# Port 8384 is reserved for Syncthing web UI if co-deployed
 EXPOSE 8384
 
 ENTRYPOINT ["nw"]
