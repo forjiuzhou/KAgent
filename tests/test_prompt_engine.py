@@ -72,7 +72,6 @@ class TestPromptStructure:
         assert "Use Chinese" in system_msg
 
     def test_prompt_token_budget(self) -> None:
-        # Identity + Tools should be under ~1200 tokens (~4800 chars)
         assert len(SYSTEM_PROMPT) < 5000, f"System prompt too large: {len(SYSTEM_PROMPT)} chars"
 
 
@@ -89,40 +88,108 @@ class TestHistoryCompression:
             agent.messages.append({"role": "user", "content": f"msg {i} " + "x" * 3000})
             agent.messages.append({"role": "assistant", "content": f"reply {i} " + "y" * 3000})
         assert agent._estimate_chars() > agent._MAX_CONTEXT_CHARS
+
         agent._maybe_compress_history()
-        assert len(agent.messages) < 40
-        assert agent.messages[0]["role"] == "system"
-        assert "summary" in agent.messages[1]["content"].lower()
+
+        # Transcript is append-only — length unchanged
+        assert len(agent.messages) == 41
+
+        # Session summary is generated
+        assert agent._session_summary is not None
+        assert "SESSION CONTEXT" in agent._session_summary["text"]
+
+        # Query view is shorter than the full transcript
+        query = agent._build_messages_for_query()
+        assert len(query) < len(agent.messages)
+        assert query[0]["role"] == "system"
+        assert "summary" in query[1]["content"].lower() or "SESSION CONTEXT" in query[1]["content"]
 
     def test_compression_preserves_recent(self, agent: KnowledgeAgent) -> None:
         for i in range(20):
             agent.messages.append({"role": "user", "content": f"msg {i} " + "x" * 3000})
             agent.messages.append({"role": "assistant", "content": f"reply {i} " + "y" * 3000})
-        last_user = agent.messages[-2]
+        last_user_content = agent.messages[-2]["content"]
         agent._maybe_compress_history()
-        assert last_user in agent.messages
+
+        # Recent messages preserved in query view
+        query = agent._build_messages_for_query()
+        query_contents = [m.get("content", "") for m in query if isinstance(m, dict)]
+        assert last_user_content in query_contents
+
+    def test_transcript_never_mutated(self, agent: KnowledgeAgent) -> None:
+        """The core invariant: compression must not modify self.messages."""
+        for i in range(20):
+            agent.messages.append({"role": "user", "content": f"msg {i} " + "x" * 3000})
+            agent.messages.append({"role": "assistant", "content": f"reply {i} " + "y" * 3000})
+        original_messages = list(agent.messages)
+        agent._maybe_compress_history()
+        assert agent.messages == original_messages
+
+    def test_session_summary_structure(self, agent: KnowledgeAgent) -> None:
+        for i in range(20):
+            agent.messages.append({"role": "user", "content": f"msg {i} " + "x" * 3000})
+            agent.messages.append({"role": "assistant", "content": f"reply {i} " + "y" * 3000})
+        agent._maybe_compress_history()
+
+        s = agent._session_summary
+        assert s is not None
+        assert "boundary" in s
+        assert "key_points" in s
+        assert "text" in s
+        assert isinstance(s["key_points"], list)
 
 
 class TestToolResultTrimming:
     def test_trims_old_large_results(self, agent: KnowledgeAgent) -> None:
-        agent.messages.append({"role": "user", "content": "q"})
+        """Old tool results are cleaned up in the query view, not the transcript."""
+        big = "A" * 5000
+
+        # Stale turn (will be cleared in view)
+        agent.messages.append({"role": "user", "content": "q1"})
         agent.messages.append({
-            "role": "assistant",
-            "content": None,
+            "role": "assistant", "content": None,
             "tool_calls": [{"id": "1", "function": {"name": "read_page"}}],
         })
-        agent.messages.append({
-            "role": "tool",
-            "tool_call_id": "1",
-            "content": "A" * 5000,
-        })
-        agent.messages.append({"role": "assistant", "content": "here's what I found"})
-        agent.messages.append({"role": "user", "content": "next question"})
+        agent.messages.append({"role": "tool", "tool_call_id": "1", "content": big})
+        agent.messages.append({"role": "assistant", "content": "answer 1"})
 
-        agent._trim_old_tool_results()
-        tool_msg = [m for m in agent.messages if isinstance(m, dict) and m.get("role") == "tool"][0]
-        assert len(tool_msg["content"]) < 5000
-        assert "trimmed" in tool_msg["content"]
+        # Recent turn 1
+        agent.messages.append({"role": "user", "content": "q2"})
+        agent.messages.append({
+            "role": "assistant", "content": None,
+            "tool_calls": [{"id": "2", "function": {"name": "read_page"}}],
+        })
+        agent.messages.append({"role": "tool", "tool_call_id": "2", "content": big})
+        agent.messages.append({"role": "assistant", "content": "answer 2"})
+
+        # Recent turn 2
+        agent.messages.append({"role": "user", "content": "q3"})
+        agent.messages.append({
+            "role": "assistant", "content": None,
+            "tool_calls": [{"id": "3", "function": {"name": "read_page"}}],
+        })
+        agent.messages.append({"role": "tool", "tool_call_id": "3", "content": big})
+        agent.messages.append({"role": "assistant", "content": "answer 3"})
+
+        # Recent turn 3 (most recent)
+        agent.messages.append({"role": "user", "content": "q4"})
+        agent.messages.append({
+            "role": "assistant", "content": None,
+            "tool_calls": [{"id": "4", "function": {"name": "read_page"}}],
+        })
+        agent.messages.append({"role": "tool", "tool_call_id": "4", "content": big})
+        agent.messages.append({"role": "assistant", "content": "answer 4"})
+
+        # Transcript is never modified
+        tool_msgs = [m for m in agent.messages if isinstance(m, dict) and m.get("role") == "tool"]
+        assert all(len(t["content"]) == 5000 for t in tool_msgs)
+
+        # Query view: oldest tool result should be cleaned up
+        query = agent._build_messages_for_query()
+        query_tools = [m for m in query if isinstance(m, dict) and m.get("role") == "tool"]
+        assert "cleared" in query_tools[0]["content"].lower()
+        # Most recent tool result should still be full
+        assert len(query_tools[-1]["content"]) == 5000
 
     def test_does_not_trim_recent_results(self, agent: KnowledgeAgent) -> None:
         agent.messages.append({"role": "user", "content": "q"})
@@ -131,6 +198,196 @@ class TestToolResultTrimming:
             "tool_call_id": "1",
             "content": "B" * 5000,
         })
-        agent._trim_old_tool_results()
-        tool_msg = [m for m in agent.messages if isinstance(m, dict) and m.get("role") == "tool"][0]
-        assert len(tool_msg["content"]) == 5000
+        # No subsequent assistant message — this is the active turn
+        query = agent._build_messages_for_query()
+        query_tool = [m for m in query if isinstance(m, dict) and m.get("role") == "tool"][0]
+        assert len(query_tool["content"]) == 5000
+
+
+class TestQueryView:
+    """Tests for the messages_for_query view layer."""
+
+    def test_basic_query_view(self, agent: KnowledgeAgent) -> None:
+        agent.messages.append({"role": "user", "content": "hello"})
+        query = agent._build_messages_for_query()
+        assert query[0]["role"] == "system"
+        assert query[1]["role"] == "user"
+        assert query[1]["content"] == "hello"
+
+    def test_query_view_includes_session_memory(self, agent: KnowledgeAgent) -> None:
+        mem = agent.vault.meta_dir / "session-memory.md"
+        mem.parent.mkdir(parents=True, exist_ok=True)
+        mem.write_text("## Last Session\nTopic: Python async\n")
+
+        agent.messages.append({"role": "user", "content": "hi"})
+        query = agent._build_messages_for_query()
+        system = query[0]["content"]
+        assert "Last Session" in system
+        assert "Python async" in system
+
+    def test_query_view_tool_result_tiers(self, agent: KnowledgeAgent) -> None:
+        """Older consumed tool results are cleaned up in the view."""
+        big = "X" * 2000
+
+        # Turn 1: tool call + result + assistant response
+        agent.messages.append({"role": "user", "content": "q1"})
+        agent.messages.append({
+            "role": "assistant", "content": None,
+            "tool_calls": [{"id": "t1", "function": {"name": "read_page"}}],
+        })
+        agent.messages.append({"role": "tool", "tool_call_id": "t1", "content": big})
+        agent.messages.append({"role": "assistant", "content": "answer 1"})
+
+        # Turn 2: tool call + result + assistant response
+        agent.messages.append({"role": "user", "content": "q2"})
+        agent.messages.append({
+            "role": "assistant", "content": None,
+            "tool_calls": [{"id": "t2", "function": {"name": "read_page"}}],
+        })
+        agent.messages.append({"role": "tool", "tool_call_id": "t2", "content": big})
+        agent.messages.append({"role": "assistant", "content": "answer 2"})
+
+        # Turn 3: tool call + result + assistant response
+        agent.messages.append({"role": "user", "content": "q3"})
+        agent.messages.append({
+            "role": "assistant", "content": None,
+            "tool_calls": [{"id": "t3", "function": {"name": "read_page"}}],
+        })
+        agent.messages.append({"role": "tool", "tool_call_id": "t3", "content": big})
+        agent.messages.append({"role": "assistant", "content": "answer 3"})
+
+        # Turn 4: tool call + result + assistant response
+        agent.messages.append({"role": "user", "content": "q4"})
+        agent.messages.append({
+            "role": "assistant", "content": None,
+            "tool_calls": [{"id": "t4", "function": {"name": "read_page"}}],
+        })
+        agent.messages.append({"role": "tool", "tool_call_id": "t4", "content": big})
+        agent.messages.append({"role": "assistant", "content": "answer 4"})
+
+        query = agent._build_messages_for_query()
+        tool_results = [m for m in query if isinstance(m, dict) and m.get("role") == "tool"]
+
+        # t1 is stale (age > full + preview)
+        assert "cleared" in tool_results[0]["content"].lower()
+
+        # t4 is the most recent completed turn — should have full content
+        assert len(tool_results[3]["content"]) == 2000
+
+    def test_query_view_does_not_modify_transcript(self, agent: KnowledgeAgent) -> None:
+        agent.messages.append({"role": "user", "content": "q"})
+        agent.messages.append({
+            "role": "assistant", "content": None,
+            "tool_calls": [{"id": "t1", "function": {"name": "search"}}],
+        })
+        agent.messages.append({"role": "tool", "tool_call_id": "t1", "content": "Y" * 3000})
+        agent.messages.append({"role": "assistant", "content": "done"})
+
+        original = [dict(m) if isinstance(m, dict) else m for m in agent.messages]
+        _ = agent._build_messages_for_query()
+        for i, m in enumerate(agent.messages):
+            if isinstance(m, dict):
+                assert m == original[i], f"Message {i} was mutated"
+
+
+class TestSessionSummary:
+    """Tests for structured session summary (C2)."""
+
+    def test_no_summary_under_threshold(self, agent: KnowledgeAgent) -> None:
+        agent.messages.append({"role": "user", "content": "short"})
+        agent._update_session_summary()
+        assert agent._session_summary is None
+
+    def test_summary_generated_over_threshold(self, agent: KnowledgeAgent) -> None:
+        for i in range(20):
+            agent.messages.append({"role": "user", "content": f"msg {i} " + "x" * 3000})
+            agent.messages.append({"role": "assistant", "content": f"reply {i} " + "y" * 3000})
+        agent._update_session_summary()
+        assert agent._session_summary is not None
+        assert agent._summary_boundary > 1
+
+    def test_summary_captures_tool_usage(self, agent: KnowledgeAgent) -> None:
+        for i in range(15):
+            agent.messages.append({"role": "user", "content": f"msg {i} " + "x" * 3000})
+            agent.messages.append({
+                "role": "assistant", "content": None,
+                "tool_calls": [{"id": f"t{i}", "function": {
+                    "name": "read_page",
+                    "arguments": f'{{"path": "wiki/concepts/page-{i}.md"}}',
+                }}],
+            })
+            agent.messages.append({
+                "role": "tool", "tool_call_id": f"t{i}", "content": "result " + "z" * 1000,
+            })
+            agent.messages.append({"role": "assistant", "content": f"answer {i} " + "y" * 1000})
+
+        agent._update_session_summary()
+        s = agent._session_summary
+        assert s is not None
+        assert "read_page" in s.get("tools_used", [])
+        assert any("wiki/" in p for p in s.get("pages_touched", []))
+
+
+class TestMemoryIntegration:
+    """Tests for long-term memory loading in system prompt."""
+
+    def test_memory_md_loaded(self, vault: Vault) -> None:
+        mem = vault.schema_dir / "memory.md"
+        mem.write_text("Core topics: AI, NLP, transformers")
+        mock_provider = MagicMock()
+        a = KnowledgeAgent(vault=vault, provider=mock_provider)
+        system_msg = a.messages[0]["content"]
+        assert "Core topics: AI, NLP, transformers" in system_msg
+
+    def test_memory_md_too_large_skipped(self, vault: Vault) -> None:
+        mem = vault.schema_dir / "memory.md"
+        mem.write_text("x" * 5000)
+        mock_provider = MagicMock()
+        a = KnowledgeAgent(vault=vault, provider=mock_provider)
+        system_msg = a.messages[0]["content"]
+        assert "x" * 5000 not in system_msg
+
+    def test_no_memory_file_is_fine(self, vault: Vault) -> None:
+        mock_provider = MagicMock()
+        a = KnowledgeAgent(vault=vault, provider=mock_provider)
+        assert "Knowledge Base Memory" not in a.messages[0]["content"]
+
+
+class TestTranscriptPersistence:
+    """Tests for transcript save/load."""
+
+    def test_save_transcript(self, agent: KnowledgeAgent) -> None:
+        agent.messages.append({"role": "user", "content": "hello"})
+        agent.messages.append({"role": "assistant", "content": "hi there"})
+
+        path = agent.save_transcript()
+        assert path.exists()
+        assert path.suffix == ".json"
+        assert path.parent.name == "transcripts"
+
+        import json
+        data = json.loads(path.read_text(encoding="utf-8"))
+        assert len(data) == 3  # system + user + assistant
+
+    def test_get_transcript_returns_copy(self, agent: KnowledgeAgent) -> None:
+        agent.messages.append({"role": "user", "content": "test"})
+        t = agent.get_transcript()
+        t.pop()
+        assert len(agent.messages) == 2
+
+    def test_save_session_memory(self, agent: KnowledgeAgent) -> None:
+        agent.messages.append({"role": "user", "content": "Tell me about attention"})
+        agent.messages.append({"role": "assistant", "content": "Attention is..."})
+        agent.messages.append({"role": "user", "content": "And transformers?"})
+        agent.messages.append({"role": "assistant", "content": "Transformers use..."})
+
+        path = agent.save_session_memory()
+        assert path is not None
+        assert path.exists()
+        content = path.read_text(encoding="utf-8")
+        assert "Last Session" in content
+        assert "session_turns" in content
+
+    def test_session_memory_empty_session(self, agent: KnowledgeAgent) -> None:
+        path = agent.save_session_memory()
+        assert path is None
