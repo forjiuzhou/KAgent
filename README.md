@@ -1,12 +1,14 @@
 # NoteWeaver
 
-> 一个安全、自主的个人知识管理 Agent。以 Markdown 为核心，让 AI 帮你构建和维护结构化的知识网络。
+> A knowledge harness for LLMs. 不是 chatbot，不是笔记应用——而是让 LLM 能够持续构建、维护和使用结构化知识库的运行时。
 
 ## 理念
 
-在 "哑巴 RAG 聊天" 和 "拥有 Shell 权限的全自主 Agent" 之间，存在一个**安全、专用、面向消费者**的甜点。
+ChatGPT 们只在 prompt 上下功夫：`用户 → prompt → 模型 → 回复 → 消失`。没有持久状态，没有知识积累。
 
-NoteWeaver 不是通用 Agent——它只做一件事：**帮你管理知识**。
+Claude Code 强大不是因为模型强，而是因为 **harness 强**——文件系统作为外部状态，tool calling 循环，权限管线，上下文管理。模型是引擎，harness 是整辆车。
+
+NoteWeaver 是知识工作领域的 harness。Claude Code 把代码世界变成了 agent 可维护的外部状态，我们把知识世界做同样的事。
 
 - **知识编译器**，不是知识检索器：持续构建结构化 Wiki，而非每次查询临时拼凑
 - **领域专用操作**，不是 Shell：10 种知识操作工具构成全部能力边界，安全由设计保证

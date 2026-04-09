@@ -1,6 +1,6 @@
-# NoteWeaver — 个人知识管理 Agent 设计讨论
+# NoteWeaver — Knowledge Harness for LLMs
 
-> 一个安全、自主的个人知识管理 Agent，以 Markdown 为核心，能自行整理、结构化、持久化知识，并从互联网拉取必要信息。面向 C 端用户，不依赖编程/Shell 等开发者抽象。
+> 一个面向知识工作的 Agent Harness。不是 chatbot，不是笔记应用——而是让 LLM 能够持续构建、维护和使用结构化知识库的运行时。Chatbot 只是界面，harness 才是产品。
 
 ---
 
@@ -1012,23 +1012,65 @@ NotebookLM                                      自动驾驶
 
 ---
 
-## 十二、Agent-First Software
+## 十二、Harness，不是 Chatbot
 
-这个项目的本质不是"一个支持 AI 的笔记应用"，而是在探索**当 Agent 成为第一公民后，文档系统应该长什么样**。
+### 核心认识
 
-Agent-First 的含义不是"有个聊天框"，而是：
-- 数据结构适合模型读写（frontmatter、渐进式披露、三级读取）
-- 对象模型适合模型区分职责（Hub/Canonical/Note/Archive/Preference）
-- 操作边界适合模型稳定执行（8 种工具 + 硬约束校验）
-- 文档关系适合模型跟踪（声明/使用分离——Hub 是索引、Canonical 是定义、其他是引用）
-- 运行时适合模型评估（capture→place→refine→link→evaluate→commit→reveal）
+这个项目不是"一个管理文件的 agent"或"一个更好的笔记应用"。它是**一个面向知识工作的 agent harness**——一个让 LLM 能够持续构建、维护和使用结构化知识库的运行时。
 
-文档系统如果不按 Agent-First 设计，大模型能力就只能停留在表层问答，无法进入真正的维护、组织、重构和持续协作。
+这个定位来自一个关键观察：**现有闭源 chatbot（ChatGPT、Gemini 等）只在 prompt 上下功夫，但对聊天的 harness 做得很差。** 它们的架构是 `用户 → prompt → 模型 → 回复 → 消失`——每次对话都是一次性的，没有持久状态，没有结构化的知识积累。
+
+Claude Code 之所以强大，不是因为模型比 GPT 强多少，而是因为它有精心设计的 harness：文件系统作为外部状态、tool calling 循环、权限管线、CLAUDE.md 配置、上下文压缩。模型是引擎，harness 是整辆车。
+
+### 模型 vs Harness 的职责分离
+
+| 模型负责 | Harness 负责 |
+|----------|-------------|
+| 理解自然语言 | 状态持久化（vault） |
+| 推理和规划 | 文档对象模型（Hub/Canonical/...） |
+| 生成内容 | 组织循环（对话→沉淀→整理） |
+| 局部决策 | 工具边界和安全约束 |
+| — | 渐进式披露和 token 管理 |
+| — | 用户偏好落地 |
+| — | 多端接入（CLI/Telegram/飞书） |
+| — | 版本控制和自愈 |
+
+### Prompt 只是冰山一角
+
+```
+用户看到的:  聊天界面（CLI / Telegram）
+             ↓
+Prompt 层:   system prompt（~900 tokens，三模式、工具表、写作规范）
+             ↓
+Harness 层:  ← 这才是产品的 90%
+  - Vault 数据层（文件 CRUD + 安全边界 + Git 事务）
+  - FTS5 搜索索引
+  - Frontmatter 硬约束校验
+  - 三级渐进式披露（scan/shallow/deep）
+  - 对话历史压缩和 tool result 清理
+  - 会话沉淀管道（对话→journal→digest→knowledge）
+  - 多平台网关（Telegram/飞书适配器）
+  - 配置管理（provider 抽象 + 偏好文档）
+             ↓
+模型层:      OpenAI / Anthropic / 任何兼容 API（可替换）
+```
+
+### 和参照物的关系
+
+| | ChatGPT | Claude Code | NoteWeaver |
+|---|---|---|---|
+| 模型层 | 强 | 强 | 依赖外部（可替换） |
+| Prompt 层 | 有 | 精心设计 | 精心设计 |
+| Harness 层 | 几乎没有 | 强（围绕代码） | 强（围绕知识） |
+| 外部状态 | 无（对话即弃） | 文件系统 | 结构化 Markdown vault |
+| 长期积累 | 不可能 | 代码越来越好 | 知识越来越丰富 |
+
+**一句话**：Claude Code 把"代码世界"变成了 agent 可维护的外部状态系统。我们把"知识世界"做同样的事。
 
 ---
 
 ## 十三、下一步
 
-1. **执行成功标准测试**：10 篇文章 → 编译 wiki → 综合查询 → 对比 RAG
-2. 实现 Telegram Bot 网关（MVP v2）
+1. **真实使用验证**：用真实的知识管理需求跑一段时间，验证三模式交互和沉淀管道
+2. 飞书 Bot 适配器
 3. 迭代
