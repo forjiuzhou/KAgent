@@ -253,32 +253,73 @@ class TestLongTermMemory:
 
 
 class TestFinalization:
-    def test_finalize_creates_all_artifacts(self, vault: Vault) -> None:
-        """_finalize_session should create transcript, session memory, and journal."""
+    def test_finalize_creates_all_artifacts_when_substantial(self, vault: Vault) -> None:
+        """_finalize_session creates transcript + memory always, journal when substantial."""
         from noteweaver.cli import _finalize_session
 
         agent = KnowledgeAgent(vault=vault, provider=MagicMock())
-        agent.messages.append({"role": "user", "content": "hello"})
-        agent.messages.append({"role": "assistant", "content": "world"})
+        # Simulate a write operation so the session is considered substantial
+        agent.messages.append({"role": "user", "content": "create a note"})
+        agent.messages.append({
+            "role": "assistant", "content": None,
+            "tool_calls": [{"id": "tc1", "function": {
+                "name": "write_page",
+                "arguments": '{"path": "wiki/concepts/test.md", "content": "..."}',
+            }}],
+        })
+        agent.messages.append({"role": "tool", "tool_call_id": "tc1", "content": "OK"})
+        agent.messages.append({"role": "assistant", "content": "Done!"})
 
-        exchanges = [{"user": "hello", "tools": [], "reply": "world"}]
+        exchanges = [{"user": "create a note", "tools": ["write_page"], "reply": "Done!"}]
         _finalize_session(vault, agent, exchanges, "chat")
 
         # Transcript saved
         transcript_dir = vault.meta_dir / "transcripts"
         assert transcript_dir.exists()
-        transcripts = list(transcript_dir.glob("*.json"))
-        assert len(transcripts) == 1
+        assert len(list(transcript_dir.glob("*.json"))) == 1
 
         # Session memory saved
-        mem = vault.meta_dir / "session-memory.md"
-        assert mem.exists()
+        assert (vault.meta_dir / "session-memory.md").exists()
 
-        # Journal created
+        # Journal created (session had a write operation)
         from datetime import datetime
         today = datetime.now().strftime("%Y-%m-%d")
         journal_path = vault.wiki_dir / "journals" / f"{today}.md"
         assert journal_path.exists()
-        content = journal_path.read_text(encoding="utf-8")
-        assert "hello" in content
-        assert "Chat session" in content
+
+    def test_finalize_skips_journal_for_short_chat(self, vault: Vault) -> None:
+        """Short chat with no writes should not produce a journal entry."""
+        from noteweaver.cli import _finalize_session
+
+        agent = KnowledgeAgent(vault=vault, provider=MagicMock())
+        agent.messages.append({"role": "user", "content": "hi"})
+        agent.messages.append({"role": "assistant", "content": "hello"})
+
+        exchanges = [{"user": "hi", "tools": [], "reply": "hello"}]
+        _finalize_session(vault, agent, exchanges, "chat")
+
+        # Transcript and session memory are always saved
+        assert len(list((vault.meta_dir / "transcripts").glob("*.json"))) == 1
+        assert (vault.meta_dir / "session-memory.md").exists()
+
+        # But no journal for a trivial chat
+        from datetime import datetime
+        today = datetime.now().strftime("%Y-%m-%d")
+        journal_path = vault.wiki_dir / "journals" / f"{today}.md"
+        assert not journal_path.exists()
+
+    def test_finalize_always_journals_for_system_commands(self, vault: Vault) -> None:
+        """System commands (ingest, lint, digest) always produce a journal."""
+        from noteweaver.cli import _finalize_session
+
+        agent = KnowledgeAgent(vault=vault, provider=MagicMock())
+        agent.messages.append({"role": "user", "content": "ingest"})
+        agent.messages.append({"role": "assistant", "content": "done"})
+
+        exchanges = [{"user": "ingest", "tools": [], "reply": "done"}]
+        _finalize_session(vault, agent, exchanges, "ingest")
+
+        from datetime import datetime
+        today = datetime.now().strftime("%Y-%m-%d")
+        journal_path = vault.wiki_dir / "journals" / f"{today}.md"
+        assert journal_path.exists()
