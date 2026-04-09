@@ -108,6 +108,7 @@ PROMPT_TOOLS = """\
 | `import_files(directory)` | Batch import .md files. Auto-classifies. |
 | `archive_page(path, reason)` | Move to wiki/archive/. Never delete. |
 | `vault_stats()` | Health metrics: orphan rate, hub coverage, etc. |
+| `get_backlinks(title)` | Find all pages that link to a given page. |
 | `append_log(type, title)` | Log what you did. After significant ops only. |
 
 ## Rules
