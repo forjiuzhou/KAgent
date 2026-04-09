@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import os
 import sys
 from pathlib import Path
@@ -16,6 +17,8 @@ from prompt_toolkit.history import FileHistory
 from noteweaver.vault import Vault
 from noteweaver.agent import KnowledgeAgent
 from noteweaver.config import Config
+
+log = logging.getLogger(__name__)
 
 THEME = Theme({
     "tool": "dim cyan",
@@ -46,6 +49,32 @@ def cmd_init(vault_path: Path) -> None:
     console.print("[info]  sources/   — drop your raw materials here[/info]")
     console.print("[info]  wiki/      — agent-maintained knowledge[/info]")
     console.print("[info]  .schema/   — vault conventions[/info]")
+
+
+def _finalize_session(
+    vault: Vault,
+    agent: KnowledgeAgent,
+    exchanges: list[dict],
+    session_type: str = "chat",
+) -> None:
+    """Save transcript, session memory, and journal at end of a session."""
+    try:
+        transcript_path = agent.save_transcript()
+        log.debug("Transcript saved to %s", transcript_path)
+    except Exception as e:
+        log.warning("Failed to save transcript: %s", e)
+        transcript_path = None
+
+    try:
+        agent.save_session_memory()
+    except Exception as e:
+        log.warning("Failed to save session memory: %s", e)
+
+    if exchanges:
+        _save_session_journal(
+            vault, agent, exchanges, session_type,
+            transcript_ref=str(transcript_path) if transcript_path else None,
+        )
 
 
 def cmd_chat(vault_path: Path) -> None:
@@ -97,19 +126,21 @@ def cmd_chat(vault_path: Path) -> None:
             exchange["reply"] = f"(error: {e})"
         exchanges.append(exchange)
 
-    if exchanges:
-        _save_session_journal(vault, exchanges, "chat")
+    _finalize_session(vault, agent, exchanges, "chat")
 
 
 def _save_session_journal(
     vault: Vault,
+    agent: KnowledgeAgent,
     exchanges: list[dict],
     session_type: str = "chat",
+    *,
+    transcript_ref: str | None = None,
 ) -> None:
     """Append a session record to today's journal.
 
-    Uses local time for journal dates (a user at UTC+8 at 11pm should get
-    today's date, not tomorrow's UTC date).
+    Uses the full transcript from ``agent.messages`` for richer content when
+    available, falling back to the exchanges list for backward compatibility.
     """
     from datetime import datetime
 
@@ -118,15 +149,52 @@ def _save_session_journal(
     journal_path = f"wiki/journals/{today}.md"
 
     lines = [f"\n### {session_type.title()} session ({now})\n"]
-    for ex in exchanges[:15]:
-        user_short = ex["user"][:120] + "..." if len(ex["user"]) > 120 else ex["user"]
+
+    # Extract richer information from the agent transcript
+    pages_touched: list[str] = []
+    tools_used: list[str] = []
+    for m in agent.messages[1:]:
+        if not isinstance(m, dict):
+            continue
+        if m.get("role") == "assistant" and m.get("tool_calls"):
+            for tc in m["tool_calls"]:
+                fn = tc.get("function", {}) if isinstance(tc, dict) else {}
+                name = fn.get("name", "")
+                if name and name not in tools_used:
+                    tools_used.append(name)
+                try:
+                    import json
+                    args = json.loads(fn.get("arguments", "{}"))
+                    path = args.get("path", "")
+                    if path and path not in pages_touched:
+                        pages_touched.append(path)
+                except (json.JSONDecodeError, TypeError, AttributeError):
+                    pass
+
+    for ex in exchanges[:20]:
+        user_text = ex["user"]
+        user_short = user_text[:500] + "..." if len(user_text) > 500 else user_text
         lines.append(f"**User:** {user_short}")
+
         if ex.get("tools"):
-            tools_str = ", ".join(t.lstrip("↳ ").split("(")[0].strip() for t in ex["tools"][:5])
-            lines.append(f"*Tools:* {tools_str}")
+            tools_display = []
+            for t in ex["tools"][:8]:
+                cleaned = t.lstrip("↳ ").strip()
+                tools_display.append(cleaned)
+            lines.append(f"*Tools:* {', '.join(tools_display)}")
+
         if ex.get("reply"):
-            reply_short = ex["reply"][:200] + "..." if len(ex["reply"]) > 200 else ex["reply"]
+            reply_text = ex["reply"]
+            reply_short = reply_text[:600] + "..." if len(reply_text) > 600 else reply_text
             lines.append(f"**Agent:** {reply_short}")
+        lines.append("")
+
+    if pages_touched:
+        lines.append(f"*Pages touched:* {', '.join(pages_touched[:15])}")
+        lines.append("")
+
+    if transcript_ref:
+        lines.append(f"*Transcript:* `{transcript_ref}`")
         lines.append("")
 
     entry = "\n".join(lines)
@@ -202,7 +270,7 @@ def cmd_ingest(vault_path: Path, url: str) -> None:
                 exchange["reply"] = chunk
                 console.print()
                 console.print(Markdown(chunk))
-        _save_session_journal(vault, [exchange], "ingest")
+        _finalize_session(vault, agent, [exchange], "ingest")
     except Exception as e:
         console.print(f"[red]Error: {e}[/red]")
         sys.exit(1)
@@ -237,7 +305,7 @@ def cmd_lint(vault_path: Path) -> None:
 
         if exchange["reply"]:
             vault.append_log("lint", "Health check completed", exchange["reply"][:500])
-        _save_session_journal(vault, [exchange], "lint")
+        _finalize_session(vault, agent, [exchange], "lint")
     except Exception as e:
         console.print(f"[red]Error: {e}[/red]")
         sys.exit(1)
@@ -254,6 +322,21 @@ def cmd_digest(vault_path: Path) -> None:
     vault, agent = _make_agent(vault_path)
 
     console.print("[bold]Reviewing recent journals for insights to extract...[/bold]\n")
+
+    # Check for available transcripts
+    transcript_dir = vault.meta_dir / "transcripts"
+    transcript_hint = ""
+    if transcript_dir.is_dir():
+        transcripts = sorted(transcript_dir.glob("*.json"))
+        if transcripts:
+            recent = [t.name for t in transcripts[-5:]]
+            transcript_hint = (
+                "\n\nRecent conversation transcripts are available at "
+                f".meta/transcripts/. Recent files: {', '.join(recent)}. "
+                "Use read_transcript(path) to access the full conversation "
+                "when a journal entry mentions something worth deeper review."
+            )
+
     prompt = (
         "Please review the recent journal entries in wiki/journals/. "
         "For each journal, look for:\n"
@@ -266,6 +349,7 @@ def cmd_digest(vault_path: Path) -> None:
         "- Or report what you found and ask whether to create it\n\n"
         "This is a distillation pass — turning raw conversation logs into "
         "structured knowledge."
+        + transcript_hint
     )
     exchange: dict = {"user": "digest", "tools": [], "reply": ""}
     try:
@@ -278,7 +362,7 @@ def cmd_digest(vault_path: Path) -> None:
                 console.print()
                 console.print(Markdown(chunk))
 
-        _save_session_journal(vault, [exchange], "digest")
+        _finalize_session(vault, agent, [exchange], "digest")
     except Exception as e:
         console.print(f"[red]Error: {e}[/red]")
         sys.exit(1)
@@ -355,6 +439,18 @@ def cmd_status(vault_path: Path) -> None:
                 console.print(f"  {entry.lstrip('# ')}")
     except FileNotFoundError:
         pass
+
+    # Session memory status
+    mem_path = vault.meta_dir / "session-memory.md"
+    if mem_path.is_file():
+        console.print("\n[info]Session memory: active[/info]")
+
+    # Transcript count
+    transcript_dir = vault.meta_dir / "transcripts"
+    if transcript_dir.is_dir():
+        count = len(list(transcript_dir.glob("*.json")))
+        if count:
+            console.print(f"[info]Transcripts:    {count} saved[/info]")
 
 
 def main() -> None:

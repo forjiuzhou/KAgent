@@ -265,6 +265,32 @@ TOOL_SCHEMAS: list[dict] = [
     {
         "type": "function",
         "function": {
+            "name": "read_transcript",
+            "description": (
+                "Read a saved conversation transcript from .meta/transcripts/. "
+                "Use this during digest to access full conversation details "
+                "when a journal entry references something worth deeper review. "
+                "Returns the conversation as structured text."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "filename": {
+                        "type": "string",
+                        "description": "Transcript filename, e.g. '2025-04-09_153000.json'",
+                    },
+                    "max_chars": {
+                        "type": "integer",
+                        "description": "Optional. Max characters to return. Default: full transcript.",
+                    },
+                },
+                "required": ["filename"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "fetch_url",
             "description": (
                 "Fetch a web page and extract its main content as markdown. "
@@ -434,6 +460,50 @@ def handle_get_backlinks(vault: Vault, title: str) -> str:
     return "\n".join(lines)
 
 
+def handle_read_transcript(vault: Vault, filename: str, max_chars: int = 0) -> str:
+    """Read a saved conversation transcript from .meta/transcripts/."""
+    import json as _json
+
+    safe_name = filename.replace("/", "").replace("\\", "").replace("..", "")
+    path = vault.meta_dir / "transcripts" / safe_name
+    if not path.is_file():
+        available = []
+        transcript_dir = vault.meta_dir / "transcripts"
+        if transcript_dir.is_dir():
+            available = sorted(f.name for f in transcript_dir.glob("*.json"))[-10:]
+        hint = f" Available: {', '.join(available)}" if available else ""
+        return f"Error: transcript not found: {safe_name}.{hint}"
+
+    try:
+        data = _json.loads(path.read_text(encoding="utf-8"))
+    except (_json.JSONDecodeError, OSError) as e:
+        return f"Error reading transcript: {e}"
+
+    lines = []
+    for m in data:
+        role = m.get("role", "?")
+        content = m.get("content", "")
+        if role == "system":
+            continue
+        if role == "tool":
+            tool_id = m.get("tool_call_id", "")
+            short = (content[:300] + "...") if len(str(content)) > 300 else content
+            lines.append(f"[tool result {tool_id}]: {short}")
+        elif role == "assistant" and m.get("tool_calls"):
+            for tc in m["tool_calls"]:
+                fn = tc.get("function", {}) if isinstance(tc, dict) else {}
+                lines.append(f"[assistant calls {fn.get('name', '?')}({fn.get('arguments', '')})]")
+            if content:
+                lines.append(f"Assistant: {content}")
+        elif content:
+            lines.append(f"{role.title()}: {content}")
+
+    result = "\n\n".join(lines)
+    if max_chars and max_chars > 0 and len(result) > max_chars:
+        result = result[:max_chars] + "\n\n... (truncated)"
+    return result
+
+
 def handle_fetch_url(vault: Vault, url: str) -> str:
     try:
         import httpx
@@ -492,6 +562,7 @@ TOOL_HANDLERS: dict[str, Any] = {
     "import_files": handle_import_files,
     "vault_stats": handle_vault_stats,
     "get_backlinks": handle_get_backlinks,
+    "read_transcript": handle_read_transcript,
     "fetch_url": handle_fetch_url,
 }
 
