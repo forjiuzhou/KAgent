@@ -115,7 +115,12 @@ PROMPT_TOOLS = """\
 |------|-------------|
 | `list_page_summaries(dir)` | Cheap scan (~30 tok/page). Good starting point. |
 | `read_page(path, max_chars?)` | max_chars=500 for quick check; omit for full. |
-| `write_page(path, content)` | Create/update wiki page. Valid frontmatter required. |
+| `find_existing_page(title)` | Check for duplicates BEFORE creating a page. |
+| `write_page(path, content)` | Create/overwrite full page. Use fine-grained tools when possible. |
+| `append_section(path, heading, content)` | Add a new section to a page. |
+| `append_to_section(path, heading, content)` | Add content to an existing section. |
+| `update_frontmatter(path, fields)` | Update metadata without touching body. |
+| `add_related_link(path, title)` | Add a [[link]] to Related section. |
 | `search_vault(query)` | FTS5 keyword search across all pages. |
 | `save_source(path, content)` | Save to sources/ (immutable, create-only). |
 | `fetch_url(url)` | Fetch web page → markdown. Then save_source + wiki pages. |
@@ -134,6 +139,11 @@ PROMPT_TOOLS = """\
 - Create Hub when 3+ pages accumulate on a topic.
 - Respond in user's language. Be concise.
 - For detailed conventions: `read_page(".schema/schema.md")`
+- **Before creating a page**: call `find_existing_page` to check for duplicates. \
+  Update existing pages (append_section) rather than creating new ones.
+- **Prefer fine-grained edits**: use `append_section`, `append_to_section`, \
+  `update_frontmatter`, `add_related_link` instead of full-page `write_page` \
+  when you only need to add or update part of a page.
 
 If vault is empty, welcome the user and suggest what they can do.
 """
@@ -321,14 +331,42 @@ class KnowledgeAgent:
         topic_short = last_user[:200] + ("..." if len(last_user) > 200 else "")
         agent_short = last_agent[:300] + ("..." if len(last_agent) > 300 else "")
 
+        # Build active workset from pages' tags
+        active_tags: dict[str, int] = {}
+        for p in pages:
+            try:
+                content_raw = self.vault.read_file(p)
+                from noteweaver.frontmatter import extract_frontmatter
+                fm = extract_frontmatter(content_raw)
+                if fm and fm.get("tags"):
+                    for tag in fm["tags"]:
+                        active_tags[tag] = active_tags.get(tag, 0) + 1
+            except (FileNotFoundError, PermissionError):
+                pass
+
+        # Merge with previous workset (carry forward topics from recent sessions)
+        prev_mem = self._load_session_memory()
+        prev_topics: list[str] = []
+        if prev_mem:
+            for line in prev_mem.split("\n"):
+                if line.startswith("Recent topics:"):
+                    prev_topics = [
+                        t.strip() for t in line.split(":", 1)[1].split(",")
+                        if t.strip()
+                    ]
+
+        # Combine: current tags (ranked by frequency) + carried-forward topics
+        ranked_tags = sorted(active_tags, key=active_tags.get, reverse=True)
+        all_topics = list(dict.fromkeys(ranked_tags + prev_topics))[:10]
+
         lines = [
-            f"---",
+            "---",
             f"updated: {now}",
             f"session_turns: {turns}",
-            f"---",
-            f"",
-            f"## Last Session",
-            f"",
+            "---",
+            "",
+            "## Last Session",
+            "",
             f"Topic: {topic_short}",
         ]
         if pages:
@@ -342,10 +380,20 @@ class KnowledgeAgent:
             lines.append(f"{', '.join(tools[:15])}")
             lines.append("")
 
-        content = "\n".join(lines) + "\n"
+        # Active workset section
+        if all_topics or pages:
+            lines.append("## Active Workset")
+            if all_topics:
+                lines.append(f"Recent topics: {', '.join(all_topics)}")
+            wiki_pages = [p for p in pages if p.startswith("wiki/") and "/archive/" not in p]
+            if wiki_pages:
+                lines.append(f"Active pages: {', '.join(wiki_pages[:8])}")
+            lines.append("")
+
+        result = "\n".join(lines) + "\n"
         mem_path = self.vault.meta_dir / "session-memory.md"
         mem_path.parent.mkdir(parents=True, exist_ok=True)
-        mem_path.write_text(content, encoding="utf-8")
+        mem_path.write_text(result, encoding="utf-8")
         return mem_path
 
     # ------------------------------------------------------------------
