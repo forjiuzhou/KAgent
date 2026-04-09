@@ -14,7 +14,6 @@ import pytest
 from noteweaver.tools.policy import (
     PolicyContext,
     check_pre_dispatch,
-    MIN_NOTE_BODY_CHARS,
     MIN_SYNTHESIS_LINKS,
     _extract_type,
     _strip_frontmatter,
@@ -111,76 +110,36 @@ class TestReadBeforeWrite:
 
 
 # ======================================================================
-# Minimum note body length
+# Note pages — no minimum length (notes are WIP by definition)
 # ======================================================================
 
-def _make_note_content(body_len: int) -> str:
-    """Build a note page with a body of approximately body_len chars."""
+def _make_note_content(body: str = "Short concept.") -> str:
     fm = (
         "---\ntitle: Test Note\ntype: note\n"
         "summary: A test\ntags: [test]\n"
         "created: 2025-04-09\nupdated: 2025-04-09\n---\n\n"
     )
-    body = "# Test Note\n\n" + ("x" * max(0, body_len - 14)) + "\n\n## Related\n"
-    return fm + body
+    return fm + f"# Test Note\n\n{body}\n\n## Related\n"
 
 
-class TestNoteMinLength:
-    def test_short_note_blocked(self) -> None:
+class TestNoteNoLengthGate:
+    def test_short_note_allowed(self) -> None:
+        """Notes have no minimum length — they're WIP by definition."""
         ctx = PolicyContext(attended=True)
         ctx.record_tool_call("find_existing_page", {"title": "Test Note"})
         v = check_pre_dispatch(
             "write_page",
-            {"path": "wiki/concepts/test.md", "content": _make_note_content(50)},
+            {"path": "wiki/concepts/test.md", "content": _make_note_content("Brief.")},
             ctx,
         )
-        assert not v.allowed
-        assert str(MIN_NOTE_BODY_CHARS) in (v.warning or "")
+        assert v.allowed
 
-    def test_long_enough_note_allowed(self) -> None:
+    def test_long_note_also_allowed(self) -> None:
         ctx = PolicyContext(attended=True)
         ctx.record_tool_call("find_existing_page", {"title": "Test Note"})
         v = check_pre_dispatch(
             "write_page",
-            {"path": "wiki/concepts/test.md", "content": _make_note_content(250)},
-            ctx,
-        )
-        assert v.allowed
-
-    def test_exact_threshold_allowed(self) -> None:
-        ctx = PolicyContext(attended=True)
-        ctx.record_tool_call("find_existing_page", {"title": "Test Note"})
-        v = check_pre_dispatch(
-            "write_page",
-            {"path": "wiki/concepts/test.md", "content": _make_note_content(MIN_NOTE_BODY_CHARS)},
-            ctx,
-        )
-        assert v.allowed
-
-    def test_canonical_not_affected_by_length_check(self) -> None:
-        """Canonical has its own gate (sources), not length."""
-        ctx = PolicyContext(attended=True)
-        ctx.record_tool_call("find_existing_page", {"title": "Test"})
-        content = (
-            "---\ntitle: Test\ntype: canonical\n"
-            "summary: A test\ntags: [test]\nsources: [textbook]\n"
-            "created: 2025-04-09\nupdated: 2025-04-09\n---\n\n"
-            "Short but has sources.\n"
-        )
-        v = check_pre_dispatch(
-            "write_page",
-            {"path": "wiki/concepts/test.md", "content": content},
-            ctx,
-        )
-        assert v.allowed
-
-    def test_overwrite_existing_note_bypasses_length(self) -> None:
-        """Overwriting a known page is always OK regardless of length."""
-        ctx = PolicyContext(attended=True)
-        ctx.record_tool_call("read_page", {"path": "wiki/concepts/existing.md"})
-        v = check_pre_dispatch(
-            "write_page",
-            {"path": "wiki/concepts/existing.md", "content": _make_note_content(50)},
+            {"path": "wiki/concepts/test.md", "content": _make_note_content("x" * 500)},
             ctx,
         )
         assert v.allowed
@@ -255,31 +214,13 @@ class TestSynthesisLinkCount:
 
 
 # ======================================================================
-# Preferences.md gate
+# Preferences.md gate — allow but notify
 # ======================================================================
 
 class TestPreferencesGate:
-    def test_prefs_blocked_by_default(self) -> None:
+    def test_prefs_allowed_with_warning(self) -> None:
+        """Preferences writes are allowed but carry a notify-user warning."""
         ctx = PolicyContext(attended=True)
-        v = check_pre_dispatch(
-            "write_page",
-            {"path": ".schema/preferences.md", "content": "..."},
-            ctx,
-        )
-        assert not v.allowed
-        assert "preferences" in (v.warning or "").lower()
-
-    def test_prefs_allowed_when_user_requested(self) -> None:
-        ctx = PolicyContext(attended=True)
-        ctx.user_requested_prefs_edit = True
-        v = check_pre_dispatch(
-            "write_page",
-            {"path": ".schema/preferences.md", "content": "..."},
-            ctx,
-        )
-        # write_page still goes through dedup check, but prefs gate passes
-        # For prefs, dedup doesn't apply (it's a known file), so let's
-        # also mark it as read
         ctx.record_tool_call("read_page", {"path": ".schema/preferences.md"})
         v = check_pre_dispatch(
             "write_page",
@@ -287,20 +228,11 @@ class TestPreferencesGate:
             ctx,
         )
         assert v.allowed
+        assert v.warning is not None
+        assert "must tell the user" in v.warning.lower() or "must" in v.warning.lower()
 
-    def test_prefs_append_blocked_without_request(self) -> None:
+    def test_prefs_append_allowed_with_warning(self) -> None:
         ctx = PolicyContext(attended=True)
-        ctx.record_tool_call("read_page", {"path": ".schema/preferences.md"})
-        v = check_pre_dispatch(
-            "append_section",
-            {"path": ".schema/preferences.md", "heading": "New", "content": "..."},
-            ctx,
-        )
-        assert not v.allowed
-
-    def test_prefs_append_allowed_with_request(self) -> None:
-        ctx = PolicyContext(attended=True)
-        ctx.user_requested_prefs_edit = True
         ctx.record_tool_call("read_page", {"path": ".schema/preferences.md"})
         v = check_pre_dispatch(
             "append_section",
@@ -308,10 +240,11 @@ class TestPreferencesGate:
             ctx,
         )
         assert v.allowed
+        assert v.warning is not None
 
-    def test_unattended_blocks_prefs_even_with_flag(self) -> None:
+    def test_unattended_blocks_prefs(self) -> None:
+        """Unattended mode still blocks all content writes including prefs."""
         ctx = PolicyContext(attended=False)
-        ctx.user_requested_prefs_edit = True
         v = check_pre_dispatch(
             "write_page",
             {"path": ".schema/preferences.md", "content": "..."},

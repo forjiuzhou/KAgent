@@ -828,12 +828,6 @@ class KnowledgeAgent:
         self.messages.append({"role": "user", "content": user_message})
         self._update_session_summary()
 
-        # Detect explicit preference-edit intent from user message
-        _prefs_signals = ("preference", "偏好", "设置", "设定", "配置")
-        msg_lower = user_message.lower()
-        if any(s in msg_lower for s in _prefs_signals):
-            self._policy_ctx.user_requested_prefs_edit = True
-
         short_msg = (
             user_message[:60] + "..." if len(user_message) > 60 else user_message
         )
@@ -879,6 +873,8 @@ class KnowledgeAgent:
                                 f"Error executing {tool_call.name}: "
                                 f"{type(exc).__name__}: {exc}"
                             )
+                        if verdict.warning:
+                            result += f"\n\n⚠️ {verdict.warning}"
                     self._policy_ctx.record_tool_call(
                         tool_call.name, fn_args,
                     )

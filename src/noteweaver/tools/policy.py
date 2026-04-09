@@ -16,9 +16,8 @@ Two orthogonal dimensions of control:
 Content-layer gates (attended mode):
    - All content writes: target page must have been read in this session
    - write_page (new file): find_existing_page must have been called
-   - write_page (note): content body ≥ 200 chars (not a fragment)
    - write_page (synthesis): must contain ≥ 2 [[wiki-links]]
-   - .schema/preferences.md: only when user explicitly requests it
+   - .schema/preferences.md: allowed, but agent must inform user what changed
 """
 
 from __future__ import annotations
@@ -45,11 +44,6 @@ _STRUCTURE_PATHS = frozenset({"wiki/index.md", "wiki/log.md"})
 _STRUCTURE_TOOLS = frozenset({"append_log", "add_related_link"})
 
 _PREFERENCES_PATH = ".schema/preferences.md"
-
-# Minimum body length for a new note page (below frontmatter).
-# Fragments shorter than this should be appended to an existing page
-# or captured in a journal instead.
-MIN_NOTE_BODY_CHARS = 200
 
 # Minimum number of [[wiki-links]] required in synthesis content.
 MIN_SYNTHESIS_LINKS = 2
@@ -130,7 +124,6 @@ class PolicyContext:
     pages_written: list[str] = field(default_factory=list)
     tools_called: list[str] = field(default_factory=list)
     navigation_done: bool = False
-    user_requested_prefs_edit: bool = False
 
     def record_tool_call(self, name: str, args: dict) -> None:
         """Record a tool invocation for policy tracking."""
@@ -206,14 +199,14 @@ def check_pre_dispatch(
 
     # --- Attended mode, content/source target: per-type gates ---
 
-    # preferences.md: only when user explicitly requested
-    if path == _PREFERENCES_PATH and not ctx.user_requested_prefs_edit:
+    # preferences.md: allowed, but must inform the user what changed
+    if path == _PREFERENCES_PATH:
         return PolicyVerdict(
-            allowed=False,
+            allowed=True,
             warning=(
-                "Policy: .schema/preferences.md can only be modified when the "
-                "user explicitly asks to change their preferences. Ask the user "
-                "first, e.g. 'Would you like me to update your preferences?'"
+                "You are modifying user preferences (.schema/preferences.md). "
+                "After writing, you MUST tell the user exactly what was changed "
+                "and why, so they can review or revert if needed."
             ),
         )
 
@@ -294,28 +287,15 @@ def _check_write_page(
 def _check_content_quality(path: str, content: str) -> PolicyVerdict:
     """Type-specific quality checks on page content.
 
-    - note: body must be ≥ MIN_NOTE_BODY_CHARS
     - synthesis: must contain ≥ MIN_SYNTHESIS_LINKS [[wiki-links]]
     - canonical: sources checked by frontmatter.py (not duplicated here)
+    - note: no minimum length — notes are WIP by definition and may be
+      short concept definitions or placeholders for future expansion
     """
     if not content:
         return PolicyVerdict(allowed=True)
 
-    # Extract type from frontmatter (lightweight parse)
     page_type = _extract_type(content)
-
-    if page_type == "note":
-        body = _strip_frontmatter(content)
-        if len(body.strip()) < MIN_NOTE_BODY_CHARS:
-            return PolicyVerdict(
-                allowed=False,
-                warning=(
-                    f"Policy: note pages must have ≥{MIN_NOTE_BODY_CHARS} chars "
-                    f"of body content (currently {len(body.strip())}). "
-                    "Short fragments should be appended to an existing page "
-                    "(append_section) or captured in a journal instead."
-                ),
-            )
 
     if page_type == "synthesis":
         link_count = len(_WIKI_LINK_RE.findall(content))
