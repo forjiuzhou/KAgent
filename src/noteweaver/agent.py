@@ -697,6 +697,8 @@ class KnowledgeAgent:
         - All writes within a single chat turn are batched into one git commit
         - Transcript is append-only; compression only affects the query view
         - Tool results are tiered: full → preview → placeholder
+        - API errors are retried at the provider layer (retry.py)
+        - Tool execution errors are captured and fed back to the model
         """
         self.messages.append({"role": "user", "content": user_message})
         self._update_session_summary()
@@ -731,7 +733,15 @@ class KnowledgeAgent:
 
                     yield f"  ↳ {tool_call.name}({self._summarize_args(fn_args)})"
 
-                    result = dispatch_tool(self.vault, tool_call.name, fn_args)
+                    try:
+                        result = dispatch_tool(
+                            self.vault, tool_call.name, fn_args
+                        )
+                    except Exception as exc:
+                        result = (
+                            f"Error executing {tool_call.name}: "
+                            f"{type(exc).__name__}: {exc}"
+                        )
 
                     if len(result) > self._TOOL_RESULT_MAX:
                         result = (
@@ -748,6 +758,80 @@ class KnowledgeAgent:
             yield "(reached maximum steps)"
         finally:
             self._end_operation(short_msg)
+
+    # ------------------------------------------------------------------
+    # Journal generation (LLM-assisted)
+    # ------------------------------------------------------------------
+
+    def generate_journal_summary(self) -> dict:
+        """Use one LLM call to generate structured journal slots.
+
+        Returns a dict with keys: insights, decisions, open_questions, follow_ups.
+        Falls back to empty slots if the LLM call fails.
+        """
+        if len(self.messages) <= 2:
+            return {"insights": [], "decisions": [], "open_questions": [], "follow_ups": []}
+
+        # Build a compact conversation digest for the LLM
+        digest_parts: list[str] = []
+        for m in self.messages[1:]:
+            role = _msg_role(m)
+            content = _msg_content(m)
+            if role == "user" and content:
+                digest_parts.append(f"User: {content[:500]}")
+            elif role == "assistant" and content:
+                digest_parts.append(f"Agent: {content[:500]}")
+        conversation_text = "\n".join(digest_parts[-30:])
+
+        prompt_messages = [
+            {"role": "system", "content": (
+                "You are a concise note-taking assistant. Given a conversation, "
+                "extract structured information. Respond ONLY in the exact format below, "
+                "with one item per line. Use the user's language. Be brief (one sentence per item).\n\n"
+                "INSIGHTS:\n- (key takeaways or conclusions from the conversation)\n\n"
+                "DECISIONS:\n- (any decisions made during the conversation)\n\n"
+                "OPEN_QUESTIONS:\n- (unresolved questions or topics to explore further)\n\n"
+                "FOLLOW_UPS:\n- (concrete next actions or things to do)\n\n"
+                "If a section has nothing, write - (none)\n"
+            )},
+            {"role": "user", "content": f"Extract from this conversation:\n\n{conversation_text}"},
+        ]
+
+        try:
+            raw = self.provider.simple_completion(self.model, prompt_messages)
+            if not raw:
+                return {"insights": [], "decisions": [], "open_questions": [], "follow_ups": []}
+            return self._parse_journal_sections(raw)
+        except Exception:
+            return {"insights": [], "decisions": [], "open_questions": [], "follow_ups": []}
+
+    @staticmethod
+    def _parse_journal_sections(text: str) -> dict:
+        """Parse LLM output into structured journal slots."""
+        sections: dict[str, list[str]] = {
+            "insights": [], "decisions": [], "open_questions": [], "follow_ups": [],
+        }
+        current_key: str | None = None
+        key_map = {
+            "INSIGHTS": "insights",
+            "DECISIONS": "decisions",
+            "OPEN_QUESTIONS": "open_questions",
+            "FOLLOW_UPS": "follow_ups",
+            "FOLLOW-UPS": "follow_ups",
+        }
+
+        for line in text.split("\n"):
+            stripped = line.strip()
+            upper = stripped.rstrip(":").upper()
+            if upper in key_map:
+                current_key = key_map[upper]
+                continue
+            if current_key and stripped.startswith("- "):
+                item = stripped[2:].strip()
+                if item and item.lower() != "(none)":
+                    sections[current_key].append(item)
+
+        return sections
 
     # ------------------------------------------------------------------
     # Sizing helpers

@@ -10,6 +10,7 @@ import json
 from typing import Any
 
 from noteweaver.adapters.provider import LLMProvider, CompletionResult, ToolCall
+from noteweaver.adapters.retry import with_retry
 
 
 def _openai_tools_to_anthropic(tools: list[dict]) -> list[dict]:
@@ -148,7 +149,7 @@ class AnthropicProvider(LLMProvider):
         if system:
             kwargs["system"] = system
 
-        response = self.client.messages.create(**kwargs)
+        response = with_retry(self.client.messages.create, **kwargs)
 
         text_parts: list[str] = []
         tool_calls: list[ToolCall] = []
@@ -168,6 +169,20 @@ class AnthropicProvider(LLMProvider):
 
         raw_message = self._to_openai_message(content, tool_calls)
         return result, raw_message
+
+    def simple_completion(self, model: str, messages: list[dict]) -> str | None:
+        """Simple completion without tools — used for journal generation."""
+        system, conversation = _build_anthropic_messages(messages)
+        kwargs: dict[str, Any] = {
+            "model": model,
+            "max_tokens": 2048,
+            "messages": conversation,
+        }
+        if system:
+            kwargs["system"] = system
+        response = with_retry(self.client.messages.create, **kwargs)
+        text_parts = [b.text for b in response.content if b.type == "text"]
+        return "\n".join(text_parts) if text_parts else None
 
     @staticmethod
     def _to_openai_message(content: str | None, tool_calls: list[ToolCall]) -> dict:
