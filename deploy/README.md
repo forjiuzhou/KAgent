@@ -16,8 +16,8 @@ Two deployment methods are provided: **Docker** (recommended) and **traditional 
 
 ```bash
 # 1. Clone the repository
-git clone https://github.com/forjiuzhou/KAgent.git
-cd KAgent
+git clone https://github.com/forjiuzhou/NoteWeaver.git
+cd NoteWeaver
 
 # 2. Create environment file
 cp .env.example .env
@@ -49,7 +49,7 @@ docker compose build
 docker compose up -d
 
 # Access the vault data
-docker volume inspect kagent_vault_data
+docker volume inspect noteweaver_vault_data
 # The volume is mounted at /data/vault inside the container
 
 # Run a one-off command (e.g. nw status)
@@ -76,7 +76,7 @@ services:
 
 ```bash
 # On a fresh Ubuntu 22.04+ / Debian 12+ VPS (run as root):
-curl -sSL https://raw.githubusercontent.com/forjiuzhou/KAgent/main/deploy/setup.sh | sudo bash
+curl -sSL https://raw.githubusercontent.com/forjiuzhou/NoteWeaver/main/deploy/setup.sh | sudo bash
 ```
 
 This script will:
@@ -111,8 +111,8 @@ sudo adduser noteweaver
 sudo su - noteweaver
 
 # 2. Install
-git clone https://github.com/forjiuzhou/KAgent.git
-cd KAgent
+git clone https://github.com/forjiuzhou/NoteWeaver.git
+cd NoteWeaver
 python3 -m venv ~/.nw-venv
 source ~/.nw-venv/bin/activate
 pip install -e ".[all]"
@@ -167,8 +167,9 @@ brew install syncthing
 | `NW_VAULT` | No | ./vault | Vault directory path |
 | `NW_DIGEST_INTERVAL_HOURS` | No | 6 | Hours between automatic digest |
 | `NW_LINT_INTERVAL_HOURS` | No | 24 | Hours between automatic lint |
+| `NW_NOTIFY_HOUR` | No | 9 | Hour (0–23) at which gateway sends batched notifications |
 
-*One of `OPENAI_API_KEY` or `ANTHROPIC_API_KEY` is required.
+\* One of `OPENAI_API_KEY` or `ANTHROPIC_API_KEY` (or `ANTHROPIC_AUTH_TOKEN`) is required.
 
 ---
 

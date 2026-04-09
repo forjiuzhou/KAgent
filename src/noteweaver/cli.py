@@ -609,11 +609,15 @@ def main() -> None:
                 "Environment:\n"
                 "  OPENAI_API_KEY         Your OpenAI API key.\n"
                 "  ANTHROPIC_API_KEY      Your Anthropic API key.\n"
+                "  ANTHROPIC_AUTH_TOKEN   Anthropic proxy token (alt to API key).\n"
                 "  NW_PROVIDER            Force provider: 'openai' or 'anthropic'.\n"
                 "  NW_MODEL               Model name (auto-detected per provider).\n"
                 "  NW_VAULT               Vault path.\n"
                 "  NW_TELEGRAM_TOKEN      Telegram bot token (enables Telegram adapter).\n"
-                "  NW_TELEGRAM_ALLOWED_USERS  Comma-separated Telegram user IDs.",
+                "  NW_TELEGRAM_ALLOWED_USERS  Comma-separated Telegram user IDs.\n"
+                "  NW_DIGEST_INTERVAL_HOURS   Auto-digest interval in gateway (default: 6).\n"
+                "  NW_LINT_INTERVAL_HOURS     Auto-lint interval in gateway (default: 24).\n"
+                "  NW_NOTIFY_HOUR         Hour to send batched notifications (default: 9).",
                 border_style="blue",
             )
         )
