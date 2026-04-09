@@ -1,0 +1,25 @@
+services:
+  noteweaver:
+    build: .
+    container_name: noteweaver
+    restart: unless-stopped
+    volumes:
+      - vault_data:/data/vault
+    environment:
+      - NW_VAULT=/data/vault
+      # --- LLM Provider (set at least one) ---
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - OPENAI_BASE_URL=${OPENAI_BASE_URL:-}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      - ANTHROPIC_BASE_URL=${ANTHROPIC_BASE_URL:-}
+      - NW_PROVIDER=${NW_PROVIDER:-}
+      - NW_MODEL=${NW_MODEL:-}
+      # --- Telegram ---
+      - NW_TELEGRAM_TOKEN=${NW_TELEGRAM_TOKEN:-}
+      - NW_TELEGRAM_ALLOWED_USERS=${NW_TELEGRAM_ALLOWED_USERS:-}
+      # --- Cron intervals ---
+      - NW_DIGEST_INTERVAL_HOURS=${NW_DIGEST_INTERVAL_HOURS:-6}
+      - NW_LINT_INTERVAL_HOURS=${NW_LINT_INTERVAL_HOURS:-24}
+
+volumes:
+  vault_data:
