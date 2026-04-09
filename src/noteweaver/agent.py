@@ -94,8 +94,7 @@ class KnowledgeAgent:
         self.messages.append({"role": "user", "content": user_message})
 
         short_msg = user_message[:60] + "..." if len(user_message) > 60 else user_message
-        self.vault._in_operation = True
-        self.vault._operation_dirty = False
+        self.vault._operation_depth += 1
 
         try:
             max_steps = 25
@@ -138,8 +137,8 @@ class KnowledgeAgent:
 
     def _end_operation(self, message: str) -> None:
         """Finalize the operation — commit all batched writes."""
-        self.vault._in_operation = False
-        if self.vault._operation_dirty:
+        self.vault._operation_depth = max(0, self.vault._operation_depth - 1)
+        if self.vault._operation_depth == 0 and self.vault._operation_dirty:
             self.vault._git_commit(message)
             self.vault._operation_dirty = False
 
