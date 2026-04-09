@@ -115,7 +115,12 @@ PROMPT_TOOLS = """\
 |------|-------------|
 | `list_page_summaries(dir)` | Cheap scan (~30 tok/page). Good starting point. |
 | `read_page(path, max_chars?)` | max_chars=500 for quick check; omit for full. |
-| `write_page(path, content)` | Create/update wiki page. Valid frontmatter required. |
+| `find_existing_page(title)` | Check for duplicates BEFORE creating a page. |
+| `write_page(path, content)` | Create/overwrite full page. Use fine-grained tools when possible. |
+| `append_section(path, heading, content)` | Add a new section to a page. |
+| `append_to_section(path, heading, content)` | Add content to an existing section. |
+| `update_frontmatter(path, fields)` | Update metadata without touching body. |
+| `add_related_link(path, title)` | Add a [[link]] to Related section. |
 | `search_vault(query)` | FTS5 keyword search across all pages. |
 | `save_source(path, content)` | Save to sources/ (immutable, create-only). |
 | `fetch_url(url)` | Fetch web page → markdown. Then save_source + wiki pages. |
@@ -134,6 +139,11 @@ PROMPT_TOOLS = """\
 - Create Hub when 3+ pages accumulate on a topic.
 - Respond in user's language. Be concise.
 - For detailed conventions: `read_page(".schema/schema.md")`
+- **Before creating a page**: call `find_existing_page` to check for duplicates. \
+  Update existing pages (append_section) rather than creating new ones.
+- **Prefer fine-grained edits**: use `append_section`, `append_to_section`, \
+  `update_frontmatter`, `add_related_link` instead of full-page `write_page` \
+  when you only need to add or update part of a page.
 
 If vault is empty, welcome the user and suggest what they can do.
 """
@@ -321,14 +331,42 @@ class KnowledgeAgent:
         topic_short = last_user[:200] + ("..." if len(last_user) > 200 else "")
         agent_short = last_agent[:300] + ("..." if len(last_agent) > 300 else "")
 
+        # Build active workset from pages' tags
+        active_tags: dict[str, int] = {}
+        for p in pages:
+            try:
+                content_raw = self.vault.read_file(p)
+                from noteweaver.frontmatter import extract_frontmatter
+                fm = extract_frontmatter(content_raw)
+                if fm and fm.get("tags"):
+                    for tag in fm["tags"]:
+                        active_tags[tag] = active_tags.get(tag, 0) + 1
+            except (FileNotFoundError, PermissionError):
+                pass
+
+        # Merge with previous workset (carry forward topics from recent sessions)
+        prev_mem = self._load_session_memory()
+        prev_topics: list[str] = []
+        if prev_mem:
+            for line in prev_mem.split("\n"):
+                if line.startswith("Recent topics:"):
+                    prev_topics = [
+                        t.strip() for t in line.split(":", 1)[1].split(",")
+                        if t.strip()
+                    ]
+
+        # Combine: current tags (ranked by frequency) + carried-forward topics
+        ranked_tags = sorted(active_tags, key=active_tags.get, reverse=True)
+        all_topics = list(dict.fromkeys(ranked_tags + prev_topics))[:10]
+
         lines = [
-            f"---",
+            "---",
             f"updated: {now}",
             f"session_turns: {turns}",
-            f"---",
-            f"",
-            f"## Last Session",
-            f"",
+            "---",
+            "",
+            "## Last Session",
+            "",
             f"Topic: {topic_short}",
         ]
         if pages:
@@ -342,10 +380,20 @@ class KnowledgeAgent:
             lines.append(f"{', '.join(tools[:15])}")
             lines.append("")
 
-        content = "\n".join(lines) + "\n"
+        # Active workset section
+        if all_topics or pages:
+            lines.append("## Active Workset")
+            if all_topics:
+                lines.append(f"Recent topics: {', '.join(all_topics)}")
+            wiki_pages = [p for p in pages if p.startswith("wiki/") and "/archive/" not in p]
+            if wiki_pages:
+                lines.append(f"Active pages: {', '.join(wiki_pages[:8])}")
+            lines.append("")
+
+        result = "\n".join(lines) + "\n"
         mem_path = self.vault.meta_dir / "session-memory.md"
         mem_path.parent.mkdir(parents=True, exist_ok=True)
-        mem_path.write_text(content, encoding="utf-8")
+        mem_path.write_text(result, encoding="utf-8")
         return mem_path
 
     # ------------------------------------------------------------------
@@ -649,6 +697,8 @@ class KnowledgeAgent:
         - All writes within a single chat turn are batched into one git commit
         - Transcript is append-only; compression only affects the query view
         - Tool results are tiered: full → preview → placeholder
+        - API errors are retried at the provider layer (retry.py)
+        - Tool execution errors are captured and fed back to the model
         """
         self.messages.append({"role": "user", "content": user_message})
         self._update_session_summary()
@@ -683,7 +733,15 @@ class KnowledgeAgent:
 
                     yield f"  ↳ {tool_call.name}({self._summarize_args(fn_args)})"
 
-                    result = dispatch_tool(self.vault, tool_call.name, fn_args)
+                    try:
+                        result = dispatch_tool(
+                            self.vault, tool_call.name, fn_args
+                        )
+                    except Exception as exc:
+                        result = (
+                            f"Error executing {tool_call.name}: "
+                            f"{type(exc).__name__}: {exc}"
+                        )
 
                     if len(result) > self._TOOL_RESULT_MAX:
                         result = (
@@ -700,6 +758,80 @@ class KnowledgeAgent:
             yield "(reached maximum steps)"
         finally:
             self._end_operation(short_msg)
+
+    # ------------------------------------------------------------------
+    # Journal generation (LLM-assisted)
+    # ------------------------------------------------------------------
+
+    def generate_journal_summary(self) -> dict:
+        """Use one LLM call to generate structured journal slots.
+
+        Returns a dict with keys: insights, decisions, open_questions, follow_ups.
+        Falls back to empty slots if the LLM call fails.
+        """
+        if len(self.messages) <= 2:
+            return {"insights": [], "decisions": [], "open_questions": [], "follow_ups": []}
+
+        # Build a compact conversation digest for the LLM
+        digest_parts: list[str] = []
+        for m in self.messages[1:]:
+            role = _msg_role(m)
+            content = _msg_content(m)
+            if role == "user" and content:
+                digest_parts.append(f"User: {content[:500]}")
+            elif role == "assistant" and content:
+                digest_parts.append(f"Agent: {content[:500]}")
+        conversation_text = "\n".join(digest_parts[-30:])
+
+        prompt_messages = [
+            {"role": "system", "content": (
+                "You are a concise note-taking assistant. Given a conversation, "
+                "extract structured information. Respond ONLY in the exact format below, "
+                "with one item per line. Use the user's language. Be brief (one sentence per item).\n\n"
+                "INSIGHTS:\n- (key takeaways or conclusions from the conversation)\n\n"
+                "DECISIONS:\n- (any decisions made during the conversation)\n\n"
+                "OPEN_QUESTIONS:\n- (unresolved questions or topics to explore further)\n\n"
+                "FOLLOW_UPS:\n- (concrete next actions or things to do)\n\n"
+                "If a section has nothing, write - (none)\n"
+            )},
+            {"role": "user", "content": f"Extract from this conversation:\n\n{conversation_text}"},
+        ]
+
+        try:
+            raw = self.provider.simple_completion(self.model, prompt_messages)
+            if not raw:
+                return {"insights": [], "decisions": [], "open_questions": [], "follow_ups": []}
+            return self._parse_journal_sections(raw)
+        except Exception:
+            return {"insights": [], "decisions": [], "open_questions": [], "follow_ups": []}
+
+    @staticmethod
+    def _parse_journal_sections(text: str) -> dict:
+        """Parse LLM output into structured journal slots."""
+        sections: dict[str, list[str]] = {
+            "insights": [], "decisions": [], "open_questions": [], "follow_ups": [],
+        }
+        current_key: str | None = None
+        key_map = {
+            "INSIGHTS": "insights",
+            "DECISIONS": "decisions",
+            "OPEN_QUESTIONS": "open_questions",
+            "FOLLOW_UPS": "follow_ups",
+            "FOLLOW-UPS": "follow_ups",
+        }
+
+        for line in text.split("\n"):
+            stripped = line.strip()
+            upper = stripped.rstrip(":").upper()
+            if upper in key_map:
+                current_key = key_map[upper]
+                continue
+            if current_key and stripped.startswith("- "):
+                item = stripped[2:].strip()
+                if item and item.lower() != "(none)":
+                    sections[current_key].append(item)
+
+        return sections
 
     # ------------------------------------------------------------------
     # Sizing helpers

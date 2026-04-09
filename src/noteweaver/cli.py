@@ -137,60 +137,122 @@ def _save_session_journal(
     *,
     transcript_ref: str | None = None,
 ) -> None:
-    """Append a session record to today's journal.
+    """Append a structured session record to today's journal.
 
-    Uses the full transcript from ``agent.messages`` for richer content when
-    available, falling back to the exchanges list for backward compatibility.
+    Uses fixed slots (Insights, Decisions, Open Questions, Pages Touched,
+    Follow-ups) for reliable downstream processing by ``nw digest``.
     """
     from datetime import datetime
+    import json as _json
 
     today = datetime.now().strftime("%Y-%m-%d")
     now = datetime.now().strftime("%H:%M")
     journal_path = f"wiki/journals/{today}.md"
 
-    lines = [f"\n### {session_type.title()} session ({now})\n"]
-
-    # Extract richer information from the agent transcript
-    pages_touched: list[str] = []
+    # Extract structured information from the agent transcript
+    pages_created: list[str] = []
+    pages_updated: list[str] = []
+    pages_read: list[str] = []
     tools_used: list[str] = []
+    user_topics: list[str] = []
+    agent_conclusions: list[str] = []
+
     for m in agent.messages[1:]:
         if not isinstance(m, dict):
             continue
-        if m.get("role") == "assistant" and m.get("tool_calls"):
+        role = m.get("role", "")
+        content = m.get("content", "") or ""
+
+        if role == "user" and content:
+            short = content[:200] + ("..." if len(content) > 200 else "")
+            user_topics.append(short)
+
+        elif role == "assistant" and content:
+            short = content[:300] + ("..." if len(content) > 300 else "")
+            agent_conclusions.append(short)
+
+        elif role == "assistant" and m.get("tool_calls"):
             for tc in m["tool_calls"]:
                 fn = tc.get("function", {}) if isinstance(tc, dict) else {}
                 name = fn.get("name", "")
                 if name and name not in tools_used:
                     tools_used.append(name)
                 try:
-                    import json
-                    args = json.loads(fn.get("arguments", "{}"))
+                    args = _json.loads(fn.get("arguments", "{}"))
                     path = args.get("path", "")
-                    if path and path not in pages_touched:
-                        pages_touched.append(path)
-                except (json.JSONDecodeError, TypeError, AttributeError):
+                    if path:
+                        if name in ("write_page", "append_section", "append_to_section",
+                                    "update_frontmatter", "add_related_link"):
+                            if path not in pages_updated:
+                                pages_updated.append(path)
+                        elif name == "read_page":
+                            if path not in pages_read:
+                                pages_read.append(path)
+                except (_json.JSONDecodeError, TypeError, AttributeError):
                     pass
 
-    for ex in exchanges[:20]:
+    lines = [f"\n### {session_type.title()} session ({now})\n"]
+
+    # Conversation summary slot
+    lines.append("#### Conversation")
+    for ex in exchanges[:10]:
         user_text = ex["user"]
-        user_short = user_text[:500] + "..." if len(user_text) > 500 else user_text
-        lines.append(f"**User:** {user_short}")
-
-        if ex.get("tools"):
-            tools_display = []
-            for t in ex["tools"][:8]:
-                cleaned = t.lstrip("↳ ").strip()
-                tools_display.append(cleaned)
-            lines.append(f"*Tools:* {', '.join(tools_display)}")
-
+        user_short = user_text[:300] + "..." if len(user_text) > 300 else user_text
+        lines.append(f"- **User:** {user_short}")
         if ex.get("reply"):
-            reply_text = ex["reply"]
-            reply_short = reply_text[:600] + "..." if len(reply_text) > 600 else reply_text
-            lines.append(f"**Agent:** {reply_short}")
+            reply_short = ex["reply"][:400] + "..." if len(ex["reply"]) > 400 else ex["reply"]
+            lines.append(f"  **Agent:** {reply_short}")
+    lines.append("")
+
+    # Pages touched slot
+    all_pages = sorted(set(pages_updated + pages_created))
+    if all_pages or pages_read:
+        lines.append("#### Pages Touched")
+        for p in all_pages:
+            lines.append(f"- {p} (modified)")
+        for p in pages_read[:10]:
+            if p not in all_pages:
+                lines.append(f"- {p} (read)")
         lines.append("")
 
-    if pages_touched:
-        lines.append(f"*Pages touched:* {', '.join(pages_touched[:15])}")
+    # Tools slot
+    if tools_used:
+        lines.append(f"#### Tools Used")
+        lines.append(f"{', '.join(tools_used)}")
+        lines.append("")
+
+    # LLM-generated structured slots
+    try:
+        journal_data = agent.generate_journal_summary()
+    except Exception:
+        journal_data = {"insights": [], "decisions": [], "open_questions": [], "follow_ups": []}
+
+    if journal_data.get("insights"):
+        lines.append("#### Insights")
+        for item in journal_data["insights"]:
+            lines.append(f"- {item}")
+        lines.append("")
+
+    if journal_data.get("decisions"):
+        lines.append("#### Decisions")
+        for item in journal_data["decisions"]:
+            lines.append(f"- {item}")
+        lines.append("")
+
+    if journal_data.get("open_questions"):
+        lines.append("#### Open Questions")
+        for item in journal_data["open_questions"]:
+            lines.append(f"- {item}")
+        lines.append("")
+
+    if journal_data.get("follow_ups"):
+        lines.append("#### Follow-ups")
+        for item in journal_data["follow_ups"]:
+            lines.append(f"- {item}")
+        lines.append("")
+    else:
+        lines.append("#### Follow-ups")
+        lines.append("*(none identified)*")
         lines.append("")
 
     if transcript_ref:
