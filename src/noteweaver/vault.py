@@ -7,7 +7,6 @@ A vault is a directory of Markdown files with a fixed structure:
   │   ├── index.md    knowledge index
   │   ├── log.md      operation log
   │   ├── concepts/   concept pages
-  │   ├── entities/   entity pages
   │   ├── journals/   daily journals & inbox
   │   └── synthesis/  synthesis & analysis pages
   ├── .schema/        vault constitution
