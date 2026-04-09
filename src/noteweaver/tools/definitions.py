@@ -437,8 +437,9 @@ TOOL_SCHEMAS: list[dict] = [
                 "Promote an insight from a journal entry to a wiki page. "
                 "Searches for an existing page on the topic first. If found, "
                 "appends the insight as a new section. If not found, creates "
-                "a new note page. This is the standard journal→wiki promotion "
-                "path — prefer this over manual write_page for digest results."
+                "a new page of the specified type (note/canonical/synthesis). "
+                "This is the standard journal→wiki promotion path — prefer "
+                "this over manual write_page for digest results."
             ),
             "parameters": {
                 "type": "object",
@@ -459,6 +460,11 @@ TOOL_SCHEMAS: list[dict] = [
                         "type": "array",
                         "items": {"type": "string"},
                         "description": "Tags for the insight",
+                    },
+                    "target_type": {
+                        "type": "string",
+                        "enum": ["note", "canonical", "synthesis"],
+                        "description": "Page type to create. Defaults to 'note'.",
                     },
                 },
                 "required": ["title", "content"],
@@ -879,13 +885,17 @@ def handle_promote_insight(
     content: str,
     source_journal: str = "",
     tags: list | None = None,
+    target_type: str = "note",
 ) -> str:
     """Promote a journal insight to a wiki page.
 
     Searches for an existing page first. If found, appends the insight.
-    If not, creates a new note page. This is the controlled promotion
-    path: journal → candidate note/canonical update → wiki page.
+    If not, creates a new page of the requested type (note/canonical/synthesis).
+    This is the controlled promotion path: journal → wiki page.
     """
+    _ALLOWED_TYPES = {"note", "canonical", "synthesis"}
+    if target_type not in _ALLOWED_TYPES:
+        return f"Error: target_type must be one of {sorted(_ALLOWED_TYPES)}, got '{target_type}'"
     from datetime import datetime, timezone
 
     # Step 1: check for existing page
@@ -931,16 +941,27 @@ def handle_promote_insight(
                 f"(appended section '## {heading} ({today})')"
             )
 
-    # Step 2: create new note page
+    # Step 2: create new page with the requested type
     slug = title.lower().replace(" ", "-").replace("/", "-")
     slug = re.sub(r"[^a-z0-9-]", "", slug)[:60]
-    path = f"wiki/concepts/{slug}.md"
+
+    if target_type == "synthesis":
+        path = f"wiki/synthesis/{slug}.md"
+    else:
+        path = f"wiki/concepts/{slug}.md"
+
     tag_list = tags or []
     tag_str = ", ".join(tag_list) if tag_list else ""
 
+    sources_line = ""
+    if target_type == "canonical":
+        src = source_journal or "promoted-insight"
+        sources_line = f"sources: [{src}]\n"
+
     fm = (
-        f"---\ntitle: {title}\ntype: note\n"
+        f"---\ntitle: {title}\ntype: {target_type}\n"
         f"summary: Insight promoted from journal\n"
+        f"{sources_line}"
         f"tags: [{tag_str}]\n"
         f"created: {today}\nupdated: {today}\n---\n\n"
     )
@@ -954,7 +975,7 @@ def handle_promote_insight(
         )
 
     vault.write_file(path, new_content)
-    return f"OK: created new note {path} from promoted insight"
+    return f"OK: created new {target_type} page {path} from promoted insight"
 
 
 def handle_fetch_url(vault: Vault, url: str) -> str:

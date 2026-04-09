@@ -7,7 +7,6 @@ A vault is a directory of Markdown files with a fixed structure:
   │   ├── index.md    knowledge index
   │   ├── log.md      operation log
   │   ├── concepts/   concept pages
-  │   ├── entities/   entity pages
   │   ├── journals/   daily journals & inbox
   │   └── synthesis/  synthesis & analysis pages
   ├── .schema/        vault constitution
@@ -19,6 +18,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -441,6 +441,18 @@ class Vault:
         path = self._resolve(rel_path)
         return path.read_text(encoding="utf-8")
 
+    _SKIP_UPDATED = frozenset({"wiki/index.md", "wiki/log.md"})
+    _UPDATED_RE = re.compile(r"^(updated:\s*)\S+", re.MULTILINE)
+
+    def _touch_updated(self, content: str) -> str:
+        """Set the frontmatter ``updated`` field to today if it already exists."""
+        from noteweaver.frontmatter import FRONTMATTER_PATTERN
+        if not FRONTMATTER_PATTERN.match(content):
+            return content
+        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        new_content, n = self._UPDATED_RE.subn(rf"\g<1>{today}", content, count=1)
+        return new_content if n else content
+
     def write_file(self, rel_path: str, content: str) -> None:
         """Write a file in the wiki area. Refuses to write into sources/."""
         path = self._resolve(rel_path)
@@ -452,6 +464,8 @@ class Vault:
             raise PermissionError(
                 f"Can only write to wiki/ or .schema/. Path: {rel_path}"
             )
+        if rel_path.startswith("wiki/") and rel_path not in self._SKIP_UPDATED:
+            content = self._touch_updated(content)
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(content, encoding="utf-8")
         self._index_file(rel_path, content)
@@ -738,11 +752,14 @@ class Vault:
 
                 fm = extract_frontmatter(content)
                 rel_name = f.name
+                page_type = fm.get("type") if fm else None
 
-                if fm and fm.get("type") in ("hub", "canonical", "note", "synthesis"):
-                    dest = f"wiki/concepts/{rel_name}"
-                elif fm and fm.get("type") == "journal":
+                if page_type == "synthesis":
+                    dest = f"wiki/synthesis/{rel_name}"
+                elif page_type == "journal":
                     dest = f"wiki/journals/{rel_name}"
+                elif page_type in ("hub", "canonical", "note"):
+                    dest = f"wiki/concepts/{rel_name}"
                 else:
                     title = f.stem.replace("-", " ").replace("_", " ").title()
                     header = (

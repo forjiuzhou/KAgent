@@ -195,3 +195,116 @@ class TestLog:
         log = vault.read_file("wiki/log.md")
         assert "First" in log
         assert "Second" in log
+
+
+class TestImportDirectory:
+    def test_import_synthesis_to_correct_dir(self, vault: Vault, tmp_path: Path) -> None:
+        """synthesis files must land in wiki/synthesis/, not wiki/concepts/."""
+        import_dir = tmp_path / "ext"
+        import_dir.mkdir()
+        (import_dir / "my-synthesis.md").write_text(
+            "---\ntitle: Cross-cutting Analysis\ntype: synthesis\n"
+            "summary: A synthesis page\ntags: [test]\n---\n\n"
+            "# Cross-cutting Analysis\n\nBody with [[Link A]] and [[Link B]].\n"
+        )
+        result = vault.import_directory(str(import_dir))
+        assert "Imported 1" in result
+        synthesis_files = vault.list_files("wiki/synthesis")
+        assert any("my-synthesis.md" in f for f in synthesis_files)
+        concept_files = vault.list_files("wiki/concepts")
+        assert not any("my-synthesis.md" in f for f in concept_files)
+
+    def test_import_note_to_concepts(self, vault: Vault, tmp_path: Path) -> None:
+        import_dir = tmp_path / "ext"
+        import_dir.mkdir()
+        (import_dir / "my-note.md").write_text(
+            "---\ntitle: A Note\ntype: note\nsummary: s\ntags: []\n---\n# Note"
+        )
+        result = vault.import_directory(str(import_dir))
+        assert "Imported 1" in result
+        assert any("my-note.md" in f for f in vault.list_files("wiki/concepts"))
+
+    def test_import_journal_to_journals(self, vault: Vault, tmp_path: Path) -> None:
+        import_dir = tmp_path / "ext"
+        import_dir.mkdir()
+        (import_dir / "2025-01-01.md").write_text(
+            "---\ntitle: Journal 2025-01-01\ntype: journal\n"
+            "summary: Daily\ntags: [journal]\n---\n# 2025-01-01"
+        )
+        result = vault.import_directory(str(import_dir))
+        assert "Imported 1" in result
+        assert any("2025-01-01.md" in f for f in vault.list_files("wiki/journals"))
+
+    def test_import_bare_file_wrapped_as_note(self, vault: Vault, tmp_path: Path) -> None:
+        import_dir = tmp_path / "ext"
+        import_dir.mkdir()
+        (import_dir / "raw-stuff.md").write_text("# Just some markdown\nNo frontmatter.")
+        result = vault.import_directory(str(import_dir))
+        assert "Imported 1" in result
+        assert any("raw-stuff.md" in f for f in vault.list_files("wiki/concepts"))
+
+
+class TestUpdatedTimestamp:
+    def test_append_section_updates_timestamp(self, vault: Vault) -> None:
+        from noteweaver.tools.definitions import dispatch_tool
+        from noteweaver.frontmatter import extract_frontmatter
+
+        page = (
+            "---\ntitle: Old Page\ntype: note\nsummary: s\ntags: []\n"
+            "created: 2020-01-01\nupdated: 2020-01-01\n---\n\n# Old Page\n"
+        )
+        vault.write_file("wiki/concepts/old.md", page)
+        dispatch_tool(vault, "append_section", {
+            "path": "wiki/concepts/old.md",
+            "heading": "New Section",
+            "content": "Added later.",
+        })
+        content = vault.read_file("wiki/concepts/old.md")
+        fm = extract_frontmatter(content)
+        assert fm["updated"] != "2020-01-01"
+
+    def test_promote_to_existing_updates_timestamp(self, vault: Vault) -> None:
+        from noteweaver.tools.definitions import dispatch_tool
+        from noteweaver.frontmatter import extract_frontmatter
+
+        page = (
+            "---\ntitle: Quantum\ntype: note\nsummary: s\ntags: []\n"
+            "created: 2020-01-01\nupdated: 2020-01-01\n---\n\n"
+            "# Quantum\n\nIntro.\n\n## Related\n"
+        )
+        vault.write_file("wiki/concepts/quantum.md", page)
+        dispatch_tool(vault, "promote_insight", {
+            "title": "Quantum",
+            "content": "New insight.",
+        })
+        content = vault.read_file("wiki/concepts/quantum.md")
+        fm = extract_frontmatter(content)
+        assert fm["updated"] != "2020-01-01"
+
+    def test_write_file_skips_update_when_no_frontmatter(self, vault: Vault) -> None:
+        raw = "# No frontmatter here\nJust text."
+        vault.write_file("wiki/concepts/raw.md", raw)
+        assert vault.read_file("wiki/concepts/raw.md") == raw
+
+    def test_write_file_skips_index_and_log(self, vault: Vault) -> None:
+        """index.md and log.md should not get updated timestamps."""
+        original_index = vault.read_file("wiki/index.md")
+        vault.write_file("wiki/index.md", original_index)
+        assert vault.read_file("wiki/index.md") == original_index
+
+    def test_add_related_link_updates_timestamp(self, vault: Vault) -> None:
+        from noteweaver.tools.definitions import dispatch_tool
+        from noteweaver.frontmatter import extract_frontmatter
+
+        page = (
+            "---\ntitle: Linked\ntype: note\nsummary: s\ntags: []\n"
+            "created: 2020-01-01\nupdated: 2020-01-01\n---\n\n# Linked\n"
+        )
+        vault.write_file("wiki/concepts/linked.md", page)
+        dispatch_tool(vault, "add_related_link", {
+            "path": "wiki/concepts/linked.md",
+            "title": "Other Page",
+        })
+        content = vault.read_file("wiki/concepts/linked.md")
+        fm = extract_frontmatter(content)
+        assert fm["updated"] != "2020-01-01"

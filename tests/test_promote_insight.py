@@ -24,7 +24,7 @@ class TestPromoteInsight:
             "tags": ["physics", "computing"],
         })
         assert "OK" in result
-        assert "created new note" in result
+        assert "created new note page" in result
 
         files = vault.list_files("wiki/concepts")
         assert any("quantum" in f for f in files)
@@ -87,3 +87,60 @@ class TestPromoteInsight:
         for f in files:
             assert " " not in f
             assert "!" not in f
+
+    def test_creates_synthesis_in_correct_dir(self, vault: Vault) -> None:
+        result = dispatch_tool(vault, "promote_insight", {
+            "title": "Cross-Cutting Analysis",
+            "content": "Insight spanning multiple topics.",
+            "target_type": "synthesis",
+        })
+        assert "OK" in result
+        assert "created new synthesis page" in result
+        assert "wiki/synthesis/" in result
+
+        files = vault.list_files("wiki/synthesis")
+        assert any("cross-cutting" in f for f in files)
+
+    def test_creates_canonical_with_sources(self, vault: Vault) -> None:
+        from noteweaver.frontmatter import extract_frontmatter
+
+        result = dispatch_tool(vault, "promote_insight", {
+            "title": "Raft Protocol",
+            "content": "Authoritative reference for Raft.",
+            "source_journal": "wiki/journals/2025-04-09.md",
+            "target_type": "canonical",
+        })
+        assert "OK" in result
+        assert "created new canonical page" in result
+        assert "wiki/concepts/" in result
+
+        files = vault.list_files("wiki/concepts")
+        path = next(f for f in files if "raft" in f)
+        content = vault.read_file(path)
+        fm = extract_frontmatter(content)
+        assert fm["type"] == "canonical"
+        assert fm["sources"]
+
+    def test_default_type_unchanged(self, vault: Vault) -> None:
+        """Not passing target_type should still create a note."""
+        from noteweaver.frontmatter import extract_frontmatter
+
+        result = dispatch_tool(vault, "promote_insight", {
+            "title": "Default Type Test",
+            "content": "Should be a note.",
+        })
+        assert "created new note page" in result
+
+        files = vault.list_files("wiki/concepts")
+        path = next(f for f in files if "default-type" in f)
+        content = vault.read_file(path)
+        fm = extract_frontmatter(content)
+        assert fm["type"] == "note"
+
+    def test_invalid_target_type_rejected(self, vault: Vault) -> None:
+        result = dispatch_tool(vault, "promote_insight", {
+            "title": "Bad Type",
+            "content": "Content.",
+            "target_type": "journal",
+        })
+        assert "Error" in result
