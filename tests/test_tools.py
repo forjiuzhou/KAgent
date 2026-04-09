@@ -32,7 +32,7 @@ class TestToolSchemas:
         assert schema_names == handler_names
 
     def test_schema_count(self) -> None:
-        assert len(TOOL_SCHEMAS) == 11
+        assert len(TOOL_SCHEMAS) == 10
 
 
 class TestDispatch:
@@ -102,15 +102,6 @@ class TestDispatch:
     def test_search_vault_no_results(self, vault: Vault) -> None:
         result = dispatch_tool(vault, "search_vault", {"query": "xyznonexistent"})
         assert "No results" in result
-
-    def test_list_pages(self, vault: Vault) -> None:
-        vault.write_file("wiki/concepts/a.md", "---\ntitle: A\ntype: note\n---\na")
-        result = dispatch_tool(vault, "list_pages", {"directory": "wiki/concepts"})
-        assert "a.md" in result
-
-    def test_list_pages_empty(self, vault: Vault) -> None:
-        result = dispatch_tool(vault, "list_pages", {"directory": "wiki/concepts"})
-        assert "No markdown files" in result
 
     def test_append_log(self, vault: Vault) -> None:
         result = dispatch_tool(vault, "append_log", {

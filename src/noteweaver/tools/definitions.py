@@ -99,16 +99,17 @@ TOOL_SCHEMAS: list[dict] = [
         "function": {
             "name": "search_vault",
             "description": (
-                "Full-text search across files in a vault directory. "
-                "Returns file paths and matching lines. "
-                "Use this to find relevant pages before reading them."
+                "Full-text search across wiki pages using FTS5 index. "
+                "Returns ranked results with snippets. Searches across "
+                "title, summary, tags, and body. Use when looking for "
+                "content by keyword."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
                     "query": {
                         "type": "string",
-                        "description": "Search query (case-insensitive substring match)",
+                        "description": "Search query (natural language or keywords)",
                     },
                     "directory": {
                         "type": "string",
@@ -117,27 +118,6 @@ TOOL_SCHEMAS: list[dict] = [
                     },
                 },
                 "required": ["query"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "list_pages",
-            "description": (
-                "List all markdown files under a vault directory. "
-                "Use this to see what pages exist in a given section."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "directory": {
-                        "type": "string",
-                        "description": "Directory to list, relative to vault root. Default: 'wiki'",
-                        "default": "wiki",
-                    },
-                },
-                "required": [],
             },
         },
     },
@@ -352,12 +332,6 @@ def handle_search_vault(vault: Vault, query: str, directory: str = "wiki") -> st
     return "\n".join(lines)
 
 
-def handle_list_pages(vault: Vault, directory: str = "wiki") -> str:
-    files = vault.list_files(directory)
-    if not files:
-        return f"No markdown files in {directory}/"
-    return "\n".join(files)
-
 
 def handle_append_log(
     vault: Vault, entry_type: str, title: str, details: str = ""
@@ -480,7 +454,6 @@ TOOL_HANDLERS: dict[str, Any] = {
     "list_page_summaries": handle_list_page_summaries,
     "write_page": handle_write_page,
     "search_vault": handle_search_vault,
-    "list_pages": handle_list_pages,
     "append_log": handle_append_log,
     "archive_page": handle_archive_page,
     "save_source": handle_save_source,
