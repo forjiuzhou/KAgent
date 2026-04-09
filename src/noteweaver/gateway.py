@@ -177,6 +177,7 @@ class Gateway:
             if now - last_lint >= lint_interval:
                 log.info("Cron: running lint...")
                 async with self._lock:
+                    self.agent.set_attended(False)
                     try:
                         for chunk in self.agent.chat(
                             "Quick health check: use vault_stats and report any issues. Be brief."
@@ -185,6 +186,8 @@ class Gateway:
                                 log.info("Lint result: %s", chunk[:200])
                     except Exception as e:
                         log.error("Cron lint failed: %s", e)
+                    finally:
+                        self.agent.set_attended(True)
                 last_lint = now
 
             # --- Notification delivery at configured hour ---
