@@ -23,9 +23,11 @@ def agent(vault: Vault) -> KnowledgeAgent:
 
 
 class TestPromptStructure:
-    def test_identity_has_mission(self) -> None:
-        assert "Your Mission" in PROMPT_IDENTITY
-        assert "primary asset" in PROMPT_IDENTITY
+    def test_identity_has_three_modes(self) -> None:
+        assert "Three Modes" in PROMPT_IDENTITY
+        assert "Conversation" in PROMPT_IDENTITY
+        assert "Capture" in PROMPT_IDENTITY
+        assert "Organize" in PROMPT_IDENTITY
 
     def test_identity_has_tree_model(self) -> None:
         assert "index.md" in PROMPT_IDENTITY

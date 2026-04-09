@@ -243,6 +243,47 @@ def cmd_lint(vault_path: Path) -> None:
         sys.exit(1)
 
 
+def cmd_digest(vault_path: Path) -> None:
+    """Review recent journals and extract insights worth promoting.
+
+    This is the 'background distillation' step — the Agent looks at
+    recent conversation logs and journals, identifies valuable content
+    that hasn't been captured as proper wiki pages, and offers to create
+    notes/canonicals from them.
+    """
+    vault, agent = _make_agent(vault_path)
+
+    console.print("[bold]Reviewing recent journals for insights to extract...[/bold]\n")
+    prompt = (
+        "Please review the recent journal entries in wiki/journals/. "
+        "For each journal, look for:\n"
+        "1. Insights, conclusions, or decisions worth promoting to a Note or Canonical\n"
+        "2. Topics mentioned repeatedly that deserve their own page\n"
+        "3. Connections between different conversations that aren't yet linked\n"
+        "4. User preferences or patterns that should be noted in preferences.md\n\n"
+        "For each finding, either:\n"
+        "- Create the page directly if the insight is clear\n"
+        "- Or report what you found and ask whether to create it\n\n"
+        "This is a distillation pass — turning raw conversation logs into "
+        "structured knowledge."
+    )
+    exchange: dict = {"user": "digest", "tools": [], "reply": ""}
+    try:
+        for chunk in agent.chat(prompt):
+            if chunk.startswith("  ↳ "):
+                console.print(f"[tool]{chunk}[/tool]")
+                exchange["tools"].append(chunk.strip())
+            else:
+                exchange["reply"] = chunk
+                console.print()
+                console.print(Markdown(chunk))
+
+        _save_session_journal(vault, [exchange], "digest")
+    except Exception as e:
+        console.print(f"[red]Error: {e}[/red]")
+        sys.exit(1)
+
+
 def cmd_import(vault_path: Path, source_path: str) -> None:
     """Import existing markdown files into the vault."""
     vault = Vault(vault_path)
@@ -335,6 +376,9 @@ def main() -> None:
     elif args[0] == "lint":
         vault_path = resolve_vault_path()
         cmd_lint(vault_path)
+    elif args[0] == "digest":
+        vault_path = resolve_vault_path()
+        cmd_digest(vault_path)
     elif args[0] == "import":
         if len(args) < 2:
             console.print("[red]Usage: nw import <path>[/red]")
@@ -361,6 +405,7 @@ def main() -> None:
                 "  [bold]nw ingest <url>[/bold]      Import a web article\n"
                 "  [bold]nw import <path>[/bold]     Import existing md files\n"
                 "  [bold]nw lint[/bold]              Health-check the knowledge base\n"
+                "  [bold]nw digest[/bold]            Extract insights from recent journals\n"
                 "  [bold]nw rebuild-index[/bold]     Rebuild index.md from file metadata\n"
                 "  [bold]nw status[/bold]            Show vault status\n"
                 "  [bold]nw gateway[/bold]           Start IM gateway (Telegram/Feishu)\n"
