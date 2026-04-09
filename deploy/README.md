@@ -1,6 +1,6 @@
 # Deploying NoteWeaver
 
-Two deployment methods are provided: **Docker** (recommended) and **traditional VPS** with systemd.
+Deployment options: **Docker**, **Debian/Ubuntu VPS** (apt + `setup.sh`), and **RHEL-family VPS** (yum/dnf + `setup-yum.sh`).
 
 ---
 
@@ -16,8 +16,8 @@ Two deployment methods are provided: **Docker** (recommended) and **traditional 
 
 ```bash
 # 1. Clone the repository
-git clone https://github.com/forjiuzhou/NoteWeaver.git
-cd NoteWeaver
+git clone https://github.com/forjiuzhou/KAgent.git
+cd KAgent
 
 # 2. Create environment file
 cp .env.example .env
@@ -70,13 +70,19 @@ services:
 
 ---
 
-## Method 2: Automated VPS Setup (systemd)
+## Method 2: Automated VPS Setup — Debian / Ubuntu (apt)
 
 ### One-Line Install
 
 ```bash
 # On a fresh Ubuntu 22.04+ / Debian 12+ VPS (run as root):
-curl -sSL https://raw.githubusercontent.com/forjiuzhou/NoteWeaver/main/deploy/setup.sh | sudo bash
+curl -sSL https://raw.githubusercontent.com/forjiuzhou/KAgent/main/deploy/setup.sh | sudo bash
+```
+
+Default clone URL inside the script is `https://github.com/forjiuzhou/KAgent.git`. Override before piping if needed, for example:
+
+```bash
+NW_REPO_URL=https://github.com/you/fork.git curl -sSL ... | sudo bash
 ```
 
 This script will:
@@ -136,6 +142,58 @@ sudo systemctl enable --now noteweaver
 
 ---
 
+## Method 3: RHEL / Rocky / AlmaLinux (yum or dnf)
+
+Requires **Python 3.11+** (install `python3.11` from your distro repos if the default `python3` is older).
+
+### One-Line Install
+
+```bash
+# Run as root (uses dnf when available, otherwise yum):
+curl -sSL https://raw.githubusercontent.com/forjiuzhou/KAgent/main/deploy/setup-yum.sh | sudo bash
+```
+
+The script installs `git`, attempts to install `python3.11` when the package exists, creates user `noteweaver`, clones the repo into `/home/noteweaver/KAgent`, creates a venv at `~/.nw-venv`, runs `pip install -e '.[all]'`, initializes `/home/noteweaver/vault`, writes `/home/noteweaver/.noteweaver.env`, and installs the same `systemd` unit as Method 2.
+
+Override the repository URL:
+
+```bash
+export NW_REPO_URL=https://github.com/you/fork.git
+curl -sSL https://raw.githubusercontent.com/forjiuzhou/KAgent/main/deploy/setup-yum.sh | sudo bash
+```
+
+### RHEL 9 example (if `python3.11` is not installed yet)
+
+```bash
+sudo dnf install -y git python3.11 python3.11-pip
+```
+
+---
+
+## Custom LLM API URLs (OpenAI-compatible & Claude)
+
+NoteWeaver uses the official SDKs. Point them at a proxy or self-hosted gateway with environment variables:
+
+| Goal | Set (first match wins for base URL) |
+|------|--------------------------------------|
+| OpenAI or OpenAI-compatible API | `OPENAI_API_KEY` + optional `OPENAI_BASE_URL` or `OPENAI_API_BASE` |
+| Anthropic Claude (or compatible proxy) | `ANTHROPIC_API_KEY` or `ANTHROPIC_AUTH_TOKEN` + optional `ANTHROPIC_BASE_URL`, `ANTHROPIC_API_URL`, or `CLAUDE_API_URL` |
+
+Examples for `/home/noteweaver/.noteweaver.env` or Docker `.env`:
+
+```bash
+# vLLM / LiteLLM / other OpenAI-compatible server
+export OPENAI_API_KEY=sk-placeholder
+export OPENAI_BASE_URL=https://your-gateway.example/v1
+
+# Claude via custom or corporate endpoint
+export NW_PROVIDER=anthropic
+export ANTHROPIC_API_KEY=sk-ant-...
+export ANTHROPIC_BASE_URL=https://your-anthropic-proxy.example
+```
+
+---
+
 ## Syncthing (Vault Sync to Local Machine)
 
 ```bash
@@ -159,7 +217,10 @@ brew install syncthing
 | `OPENAI_API_KEY` | Yes* | — | OpenAI API key |
 | `ANTHROPIC_API_KEY` | Yes* | — | Anthropic API key (alternative to OpenAI) |
 | `OPENAI_BASE_URL` | No | — | Custom OpenAI-compatible endpoint |
-| `ANTHROPIC_BASE_URL` | No | — | Custom Anthropic endpoint |
+| `OPENAI_API_BASE` | No | — | Alias for `OPENAI_BASE_URL` |
+| `ANTHROPIC_BASE_URL` | No | — | Custom Anthropic / Claude endpoint |
+| `ANTHROPIC_API_URL` | No | — | Alias for `ANTHROPIC_BASE_URL` |
+| `CLAUDE_API_URL` | No | — | Alias for `ANTHROPIC_BASE_URL` |
 | `NW_PROVIDER` | No | auto | Force `openai` or `anthropic` |
 | `NW_MODEL` | No | auto | LLM model name |
 | `NW_TELEGRAM_TOKEN` | For Telegram | — | Telegram bot token from @BotFather |
@@ -180,5 +241,6 @@ brew install syncthing
 | `Dockerfile` | Container image build |
 | `docker-compose.yml` | Compose orchestration with env vars |
 | `.env.example` | Template for environment variables |
-| `deploy/setup.sh` | Automated VPS setup script |
+| `deploy/setup.sh` | Automated VPS setup (Debian/Ubuntu, apt) |
+| `deploy/setup-yum.sh` | Automated VPS setup (RHEL-family, yum/dnf) |
 | `deploy/noteweaver.service` | systemd unit file |

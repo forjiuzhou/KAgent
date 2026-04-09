@@ -4,6 +4,10 @@ Config sources (later overrides earlier):
 1. Vault config file (.meta/config.yaml)
 2. Environment variables (OPENAI_API_KEY, ANTHROPIC_API_KEY, NW_MODEL, etc.)
 
+Custom API base URLs (first match wins):
+- OpenAI-compatible: OPENAI_BASE_URL, then OPENAI_API_BASE
+- Anthropic / Claude: ANTHROPIC_BASE_URL, then ANTHROPIC_API_URL, then CLAUDE_API_URL
+
 Provider detection:
 - NW_PROVIDER=openai|anthropic  (explicit override)
 - ANTHROPIC_API_KEY or ANTHROPIC_AUTH_TOKEN set → anthropic
@@ -34,6 +38,15 @@ def _anthropic_key_from_env() -> str:
         or os.environ.get("ANTHROPIC_AUTH_TOKEN")
         or ""
     )
+
+
+def _first_env_value(*keys: str) -> str:
+    """Return the first non-empty environment value for the given keys."""
+    for key in keys:
+        val = os.environ.get(key)
+        if val:
+            return val
+    return ""
 
 
 @dataclass
@@ -76,13 +89,17 @@ class Config:
             anthropic_key = _anthropic_key_from_env()
             if anthropic_key:
                 cfg.api_key = anthropic_key
-            if os.environ.get("ANTHROPIC_BASE_URL"):
-                cfg.base_url = os.environ["ANTHROPIC_BASE_URL"]
+            bu = _first_env_value(
+                "ANTHROPIC_BASE_URL", "ANTHROPIC_API_URL", "CLAUDE_API_URL"
+            )
+            if bu:
+                cfg.base_url = bu
         else:
             if os.environ.get("OPENAI_API_KEY"):
                 cfg.api_key = os.environ["OPENAI_API_KEY"]
-            if os.environ.get("OPENAI_BASE_URL"):
-                cfg.base_url = os.environ["OPENAI_BASE_URL"]
+            bu = _first_env_value("OPENAI_BASE_URL", "OPENAI_API_BASE")
+            if bu:
+                cfg.base_url = bu
 
         if os.environ.get("NW_MODEL"):
             cfg.model = os.environ["NW_MODEL"]
