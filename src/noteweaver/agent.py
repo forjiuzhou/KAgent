@@ -123,6 +123,7 @@ PROMPT_TOOLS = """\
 | `archive_page(path, reason)` | Move to wiki/archive/. Never delete. |
 | `vault_stats()` | Health metrics: orphan rate, hub coverage, etc. |
 | `get_backlinks(title)` | Find all pages that link to a given page. |
+| `read_transcript(filename)` | Read a saved conversation transcript (for digest). |
 | `append_log(type, title)` | Log what you did. After significant ops only. |
 
 ## Rules

@@ -48,6 +48,8 @@ class Gateway:
         )
         self.adapters: list[BaseAdapter] = []
         self._lock = asyncio.Lock()
+        self._message_count = 0
+        self._SAVE_INTERVAL = 10  # save transcript every N messages
 
     def _setup_adapters(self) -> None:
         """Detect which platforms are configured and create adapters."""
@@ -74,6 +76,7 @@ class Gateway:
         """Route an incoming message to the Agent and return the reply.
 
         Uses a lock to prevent concurrent agent operations on the same vault.
+        Periodically saves transcripts and session memory.
         """
         async with self._lock:
             reply_parts = []
@@ -87,6 +90,14 @@ class Gateway:
             except Exception as e:
                 log.error("Agent error: %s", e)
                 return f"Error: {e}"
+
+            self._message_count += 1
+            if self._message_count % self._SAVE_INTERVAL == 0:
+                try:
+                    self.agent.save_transcript()
+                    self.agent.save_session_memory()
+                except Exception as e:
+                    log.warning("Failed to save transcript/memory: %s", e)
 
             reply = "\n\n".join(reply_parts) if reply_parts else "(no response)"
 
@@ -157,6 +168,12 @@ class Gateway:
         finally:
             cron_task.cancel()
             log.info("Shutting down...")
+            try:
+                self.agent.save_transcript()
+                self.agent.save_session_memory()
+                log.info("Transcript and session memory saved.")
+            except Exception as e:
+                log.warning("Failed to save on shutdown: %s", e)
             for adapter in self.adapters:
                 await adapter.stop()
             log.info("Gateway stopped.")
