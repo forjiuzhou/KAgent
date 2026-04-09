@@ -289,6 +289,7 @@ class Vault:
         self._repo = None
         self._operation_depth = 0
         self._operation_dirty = False
+        self._search_index = None
 
     # ------------------------------------------------------------------
     # Initialization
@@ -333,6 +334,55 @@ class Vault:
 
         self._git_init()
         self._git_commit("Vault initialized")
+        self.rebuild_search_index()
+
+    # ------------------------------------------------------------------
+    # Search index
+    # ------------------------------------------------------------------
+
+    @property
+    def search(self):
+        """Lazy-initialized FTS5 search index."""
+        if self._search_index is None:
+            from noteweaver.search import SearchIndex
+            self._search_index = SearchIndex(self.meta_dir)
+        return self._search_index
+
+    def _index_file(self, rel_path: str, content: str) -> None:
+        """Update the search index for a single file."""
+        from noteweaver.frontmatter import extract_frontmatter
+        fm = extract_frontmatter(content) or {}
+        tags = fm.get("tags", [])
+        self.search.upsert(
+            path=rel_path,
+            title=fm.get("title", ""),
+            type=fm.get("type", ""),
+            summary=fm.get("summary", ""),
+            tags=", ".join(tags) if isinstance(tags, list) else str(tags),
+            body=content,
+        )
+
+    def rebuild_search_index(self) -> int:
+        """Rebuild the entire search index from vault files."""
+        from noteweaver.frontmatter import extract_frontmatter
+        pages = []
+        for rel_path in self.list_files("wiki"):
+            try:
+                content = self.read_file(rel_path)
+                fm = extract_frontmatter(content) or {}
+                tags = fm.get("tags", [])
+                pages.append({
+                    "path": rel_path,
+                    "title": fm.get("title", ""),
+                    "type": fm.get("type", ""),
+                    "summary": fm.get("summary", ""),
+                    "tags": ", ".join(tags) if isinstance(tags, list) else str(tags),
+                    "body": content,
+                })
+            except (FileNotFoundError, PermissionError):
+                continue
+        self.search.rebuild(pages)
+        return len(pages)
 
     # ------------------------------------------------------------------
     # File operations (used by tools)
@@ -356,6 +406,7 @@ class Vault:
             )
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(content, encoding="utf-8")
+        self._index_file(rel_path, content)
         if self._operation_depth > 0:
             self._operation_dirty = True
         else:
@@ -387,11 +438,23 @@ class Vault:
         )
 
     def search_content(self, query: str, directory: str = "wiki") -> list[dict]:
-        """Full-text search across markdown files. Returns all matches.
+        """Full-text search using SQLite FTS5 index.
 
-        At small-to-medium scale (<1000 pages) this is fast enough.
-        When it becomes a bottleneck, replace with SQLite FTS in .meta/.
+        Returns ranked results with snippets. Falls back to brute-force
+        scan if FTS index is empty or returns no results.
         """
+        # Try FTS first
+        fts_results = self.search.search(query)
+        if fts_results:
+            # Filter by directory prefix
+            filtered = [r for r in fts_results if r["path"].startswith(directory)]
+            if filtered:
+                return [
+                    {"path": r["path"], "matches": [(0, r["snippet"])]}
+                    for r in filtered
+                ]
+
+        # Fallback: brute-force scan (covers unindexed files)
         results = []
         query_lower = query.lower()
         for rel_path in self.list_files(directory):

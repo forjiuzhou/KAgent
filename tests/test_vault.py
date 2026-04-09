@@ -103,12 +103,11 @@ class TestSearch:
         results = vault.search_content("zzzznonexistentzzzz", "wiki")
         assert results == []
 
-    def test_search_returns_line_numbers(self, vault: Vault) -> None:
-        vault.write_file("wiki/concepts/y.md", "line1\nline2\nfindme here\nline4")
+    def test_search_returns_matching_content(self, vault: Vault) -> None:
+        vault.write_file("wiki/concepts/y.md", "---\ntitle: Y\ntype: note\n---\nline1\nline2\nfindme here\nline4")
         results = vault.search_content("findme", "wiki")
-        matches = results[0]["matches"]
-        assert matches[0][0] == 3  # line number
-        assert "findme" in matches[0][1]
+        assert len(results) >= 1
+        assert any("findme" in str(m) for m in results[0]["matches"])
 
 
 class TestPreferences:
