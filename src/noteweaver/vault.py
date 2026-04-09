@@ -386,13 +386,11 @@ class Vault:
             if p.is_file()
         )
 
-    def search_content(
-        self, query: str, directory: str = "wiki", max_results: int = 20
-    ) -> list[dict]:
-        """Full-text search across markdown files.
+    def search_content(self, query: str, directory: str = "wiki") -> list[dict]:
+        """Full-text search across markdown files. Returns all matches.
 
-        Stops early once max_results files are found to avoid O(n) scanning
-        of large vaults.
+        At small-to-medium scale (<1000 pages) this is fast enough.
+        When it becomes a bottleneck, replace with SQLite FTS in .meta/.
         """
         results = []
         query_lower = query.lower()
@@ -409,8 +407,6 @@ class Vault:
                     "path": rel_path,
                     "matches": matching_lines[:5],
                 })
-                if len(results) >= max_results:
-                    break
         return results
 
     def read_file_partial(self, rel_path: str, max_chars: int) -> str:
