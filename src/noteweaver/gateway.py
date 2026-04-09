@@ -126,15 +126,19 @@ class Gateway:
             if now - last_digest >= digest_interval:
                 log.info("Cron: running digest...")
                 async with self._lock:
+                    self.agent.set_attended(False)
                     try:
                         for chunk in self.agent.chat(
                             "Review recent journals and extract any insights worth "
-                            "promoting to notes or canonicals. Be brief."
+                            "promoting. Write promotion candidates to today's journal "
+                            "only — do NOT create wiki pages directly. Be brief."
                         ):
                             if not chunk.startswith("  ↳"):
                                 log.info("Digest result: %s", chunk[:200])
                     except Exception as e:
                         log.error("Cron digest failed: %s", e)
+                    finally:
+                        self.agent.set_attended(True)
                 last_digest = now
 
             if now - last_lint >= lint_interval:

@@ -267,6 +267,14 @@ class KnowledgeAgent:
         self._summary_boundary: int = 1  # messages[1:boundary] are summarised
         self._policy_ctx = PolicyContext()
 
+    def set_attended(self, attended: bool) -> None:
+        """Mark whether the user is present for this session.
+
+        When unattended (e.g. gateway cron), content-layer writes are
+        blocked by policy — the agent can only write proposals to journals.
+        """
+        self._policy_ctx.attended = attended
+
     # ------------------------------------------------------------------
     # System prompt
     # ------------------------------------------------------------------
@@ -430,6 +438,42 @@ class KnowledgeAgent:
         mem_path.write_text(result, encoding="utf-8")
         return mem_path
 
+    def _scan_pending_proposals(self) -> str:
+        """Scan recent journals for Promotion Candidates sections.
+
+        Returns the raw text of any promotion candidate blocks found,
+        or empty string if none.  Only checks the last 3 journal files
+        to keep startup cost low.
+        """
+        journals_dir = self.vault.wiki_dir / "journals"
+        if not journals_dir.is_dir():
+            return ""
+
+        journal_files = sorted(journals_dir.glob("*.md"), reverse=True)[:3]
+        candidates: list[str] = []
+        for jf in journal_files:
+            try:
+                content = jf.read_text(encoding="utf-8")
+            except (OSError, UnicodeDecodeError):
+                continue
+            marker = "#### Promotion Candidates"
+            idx = content.find(marker)
+            if idx == -1:
+                continue
+            block = content[idx:]
+            # Trim at next ### or end
+            for end_marker in ("\n### ", "\n---"):
+                end_idx = block.find(end_marker, len(marker))
+                if end_idx != -1:
+                    block = block[:end_idx]
+                    break
+            block = block.strip()
+            if block and len(block) > len(marker) + 5:
+                rel = str(jf.relative_to(self.vault.root))
+                candidates.append(f"*From {rel}:*\n{block}")
+
+        return "\n\n".join(candidates)
+
     @staticmethod
     def _extract_open_items(memory_text: str | None) -> list[str]:
         """Extract open question / follow-up items from session memory text."""
@@ -528,7 +572,7 @@ class KnowledgeAgent:
         2. Session summary (replacing compressed history)
         3. Recent messages with tiered tool-result cleanup
         """
-        # 1. System prompt — augment with session memory
+        # 1. System prompt — augment with session memory + pending proposals
         system_content = self.messages[0]["content"]
         session_memory = self._load_session_memory()
         if session_memory:
@@ -536,6 +580,18 @@ class KnowledgeAgent:
                 "\n\n## Session Context (from previous session)\n\n"
                 + session_memory
             )
+
+        if self._policy_ctx.attended:
+            proposals = self._scan_pending_proposals()
+            if proposals:
+                system_content += (
+                    "\n\n## Pending Promotion Candidates\n\n"
+                    "The following insights were identified by a previous digest "
+                    "pass and are waiting for your review. Offer to promote them "
+                    "when relevant, e.g. 'I found some insights from recent "
+                    "sessions — want me to turn them into wiki pages?'\n\n"
+                    + proposals
+                )
 
         result: list[dict] = [{"role": "system", "content": system_content}]
 

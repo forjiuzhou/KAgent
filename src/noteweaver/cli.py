@@ -441,13 +441,14 @@ def cmd_digest(vault_path: Path) -> None:
         "For each journal, look for:\n"
         "1. Insights, conclusions, or decisions worth promoting to a Note or Canonical\n"
         "2. Topics mentioned repeatedly that deserve their own page\n"
-        "3. Connections between different conversations that aren't yet linked\n"
-        "4. User preferences or patterns that should be noted in preferences.md\n\n"
-        "For each finding, either:\n"
-        "- Create the page directly if the insight is clear\n"
-        "- Or report what you found and ask whether to create it\n\n"
-        "This is a distillation pass — turning raw conversation logs into "
-        "structured knowledge."
+        "3. Connections between different conversations that aren't yet linked\n\n"
+        "For each finding, write a structured proposal as a "
+        "'#### Promotion Candidates' section in today's journal. Each candidate "
+        "should include: proposed title, target type (note/canonical/synthesis), "
+        "a summary of the insight, and which journal entries it came from.\n\n"
+        "Do NOT create wiki pages directly — only write proposals to the journal. "
+        "The user will review and confirm promotions in their next session.\n\n"
+        "After writing proposals, report what you found."
         + transcript_hint
     )
     exchange: dict = {"user": "digest", "tools": [], "reply": ""}
