@@ -738,11 +738,14 @@ class Vault:
 
                 fm = extract_frontmatter(content)
                 rel_name = f.name
+                page_type = fm.get("type") if fm else None
 
-                if fm and fm.get("type") in ("hub", "canonical", "note", "synthesis"):
-                    dest = f"wiki/concepts/{rel_name}"
-                elif fm and fm.get("type") == "journal":
+                if page_type == "synthesis":
+                    dest = f"wiki/synthesis/{rel_name}"
+                elif page_type == "journal":
                     dest = f"wiki/journals/{rel_name}"
+                elif page_type in ("hub", "canonical", "note"):
+                    dest = f"wiki/concepts/{rel_name}"
                 else:
                     title = f.stem.replace("-", " ").replace("_", " ").title()
                     header = (
