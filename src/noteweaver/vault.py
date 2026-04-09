@@ -329,6 +329,7 @@ class Vault:
         self._operation_depth = 0
         self._operation_dirty = False
         self._search_index = None
+        self._backlink_index = None
 
     # ------------------------------------------------------------------
     # Initialization
@@ -386,6 +387,14 @@ class Vault:
             from noteweaver.search import SearchIndex
             self._search_index = SearchIndex(self.meta_dir)
         return self._search_index
+
+    @property
+    def backlinks(self):
+        """Lazy-initialized backlink index."""
+        if self._backlink_index is None:
+            from noteweaver.backlinks import BacklinkIndex
+            self._backlink_index = BacklinkIndex(self.meta_dir)
+        return self._backlink_index
 
     def _index_file(self, rel_path: str, content: str) -> None:
         """Update the search index for a single file."""
@@ -446,6 +455,7 @@ class Vault:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(content, encoding="utf-8")
         self._index_file(rel_path, content)
+        self.backlinks.update_page(rel_path, content)
         if self._operation_depth > 0:
             self._operation_dirty = True
         else:
@@ -625,6 +635,18 @@ class Vault:
             "sources": len(self.list_files("sources")),
         }
 
+    def rebuild_backlinks(self) -> int:
+        """Rebuild backlink index from all vault files."""
+        pages = []
+        for rel_path in self.list_files("wiki"):
+            try:
+                content = self.read_file(rel_path)
+                pages.append({"path": rel_path, "content": content})
+            except (FileNotFoundError, PermissionError):
+                continue
+        self.backlinks.rebuild(pages)
+        return len(pages)
+
     def health_metrics(self) -> dict:
         """Compute quantitative health metrics for the knowledge base."""
         import re
@@ -656,23 +678,19 @@ class Vault:
             c for c in canonicals if c["ps"].sources
         ]
 
-        # Find pages linked from other pages
-        link_pattern = re.compile(r"\[\[([^\]]+)\]\]")
-        linked_titles = set()
-        for p in all_pages:
-            for m in link_pattern.finditer(p["content"]):
-                linked_titles.add(m.group(1))
-
+        # Use backlink index for orphan detection
         page_titles = {p["ps"].title for p in all_pages if p["ps"] and p["ps"].title}
         orphans = [
             p for p in all_pages
-            if p["ps"] and p["ps"].title and p["ps"].title not in linked_titles
+            if p["ps"] and p["ps"].title
+            and self.backlinks.reference_count(p["ps"].title) == 0
             and p["ps"].type not in ("hub", "journal")
         ]
 
         # Pages missing summary
         no_summary = [p for p in all_pages if p["ps"] and not p["ps"].summary]
 
+        link_stats = self.backlinks.stats()
         return {
             "total_pages": total,
             "hubs": len(hubs),
@@ -687,6 +705,8 @@ class Vault:
             "hub_coverage": (
                 f"{len(hubs)} hubs for {total - len(hubs)} content pages"
             ),
+            "total_links": link_stats["total_links"],
+            "avg_links_per_page": round(link_stats["total_links"] / total, 1) if total else 0,
         }
 
     def import_directory(self, source_dir: str) -> str:

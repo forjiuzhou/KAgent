@@ -244,6 +244,27 @@ TOOL_SCHEMAS: list[dict] = [
     {
         "type": "function",
         "function": {
+            "name": "get_backlinks",
+            "description": (
+                "Find all pages that link to a given page title via [[wiki-links]]. "
+                "Use this to understand how a concept is connected, find orphan pages, "
+                "or trace how knowledge flows through the vault."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "title": {
+                        "type": "string",
+                        "description": "The page title to find backlinks for, e.g. 'Attention Mechanism'",
+                    },
+                },
+                "required": ["title"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "fetch_url",
             "description": (
                 "Fetch a web page and extract its main content as markdown. "
@@ -402,6 +423,17 @@ def handle_vault_stats(vault: Vault) -> str:
     return "\n".join(lines)
 
 
+def handle_get_backlinks(vault: Vault, title: str) -> str:
+    sources = vault.backlinks.backlinks_for(title)
+    if not sources:
+        return f"No pages link to '{title}'."
+    count = len(sources)
+    lines = [f"**{count} page(s) link to '{title}':**"]
+    for s in sources[:20]:
+        lines.append(f"  - {s}")
+    return "\n".join(lines)
+
+
 def handle_fetch_url(vault: Vault, url: str) -> str:
     try:
         import httpx
@@ -459,6 +491,7 @@ TOOL_HANDLERS: dict[str, Any] = {
     "save_source": handle_save_source,
     "import_files": handle_import_files,
     "vault_stats": handle_vault_stats,
+    "get_backlinks": handle_get_backlinks,
     "fetch_url": handle_fetch_url,
 }
 

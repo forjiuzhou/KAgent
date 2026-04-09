@@ -96,13 +96,58 @@ class Gateway:
 
             return reply
 
+    async def _run_cron(self) -> None:
+        """Background cron: periodic digest and lint."""
+        digest_interval = int(os.environ.get("NW_DIGEST_INTERVAL_HOURS", "6")) * 3600
+        lint_interval = int(os.environ.get("NW_LINT_INTERVAL_HOURS", "24")) * 3600
+
+        log.info("Cron enabled: digest every %dh, lint every %dh",
+                 digest_interval // 3600, lint_interval // 3600)
+
+        last_digest = 0.0
+        last_lint = 0.0
+
+        while True:
+            await asyncio.sleep(300)  # check every 5 minutes
+            import time
+            now = time.time()
+
+            if now - last_digest >= digest_interval:
+                log.info("Cron: running digest...")
+                async with self._lock:
+                    try:
+                        for chunk in self.agent.chat(
+                            "Review recent journals and extract any insights worth "
+                            "promoting to notes or canonicals. Be brief."
+                        ):
+                            if not chunk.startswith("  ↳"):
+                                log.info("Digest result: %s", chunk[:200])
+                    except Exception as e:
+                        log.error("Cron digest failed: %s", e)
+                last_digest = now
+
+            if now - last_lint >= lint_interval:
+                log.info("Cron: running lint...")
+                async with self._lock:
+                    try:
+                        for chunk in self.agent.chat(
+                            "Quick health check: use vault_stats and report any issues. Be brief."
+                        ):
+                            if not chunk.startswith("  ↳"):
+                                log.info("Lint result: %s", chunk[:200])
+                    except Exception as e:
+                        log.error("Cron lint failed: %s", e)
+                last_lint = now
+
     async def run(self) -> None:
-        """Start all adapters and run until interrupted."""
+        """Start all adapters and background cron, run until interrupted."""
         self._setup_adapters()
 
         log.info("Starting %d adapter(s)...", len(self.adapters))
         for adapter in self.adapters:
             await adapter.start()
+
+        cron_task = asyncio.create_task(self._run_cron())
 
         log.info("Gateway running. Press Ctrl+C to stop.")
         try:
@@ -110,6 +155,7 @@ class Gateway:
         except (KeyboardInterrupt, asyncio.CancelledError):
             pass
         finally:
+            cron_task.cancel()
             log.info("Shutting down...")
             for adapter in self.adapters:
                 await adapter.stop()
