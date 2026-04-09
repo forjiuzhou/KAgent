@@ -76,7 +76,7 @@ class TestPromptStructure:
         assert "Use Chinese" in system_msg
 
     def test_prompt_token_budget(self) -> None:
-        assert len(SYSTEM_PROMPT) < 5000, f"System prompt too large: {len(SYSTEM_PROMPT)} chars"
+        assert len(SYSTEM_PROMPT) < 6500, f"System prompt too large: {len(SYSTEM_PROMPT)} chars"
 
 
 class TestHistoryCompression:

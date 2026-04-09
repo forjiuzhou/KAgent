@@ -16,7 +16,7 @@ import logging
 import os
 from pathlib import Path
 
-from noteweaver.adapters.base import BaseAdapter, IncomingMessage
+from noteweaver.adapters.base import BaseAdapter, IncomingMessage, OutgoingMessage
 from noteweaver.agent import KnowledgeAgent
 from noteweaver.config import Config
 from noteweaver.vault import Vault
@@ -50,6 +50,9 @@ class Gateway:
         self._lock = asyncio.Lock()
         self._message_count = 0
         self._SAVE_INTERVAL = 10  # save transcript every N messages
+        self._active_chat_ids: set[str] = set()
+        self._pending_notifications: list[str] = []
+        self._notify_hour = int(os.environ.get("NW_NOTIFY_HOUR", "9"))
 
     def _setup_adapters(self) -> None:
         """Detect which platforms are configured and create adapters."""
@@ -78,6 +81,7 @@ class Gateway:
         Uses a lock to prevent concurrent agent operations on the same vault.
         Periodically saves transcripts and session memory.
         """
+        self._active_chat_ids.add(msg.chat_id)
         async with self._lock:
             reply_parts = []
             tool_parts = []
@@ -107,36 +111,69 @@ class Gateway:
 
             return reply
 
+    async def _notify_users(self, text: str) -> None:
+        """Push a notification to all known chat IDs via all adapters."""
+        if not self._active_chat_ids:
+            log.info("No active chat IDs to notify.")
+            return
+        for adapter in self.adapters:
+            for chat_id in self._active_chat_ids:
+                try:
+                    await adapter.send(OutgoingMessage(chat_id=chat_id, text=text))
+                except Exception as e:
+                    log.warning("Failed to notify %s: %s", chat_id, e)
+
     async def _run_cron(self) -> None:
-        """Background cron: periodic digest and lint."""
+        """Background cron: periodic digest, lint, and notification.
+
+        Digest and lint run on their own intervals.  Digest results are
+        queued as pending notifications.  Notifications are delivered at
+        a configurable hour (NW_NOTIFY_HOUR, default 9) so users aren't
+        disturbed at night.
+        """
+        from datetime import datetime
+
         digest_interval = int(os.environ.get("NW_DIGEST_INTERVAL_HOURS", "6")) * 3600
         lint_interval = int(os.environ.get("NW_LINT_INTERVAL_HOURS", "24")) * 3600
 
-        log.info("Cron enabled: digest every %dh, lint every %dh",
-                 digest_interval // 3600, lint_interval // 3600)
+        log.info("Cron enabled: digest every %dh, lint every %dh, notify at %02d:00",
+                 digest_interval // 3600, lint_interval // 3600, self._notify_hour)
 
         last_digest = 0.0
         last_lint = 0.0
+        last_notify_date = ""
 
         while True:
             await asyncio.sleep(300)  # check every 5 minutes
             import time
             now = time.time()
 
+            # --- Digest ---
             if now - last_digest >= digest_interval:
                 log.info("Cron: running digest...")
+                digest_summary = ""
                 async with self._lock:
+                    self.agent.set_attended(False)
                     try:
                         for chunk in self.agent.chat(
                             "Review recent journals and extract any insights worth "
-                            "promoting to notes or canonicals. Be brief."
+                            "promoting. Write promotion candidates to today's journal "
+                            "only — do NOT create wiki pages directly. Be brief."
                         ):
                             if not chunk.startswith("  ↳"):
-                                log.info("Digest result: %s", chunk[:200])
+                                digest_summary += chunk
                     except Exception as e:
                         log.error("Cron digest failed: %s", e)
+                    finally:
+                        self.agent.set_attended(True)
                 last_digest = now
 
+                if digest_summary.strip():
+                    self._pending_notifications.append(
+                        f"📋 *Digest completed*\n\n{digest_summary.strip()}"
+                    )
+
+            # --- Lint ---
             if now - last_lint >= lint_interval:
                 log.info("Cron: running lint...")
                 async with self._lock:
@@ -149,6 +186,19 @@ class Gateway:
                     except Exception as e:
                         log.error("Cron lint failed: %s", e)
                 last_lint = now
+
+            # --- Notification delivery at configured hour ---
+            current_hour = datetime.now().hour
+            today = datetime.now().strftime("%Y-%m-%d")
+            if (self._pending_notifications
+                    and current_hour >= self._notify_hour
+                    and last_notify_date != today):
+                combined = "\n\n---\n\n".join(self._pending_notifications)
+                log.info("Delivering %d pending notification(s)...",
+                         len(self._pending_notifications))
+                await self._notify_users(combined)
+                self._pending_notifications.clear()
+                last_notify_date = today
 
     async def run(self) -> None:
         """Start all adapters and background cron, run until interrupted."""

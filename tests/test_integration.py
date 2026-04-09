@@ -97,12 +97,22 @@ class TestChatFlow:
         assert provider.chat_completion.call_count == 2
 
     def test_write_page_flow(self, vault: Vault) -> None:
-        """Agent checks for duplicates, then creates a new page."""
+        """Agent checks for duplicates, then creates a new page.
+
+        The page body must be ≥200 chars (policy: note minimum length)
+        and find_existing_page must be called first (policy: dedup).
+        """
+        body_text = (
+            "This is a comprehensive test note that covers the fundamentals "
+            "of software testing including unit tests, integration tests, "
+            "and end-to-end tests. Testing is crucial for maintaining "
+            "code quality and preventing regressions in production systems."
+        )
         page_content = (
             "---\ntitle: Test Note\ntype: note\n"
             "summary: A test note\ntags: [test]\n"
             "created: 2025-04-09\nupdated: 2025-04-09\n---\n\n"
-            "# Test Note\n\nThis is a test.\n\n## Related\n"
+            f"# Test Note\n\n{body_text}\n\n## Related\n"
         )
         provider = MagicMock()
         provider.chat_completion.side_effect = [
@@ -132,7 +142,7 @@ class TestChatFlow:
         assert "Test Note" in content
 
     def test_append_section_flow(self, vault: Vault) -> None:
-        """Agent appends to an existing page instead of rewriting."""
+        """Agent reads page, then appends to it (read-before-write policy)."""
         page = (
             "---\ntitle: ML Basics\ntype: note\n"
             "summary: Machine learning basics\ntags: [ml]\n"
@@ -149,8 +159,14 @@ class TestChatFlow:
                 "name": "find_existing_page",
                 "arguments": {"title": "ML Basics"},
             }]),
+            # Policy requires reading the page before editing it
             _make_completion(None, [{
                 "id": "tc2",
+                "name": "read_page",
+                "arguments": {"path": "wiki/concepts/ml-basics.md"},
+            }]),
+            _make_completion(None, [{
+                "id": "tc3",
                 "name": "append_section",
                 "arguments": {
                     "path": "wiki/concepts/ml-basics.md",
