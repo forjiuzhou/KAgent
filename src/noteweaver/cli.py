@@ -481,17 +481,17 @@ def cmd_import(vault_path: Path, source_path: str) -> None:
 
 
 def cmd_rebuild_index(vault_path: Path) -> None:
-    """Rebuild index.md from actual file frontmatter."""
+    """Rebuild index.md and the FTS search index from file frontmatter."""
     vault = Vault(vault_path)
     if not vault.exists():
         console.print("[red]No vault found.[/red] Run `nw init` first.")
         sys.exit(1)
 
-    content = vault.rebuild_index()
+    vault.rebuild_index()
     console.print("[green]✓[/green] index.md rebuilt from file frontmatter.")
-    s = vault.stats()
-    total = s["concepts"] + s["journals"] + s["synthesis"]
-    console.print(f"[info]  {total} pages indexed[/info]")
+
+    count = vault.rebuild_search_index()
+    console.print(f"[green]✓[/green] Search index rebuilt ({count} pages indexed).")
 
 
 def cmd_status(vault_path: Path) -> None:
@@ -602,7 +602,7 @@ def main() -> None:
                 "  [bold]nw import <path>[/bold]     Import existing md files\n"
                 "  [bold]nw lint[/bold]              Health-check the knowledge base\n"
                 "  [bold]nw digest[/bold]            Extract insights from recent journals\n"
-                "  [bold]nw rebuild-index[/bold]     Rebuild index.md from file metadata\n"
+                "  [bold]nw rebuild-index[/bold]     Rebuild index.md and search index\n"
                 "  [bold]nw status[/bold]            Show vault status\n"
                 "  [bold]nw gateway[/bold]           Start IM gateway (Telegram/Feishu)\n"
                 "  [bold]nw help[/bold]              Show this help\n\n"
