@@ -7,6 +7,7 @@ no code execution, no arbitrary file access. Security by design.
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 import yaml
@@ -100,9 +101,10 @@ TOOL_SCHEMAS: list[dict] = [
             "name": "search_vault",
             "description": (
                 "Full-text search across wiki pages using FTS5 index. "
-                "Returns ranked results with snippets. Searches across "
-                "title, summary, tags, and body. Use when looking for "
-                "content by keyword."
+                "Returns ranked results with snippets, backlink counts, "
+                "and tags. Searches across title, summary, tags, and body. "
+                "Use when looking for content by keyword. For structured "
+                "navigation, prefer list_page_summaries → read_page."
             ),
             "parameters": {
                 "type": "object",
@@ -265,6 +267,145 @@ TOOL_SCHEMAS: list[dict] = [
     {
         "type": "function",
         "function": {
+            "name": "append_section",
+            "description": (
+                "Append a new section to an existing wiki page. Inserts before "
+                "the ## Related section if one exists, otherwise at the end. "
+                "Much cheaper than write_page for adding content — does not "
+                "require sending the full page back."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {
+                        "type": "string",
+                        "description": "Path to the existing wiki page, e.g. 'wiki/concepts/attention.md'",
+                    },
+                    "heading": {
+                        "type": "string",
+                        "description": "Section heading (without ##), e.g. 'Multi-Head Attention'",
+                    },
+                    "content": {
+                        "type": "string",
+                        "description": "Markdown content for the new section (without the heading)",
+                    },
+                },
+                "required": ["path", "heading", "content"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "append_to_section",
+            "description": (
+                "Append content to an existing section in a wiki page. Finds "
+                "the section by heading and appends at the end of that section "
+                "(before the next heading of same or higher level). Use this to "
+                "add bullet points or paragraphs to an existing section."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {
+                        "type": "string",
+                        "description": "Path to the wiki page",
+                    },
+                    "heading": {
+                        "type": "string",
+                        "description": "Existing section heading to append to (without ##)",
+                    },
+                    "content": {
+                        "type": "string",
+                        "description": "Content to append to that section",
+                    },
+                },
+                "required": ["path", "heading", "content"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "update_frontmatter",
+            "description": (
+                "Update specific frontmatter fields of a wiki page without "
+                "touching the body. Much cheaper than write_page for metadata "
+                "updates like adding tags, changing type, or updating dates."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {
+                        "type": "string",
+                        "description": "Path to the wiki page",
+                    },
+                    "fields": {
+                        "type": "object",
+                        "description": (
+                            "Fields to update, e.g. {\"tags\": [\"ai\", \"nlp\"], "
+                            "\"summary\": \"Updated summary\"}"
+                        ),
+                    },
+                },
+                "required": ["path", "fields"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "add_related_link",
+            "description": (
+                "Add a [[wiki-link]] to the ## Related section of a page. "
+                "Creates the ## Related section if it doesn't exist. "
+                "Skips if the link already exists. Very cheap operation."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {
+                        "type": "string",
+                        "description": "Path to the wiki page",
+                    },
+                    "title": {
+                        "type": "string",
+                        "description": "Title to link to, e.g. 'Attention Mechanism'",
+                    },
+                },
+                "required": ["path", "title"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "find_existing_page",
+            "description": (
+                "Search for an existing page by title or topic before creating "
+                "a new one. Returns matching pages with summaries so you can "
+                "decide whether to update an existing page or create new. "
+                "ALWAYS call this before write_page to avoid duplicates."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "title": {
+                        "type": "string",
+                        "description": "Title or topic to search for",
+                    },
+                    "type": {
+                        "type": "string",
+                        "description": "Optional page type filter (hub/canonical/note/synthesis)",
+                    },
+                },
+                "required": ["title"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "read_transcript",
             "description": (
                 "Read a saved conversation transcript from .meta/transcripts/. "
@@ -372,8 +513,24 @@ def handle_search_vault(vault: Vault, query: str, directory: str = "wiki") -> st
     if not results:
         return f"No results found for '{query}' in {directory}/"
     lines = []
+
+    # Enrich results with metadata from frontmatters and backlinks
+    frontmatters = {p["path"]: p for p in vault.read_frontmatters(directory)}
+
     for r in results[:10]:
-        lines.append(f"\n**{r['path']}**")
+        path = r["path"]
+        fm = frontmatters.get(path, {})
+        type_str = f" [{fm.get('type', '')}]" if fm.get("type") else ""
+        title_str = fm.get("title", "")
+        header = f"\n**{title_str}**{type_str} ({path})" if title_str else f"\n**{path}**"
+        lines.append(header)
+        if fm.get("summary"):
+            lines.append(f"  Summary: {fm['summary']}")
+        if fm.get("tags"):
+            lines.append(f"  Tags: {', '.join(fm['tags'])}")
+        bl_count = vault.backlinks.reference_count(title_str) if title_str else 0
+        if bl_count > 0:
+            lines.append(f"  Backlinks: {bl_count}")
         for line_no, line_text in r["matches"]:
             lines.append(f"  L{line_no}: {line_text}")
     return "\n".join(lines)
@@ -457,6 +614,182 @@ def handle_get_backlinks(vault: Vault, title: str) -> str:
     lines = [f"**{count} page(s) link to '{title}':**"]
     for s in sources[:20]:
         lines.append(f"  - {s}")
+    return "\n".join(lines)
+
+
+def handle_append_section(vault: Vault, path: str, heading: str, content: str) -> str:
+    """Append a new section to a wiki page, before ## Related if it exists."""
+    try:
+        existing = vault.read_file(path)
+    except FileNotFoundError:
+        return f"Error: file not found: {path}"
+    if not path.startswith("wiki/"):
+        return f"Error: can only edit wiki/ pages. Path: {path}"
+
+    section_text = f"\n## {heading}\n\n{content}\n"
+
+    # Insert before ## Related if present
+    related_pattern = re.compile(r"(\n## Related\b)", re.IGNORECASE)
+    match = related_pattern.search(existing)
+    if match:
+        insert_pos = match.start()
+        new_content = existing[:insert_pos] + section_text + existing[insert_pos:]
+    else:
+        new_content = existing.rstrip() + "\n" + section_text
+
+    vault.write_file(path, new_content)
+    return f"OK: appended section '## {heading}' to {path}"
+
+
+def handle_append_to_section(vault: Vault, path: str, heading: str, content: str) -> str:
+    """Append content to an existing section identified by heading."""
+    try:
+        existing = vault.read_file(path)
+    except FileNotFoundError:
+        return f"Error: file not found: {path}"
+    if not path.startswith("wiki/"):
+        return f"Error: can only edit wiki/ pages. Path: {path}"
+
+    lines = existing.split("\n")
+    heading_pattern = re.compile(r"^(#{1,6})\s+" + re.escape(heading) + r"\s*$", re.IGNORECASE)
+    target_idx = None
+    target_level = None
+
+    for i, line in enumerate(lines):
+        m = heading_pattern.match(line)
+        if m:
+            target_idx = i
+            target_level = len(m.group(1))
+            break
+
+    if target_idx is None:
+        return f"Error: section '{heading}' not found in {path}"
+
+    # Find end of section (next heading of same or higher level, or EOF)
+    insert_idx = len(lines)
+    for i in range(target_idx + 1, len(lines)):
+        m = re.match(r"^(#{1,6})\s", lines[i])
+        if m and len(m.group(1)) <= target_level:
+            insert_idx = i
+            break
+
+    lines.insert(insert_idx, content + "\n")
+    new_content = "\n".join(lines)
+    vault.write_file(path, new_content)
+    return f"OK: appended to section '{heading}' in {path}"
+
+
+def handle_update_frontmatter(vault: Vault, path: str, fields: dict) -> str:
+    """Update specific frontmatter fields without touching the body."""
+    try:
+        existing = vault.read_file(path)
+    except FileNotFoundError:
+        return f"Error: file not found: {path}"
+    if not path.startswith("wiki/"):
+        return f"Error: can only edit wiki/ pages. Path: {path}"
+
+    from noteweaver.frontmatter import extract_frontmatter, FRONTMATTER_PATTERN
+
+    fm = extract_frontmatter(existing)
+    if fm is None:
+        return f"Error: no frontmatter found in {path}"
+
+    fm.update(fields)
+
+    # Validate the updated frontmatter
+    fm_str = yaml.dump(fm, default_flow_style=False, allow_unicode=True).strip()
+    body = FRONTMATTER_PATTERN.sub("", existing, count=1)
+    new_content = f"---\n{fm_str}\n---\n{body}"
+
+    validation = validate_frontmatter(path, new_content)
+    if not validation.valid:
+        return "Error: updated frontmatter is invalid:\n" + "\n".join(
+            f"  - {e}" for e in validation.errors
+        )
+
+    vault.write_file(path, new_content)
+    updated_keys = ", ".join(fields.keys())
+    return f"OK: updated frontmatter fields [{updated_keys}] in {path}"
+
+
+def handle_add_related_link(vault: Vault, path: str, title: str) -> str:
+    """Add a [[wiki-link]] to the ## Related section."""
+    try:
+        existing = vault.read_file(path)
+    except FileNotFoundError:
+        return f"Error: file not found: {path}"
+    if not path.startswith("wiki/"):
+        return f"Error: can only edit wiki/ pages. Path: {path}"
+
+    link = f"[[{title}]]"
+    if link in existing:
+        return f"OK: link to {link} already exists in {path}"
+
+    related_pattern = re.compile(r"(## Related\b.*)", re.IGNORECASE | re.DOTALL)
+    match = related_pattern.search(existing)
+
+    if match:
+        related_section = match.group(1)
+        new_related = related_section.rstrip() + f"\n- {link}\n"
+        new_content = existing[: match.start()] + new_related
+    else:
+        new_content = existing.rstrip() + f"\n\n## Related\n\n- {link}\n"
+
+    vault.write_file(path, new_content)
+    return f"OK: added {link} to Related section of {path}"
+
+
+def handle_find_existing_page(vault: Vault, title: str, type: str = "") -> str:
+    """Search for existing pages by title/topic to prevent duplicates."""
+    candidates = []
+
+    # 1. FTS search
+    fts_results = vault.search.search(title, limit=10)
+    for r in fts_results:
+        candidates.append({
+            "path": r["path"],
+            "title": r.get("title", ""),
+            "type": r.get("type", ""),
+            "summary": r.get("summary", ""),
+            "match": "fts",
+        })
+
+    # 2. Title similarity via frontmatters
+    all_pages = vault.read_frontmatters("wiki")
+    title_lower = title.lower()
+    for p in all_pages:
+        if p["path"] in {c["path"] for c in candidates}:
+            continue
+        if title_lower in p["title"].lower() or p["title"].lower() in title_lower:
+            candidates.append({**p, "match": "title"})
+
+    # 3. Backlinks — pages that link to this title
+    backlink_sources = vault.backlinks.backlinks_for(title)
+    for bl_path in backlink_sources[:5]:
+        if bl_path not in {c["path"] for c in candidates}:
+            for p in all_pages:
+                if p["path"] == bl_path:
+                    candidates.append({**p, "match": "backlink"})
+                    break
+
+    # Filter by type if specified
+    if type:
+        candidates = [c for c in candidates if c.get("type") == type or not c.get("type")]
+
+    if not candidates:
+        return f"No existing pages found for '{title}'. Safe to create new."
+
+    lines = [f"Found {len(candidates)} potential match(es) for '{title}':"]
+    for c in candidates[:10]:
+        summary = f" — {c['summary']}" if c.get("summary") else ""
+        match_type = f" [{c.get('match', '')}]" if c.get("match") else ""
+        lines.append(f"  - [{c.get('type', '?')}] **{c.get('title', '?')}** ({c['path']}){summary}{match_type}")
+
+    lines.append("")
+    lines.append(
+        "Consider updating an existing page (using append_section or append_to_section) "
+        "instead of creating a new one."
+    )
     return "\n".join(lines)
 
 
@@ -562,6 +895,11 @@ TOOL_HANDLERS: dict[str, Any] = {
     "import_files": handle_import_files,
     "vault_stats": handle_vault_stats,
     "get_backlinks": handle_get_backlinks,
+    "append_section": handle_append_section,
+    "append_to_section": handle_append_to_section,
+    "update_frontmatter": handle_update_frontmatter,
+    "add_related_link": handle_add_related_link,
+    "find_existing_page": handle_find_existing_page,
     "read_transcript": handle_read_transcript,
     "fetch_url": handle_fetch_url,
 }

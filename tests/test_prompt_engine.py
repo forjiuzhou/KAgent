@@ -52,7 +52,10 @@ class TestPromptStructure:
         for tool in ["list_page_summaries", "read_page", "write_page",
                       "search_vault", "save_source", "fetch_url",
                       "import_files", "archive_page", "vault_stats",
-                      "read_transcript", "append_log"]:
+                      "read_transcript", "append_log",
+                      "find_existing_page", "append_section",
+                      "append_to_section", "update_frontmatter",
+                      "add_related_link"]:
             assert tool in PROMPT_TOOLS, f"Missing tool: {tool}"
 
     def test_tools_has_common_requests(self) -> None:
