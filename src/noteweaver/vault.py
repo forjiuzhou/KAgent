@@ -548,7 +548,10 @@ class Vault:
                 and existing not in self._title_check_skip):
             raise PermissionError(
                 f"Title '{title}' already used by {existing}. "
-                f"Titles must be unique because [[wiki-links]] depend on them."
+                f"Titles must be unique because [[wiki-links]] depend on them. "
+                f"Use read_page('{existing}') to see the existing page, then "
+                f"either update it with append_section / append_to_section, "
+                f"or choose a different title for the new page."
             )
 
     def save_source(self, rel_path: str, content: str) -> None:
@@ -962,14 +965,7 @@ class Vault:
                 if pair in checked_tag_pairs:
                     continue
                 checked_tag_pairs.add(pair)
-                reason = None
-                if ta in tb or tb in ta:
-                    if len(ta) >= 2 and len(tb) >= 2:
-                        reason = "substring"
-                elif len(ta) > 3 and len(tb) > 3:
-                    dist = self._edit_distance(ta, tb)
-                    if dist <= 2:
-                        reason = f"edit distance {dist}"
+                reason = self._similar_tag_reason(ta, tb)
                 if reason:
                     similar_tags.append({
                         "tag_a": ta, "tag_b": tb, "reason": reason,
@@ -1012,6 +1008,52 @@ class Vault:
             "similar_tags": similar_tags,
             "summary": summary,
         }
+
+    @staticmethod
+    def _similar_tag_reason(ta: str, tb: str) -> str | None:
+        """Return the reason two tags are similar, or None if they are not.
+
+        Checks (in order):
+        1. Hyphen-insensitive: same after stripping hyphens (machine-learning / machinelearning)
+        2. Plural: one is the plural of the other (model / models)
+        3. Substring: one tag contained in the other (react / react-native)
+        4. Edit distance ≤ 2 for tags longer than 3 chars (react / reactjs)
+        """
+        if ta == tb:
+            return None
+
+        ta_nohyp = ta.replace("-", "")
+        tb_nohyp = tb.replace("-", "")
+        if ta_nohyp == tb_nohyp:
+            return "hyphen variant"
+
+        if Vault._is_plural_pair(ta, tb):
+            return "plural"
+
+        if ta in tb or tb in ta:
+            if len(ta) >= 2 and len(tb) >= 2:
+                return "substring"
+
+        if len(ta) > 3 and len(tb) > 3:
+            dist = Vault._edit_distance(ta, tb)
+            if dist <= 2:
+                return f"edit distance {dist}"
+
+        return None
+
+    @staticmethod
+    def _is_plural_pair(a: str, b: str) -> bool:
+        """Check if one tag is a simple English plural of the other."""
+        if a == b:
+            return False
+        short, long = (a, b) if len(a) <= len(b) else (b, a)
+        if long == short + "s":
+            return True
+        if long == short + "es":
+            return True
+        if short.endswith("y") and long == short[:-1] + "ies":
+            return True
+        return False
 
     @staticmethod
     def _edit_distance(a: str, b: str) -> int:

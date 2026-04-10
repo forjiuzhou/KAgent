@@ -130,6 +130,7 @@ PROMPT_TOOLS = """\
 | `import_files(directory)` | Batch import .md files. |
 | `scan_imports()` | Scan imported files + vault context for planning. |
 | `apply_organize_plan(plan)` | Batch organization for imported files. |
+| `merge_tags(old_tag, new_tag)` | Replace a tag across all pages. |
 | `archive_page(path, reason)` | Move to wiki/archive/. |
 | `vault_stats()` | Health metrics. |
 | `get_backlinks(title)` | Find pages that link to a title. |
@@ -1262,6 +1263,8 @@ class KnowledgeAgent:
                 lines.append(f"{i}. 给「{args.get('path', '?')}」添加链接 → {args.get('title', '?')}")
             elif name == "promote_insight":
                 lines.append(f"{i}. 提升 insight「{args.get('title', '?')}」到 wiki")
+            elif name == "merge_tags":
+                lines.append(f"{i}. 合并标签「{args.get('old_tag', '?')}」→「{args.get('new_tag', '?')}」")
             elif name == "find_existing_page":
                 lines.append(f"{i}. 查找已有页面「{args.get('title', '?')}」")
             else:

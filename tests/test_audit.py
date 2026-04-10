@@ -644,7 +644,7 @@ class TestIsWriteTool:
         for tool in ["write_page", "append_section", "append_to_section",
                       "update_frontmatter", "add_related_link", "append_log",
                       "save_source", "archive_page", "import_files",
-                      "promote_insight", "apply_organize_plan"]:
+                      "promote_insight", "apply_organize_plan", "merge_tags"]:
             assert agent._is_write_tool(tool), f"{tool} should be write"
 
 
@@ -902,3 +902,157 @@ class TestStaleImportHint:
         vault.write_file("wiki/concepts/imp.md", _page("Imp", tags=["imported"]))
         result = dispatch_tool(vault, "list_page_summaries", {"directory": "wiki/concepts"})
         assert "1 file(s) still tagged [imported]" in result
+
+
+# ======================================================================
+# Title uniqueness: rejection includes actionable guidance
+# ======================================================================
+
+
+class TestTitleUniquenessGuidance:
+    def test_rejection_suggests_read_page(self, vault: Vault) -> None:
+        vault.write_file("wiki/concepts/a.md", _page("Attention Mechanism"))
+        with pytest.raises(PermissionError, match="read_page"):
+            vault.write_file("wiki/concepts/b.md", _page("Attention Mechanism"))
+
+    def test_rejection_suggests_append(self, vault: Vault) -> None:
+        vault.write_file("wiki/concepts/a.md", _page("Attention Mechanism"))
+        with pytest.raises(PermissionError, match="append_section"):
+            vault.write_file("wiki/concepts/b.md", _page("Attention Mechanism"))
+
+    def test_rejection_mentions_existing_path(self, vault: Vault) -> None:
+        vault.write_file("wiki/concepts/a.md", _page("Attention Mechanism"))
+        with pytest.raises(PermissionError, match="wiki/concepts/a.md"):
+            vault.write_file("wiki/concepts/b.md", _page("Attention Mechanism"))
+
+    def test_rejection_via_write_page_handler(self, vault: Vault) -> None:
+        from noteweaver.tools.definitions import dispatch_tool
+        vault.write_file("wiki/concepts/a.md", _page("Dup Title"))
+        result = dispatch_tool(vault, "write_page", {
+            "path": "wiki/concepts/b.md",
+            "content": _page("Dup Title"),
+        })
+        assert "Error" in result
+        assert "read_page" in result
+        assert "append_section" in result
+
+    def test_case_insensitive_rejection(self, vault: Vault) -> None:
+        vault.write_file("wiki/concepts/a.md", _page("React Hooks"))
+        with pytest.raises(PermissionError, match="already used"):
+            vault.write_file("wiki/concepts/b.md", _page("react hooks"))
+
+
+# ======================================================================
+# merge_tags interception and format_organize_plan
+# ======================================================================
+
+
+class TestMergeTagsInterception:
+    def test_merge_tags_intercepted_as_plan(self, vault: Vault) -> None:
+        from noteweaver.adapters.provider import CompletionResult, ToolCall
+        provider = MagicMock()
+        provider.chat_completion.side_effect = [
+            (CompletionResult(content=None, tool_calls=[
+                ToolCall(id="tc1", name="merge_tags",
+                         arguments=json.dumps({"old_tag": "ml", "new_tag": "machine-learning"})),
+            ]), {"role": "assistant", "tool_calls": [
+                {"id": "tc1", "type": "function",
+                 "function": {"name": "merge_tags",
+                              "arguments": json.dumps({"old_tag": "ml", "new_tag": "machine-learning"})}}
+            ]}),
+            (CompletionResult(content="I'll merge the tags after your approval."),
+             {"role": "assistant", "content": "I'll merge the tags after your approval."}),
+        ]
+        agent = KnowledgeAgent(vault=vault, provider=provider)
+        responses = list(agent.chat("Merge ml into machine-learning"))
+        assert any("📋" in r for r in responses)
+        assert any("merge_tags" in r for r in responses)
+        plan = agent._load_pending_plan()
+        assert plan is not None
+        assert len(plan) == 1
+        assert plan[0]["name"] == "merge_tags"
+
+    def test_format_merge_tags(self, vault: Vault) -> None:
+        provider = MagicMock()
+        agent = KnowledgeAgent(vault=vault, provider=provider)
+        plan = [{"name": "merge_tags", "arguments": {"old_tag": "ml", "new_tag": "machine-learning"}}]
+        text = agent.format_organize_plan(plan)
+        assert "合并标签" in text
+        assert "ml" in text
+        assert "machine-learning" in text
+
+
+# ======================================================================
+# Similar tag detection: enhanced patterns
+# ======================================================================
+
+
+class TestSimilarTagReason:
+    def test_substring(self) -> None:
+        assert Vault._similar_tag_reason("react", "react-native") == "substring"
+
+    def test_hyphen_variant(self) -> None:
+        assert Vault._similar_tag_reason("machine-learning", "machinelearning") == "hyphen variant"
+
+    def test_plural_s(self) -> None:
+        assert Vault._similar_tag_reason("model", "models") == "plural"
+
+    def test_plural_es(self) -> None:
+        assert Vault._similar_tag_reason("process", "processes") == "plural"
+
+    def test_plural_ies(self) -> None:
+        assert Vault._similar_tag_reason("strategy", "strategies") == "plural"
+
+    def test_edit_distance(self) -> None:
+        reason = Vault._similar_tag_reason("flask", "flaks")
+        assert reason is not None
+        assert "edit distance" in reason
+
+    def test_no_match(self) -> None:
+        assert Vault._similar_tag_reason("python", "javascript") is None
+
+    def test_identical_not_matched(self) -> None:
+        assert Vault._similar_tag_reason("react", "react") is None
+
+    def test_substring_still_detected(self) -> None:
+        assert Vault._similar_tag_reason("react", "reactjs") == "substring"
+
+
+class TestPluralPair:
+    def test_simple_s(self) -> None:
+        assert Vault._is_plural_pair("model", "models") is True
+
+    def test_simple_es(self) -> None:
+        assert Vault._is_plural_pair("process", "processes") is True
+
+    def test_ies(self) -> None:
+        assert Vault._is_plural_pair("strategy", "strategies") is True
+
+    def test_not_plural(self) -> None:
+        assert Vault._is_plural_pair("react", "reactive") is False
+
+    def test_same(self) -> None:
+        assert Vault._is_plural_pair("model", "model") is False
+
+    def test_order_independent(self) -> None:
+        assert Vault._is_plural_pair("models", "model") is True
+
+
+class TestAuditSimilarTagsEnhanced:
+    def test_hyphen_variant_detected_in_audit(self, vault: Vault) -> None:
+        vault.write_file("wiki/concepts/a.md", _page("A", tags=["machine-learning"]))
+        vault.write_file("wiki/concepts/b.md", _page("B", tags=["machinelearning"]))
+        report = vault.audit_vault()
+        assert any(
+            "hyphen" in st.get("reason", "")
+            for st in report.get("similar_tags", [])
+        )
+
+    def test_plural_detected_in_audit(self, vault: Vault) -> None:
+        vault.write_file("wiki/concepts/a.md", _page("A", tags=["model"]))
+        vault.write_file("wiki/concepts/b.md", _page("B", tags=["models"]))
+        report = vault.audit_vault()
+        assert any(
+            "plural" in st.get("reason", "")
+            for st in report.get("similar_tags", [])
+        )
