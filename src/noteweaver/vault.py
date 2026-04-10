@@ -943,6 +943,7 @@ class Vault:
         and page listing.  Designed to be injected into the system prompt
         so the LLM knows the vault structure before making any tool calls.
         """
+        _SKIP_PATHS = {"wiki/index.md", "wiki/log.md"}
         all_summaries = self.read_frontmatters("wiki")
         existing_tags: set[str] = set()
         existing_titles: list[str] = []
@@ -950,6 +951,8 @@ class Vault:
         non_hub_pages: list[dict] = []
 
         for ps in all_summaries:
+            if ps.get("path") in _SKIP_PATHS:
+                continue
             for t in (ps.get("tags") or []):
                 if t != "imported":
                     existing_tags.add(t)
@@ -957,7 +960,7 @@ class Vault:
                 existing_titles.append(ps["title"])
             if ps.get("type") == "hub":
                 hubs.append(ps)
-            elif ps.get("type") not in ("journal",):
+            elif ps.get("type") not in ("journal", "archive"):
                 non_hub_pages.append(ps)
 
         lines: list[str] = []
