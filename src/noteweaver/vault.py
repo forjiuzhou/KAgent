@@ -965,6 +965,9 @@ class Vault:
 
         lines: list[str] = []
 
+        _MAX_CHILDREN_PER_HUB = 6
+        _MAX_OTHER_PAGES = 10
+
         if hubs:
             lines.append("### Navigation Tree")
             for hub in hubs:
@@ -973,13 +976,17 @@ class Vault:
                     p for p in non_hub_pages
                     if hub_tags & set(p.get("tags") or [])
                 ]
+                child_pages.sort(
+                    key=lambda p: self.backlinks.reference_count(p.get("title", "")),
+                    reverse=True,
+                )
                 desc = f" — {hub['summary']}" if hub.get("summary") else ""
-                lines.append(f"- **{hub['title']}** (hub){desc}")
-                for cp in child_pages[:8]:
+                lines.append(f"- **{hub['title']}** `{hub['path']}` (hub, {len(child_pages)} pages){desc}")
+                for cp in child_pages[:_MAX_CHILDREN_PER_HUB]:
                     cp_desc = f" — {cp['summary']}" if cp.get("summary") else ""
-                    lines.append(f"  - [{cp['type']}] {cp['title']}{cp_desc}")
-                if len(child_pages) > 8:
-                    lines.append(f"  - ... and {len(child_pages) - 8} more")
+                    lines.append(f"  - [{cp['type']}] {cp['title']} `{cp['path']}`{cp_desc}")
+                if len(child_pages) > _MAX_CHILDREN_PER_HUB:
+                    lines.append(f"  - ... and {len(child_pages) - _MAX_CHILDREN_PER_HUB} more (use list_page_summaries to see all)")
             lines.append("")
 
         unlinked = [
@@ -991,12 +998,12 @@ class Vault:
         ] if hubs else non_hub_pages
 
         if unlinked:
-            lines.append(f"### Other Pages ({len(unlinked)})")
-            for p in unlinked[:15]:
+            lines.append(f"### Other Pages ({len(unlinked)} not under any hub)")
+            for p in unlinked[:_MAX_OTHER_PAGES]:
                 desc = f" — {p['summary']}" if p.get("summary") else ""
-                lines.append(f"- [{p['type']}] {p['title']}{desc}")
-            if len(unlinked) > 15:
-                lines.append(f"- ... and {len(unlinked) - 15} more")
+                lines.append(f"- [{p['type']}] {p['title']} `{p['path']}`{desc}")
+            if len(unlinked) > _MAX_OTHER_PAGES:
+                lines.append(f"- ... and {len(unlinked) - _MAX_OTHER_PAGES} more (use list_page_summaries to see all)")
             lines.append("")
 
         lines.append(f"Tags: {', '.join(sorted(existing_tags)) or '(none)'}")
