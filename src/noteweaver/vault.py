@@ -186,7 +186,8 @@ The `digest` operation reviews recent journals looking for:
 
 ### Import local files
 1. `import_files(directory)` — batch imports all .md files
-2. Review summary, optionally reorganize
+2. `scan_imports()` — get file digests + vault context for planning
+3. `apply_organize_plan(plan)` — apply organization decisions in bulk
 
 ### Query (within conversation)
 1. Search or scan pages relevant to the question
@@ -722,6 +723,345 @@ class Vault:
             "total_links": link_stats["total_links"],
             "avg_links_per_page": round(link_stats["total_links"] / total, 1) if total else 0,
         }
+
+    # ------------------------------------------------------------------
+    # Organize imports: scan + apply
+    # ------------------------------------------------------------------
+
+    _TOTAL_SCAN_BUDGET = 80_000   # chars across all files (~24k tokens)
+    _PER_FILE_MIN = 800
+    _PER_FILE_MAX = 5_000
+
+    def scan_imports(self) -> str:
+        """Scan recently imported files and vault context for LLM-driven organization.
+
+        Finds files tagged ``[imported]``, reads each within an adaptive
+        character budget (frontmatter + heading outline + opening text),
+        and assembles a structured summary the LLM can use to produce an
+        organization plan in a single response.
+        """
+        from noteweaver.frontmatter import extract_frontmatter, page_summary_from_file
+
+        imported_pages: list[dict] = []
+        for rel_path in self.list_files("wiki"):
+            try:
+                content = self.read_file(rel_path)
+            except (FileNotFoundError, PermissionError):
+                continue
+            fm = extract_frontmatter(content)
+            if not fm:
+                continue
+            tags = fm.get("tags") or []
+            if "imported" not in tags:
+                continue
+            imported_pages.append({
+                "path": rel_path,
+                "content": content,
+                "fm": fm,
+            })
+
+        if not imported_pages:
+            return "No files with tag [imported] found. Nothing to organize."
+
+        n = len(imported_pages)
+        per_file = max(
+            self._PER_FILE_MIN,
+            min(self._PER_FILE_MAX, self._TOTAL_SCAN_BUDGET // n),
+        )
+
+        # Collect vault context: existing tags, hubs, page titles
+        all_summaries = self.read_frontmatters("wiki")
+        existing_tags: set[str] = set()
+        existing_titles: list[str] = []
+        existing_hubs: list[str] = []
+        for ps in all_summaries:
+            for t in (ps.get("tags") or []):
+                if t != "imported":
+                    existing_tags.add(t)
+            if ps.get("title"):
+                existing_titles.append(ps["title"])
+            if ps.get("type") == "hub":
+                existing_hubs.append(ps["title"])
+
+        # Build per-file digest
+        file_sections: list[str] = []
+        for i, page in enumerate(imported_pages, 1):
+            digest = self._build_file_digest(
+                page["path"], page["content"], page["fm"], per_file,
+            )
+            file_sections.append(f"### File {i}: {page['path']}\n{digest}")
+
+        vault_ctx_lines = [
+            f"Existing tags: {', '.join(sorted(existing_tags)) or '(none)'}",
+            f"Existing hubs: {', '.join(existing_hubs) or '(none)'}",
+            f"Existing page titles ({len(existing_titles)}): "
+            + ", ".join(existing_titles[:40]),
+        ]
+
+        output_parts = [
+            f"## Imported files to organize: {n}\n",
+            f"Per-file character budget: {per_file}\n",
+            "## Vault context\n",
+            "\n".join(vault_ctx_lines),
+            "\n## File details\n",
+            "\n\n".join(file_sections),
+            "\n## Instructions\n",
+            (
+                "For EACH file above, output a JSON array. Each element:\n"
+                "```json\n"
+                "{\n"
+                '  "path": "wiki/concepts/example.md",\n'
+                '  "type": "note|canonical|journal|synthesis|hub",\n'
+                '  "title": "Corrected Title",\n'
+                '  "summary": "One-sentence summary of the page",\n'
+                '  "tags": ["tag-a", "tag-b"],\n'
+                '  "move_to": "wiki/journals/example.md or null if no move needed",\n'
+                '  "related": ["Existing Page Title", "Another Page"],\n'
+                '  "hub": "Existing or suggested hub name, or null",\n'
+                '  "duplicate_of": "path of existing page if duplicate, else null",\n'
+                '  "confidence": "high|low"\n'
+                "}\n"
+                "```\n"
+                "Rules:\n"
+                "- Use existing tags when possible; create new ones sparingly.\n"
+                "- Set confidence=low for items you're unsure about.\n"
+                "- Set duplicate_of only when content genuinely overlaps an existing page.\n"
+                "- Suggest hub when 3+ pages (including existing) share a topic.\n"
+                "- Respond ONLY with the JSON array. No extra text."
+            ),
+        ]
+        return "\n".join(output_parts)
+
+    @staticmethod
+    def _build_file_digest(
+        rel_path: str, content: str, fm: dict, budget: int,
+    ) -> str:
+        """Build a structured digest of a file within a character budget.
+
+        Priority: full frontmatter > heading outline > opening body text.
+        """
+        import re as _re
+
+        parts: list[str] = []
+        used = 0
+
+        # 1. Frontmatter block (always include in full)
+        fm_match = _re.match(r"^---\s*\n.*?\n---\s*\n", content, _re.DOTALL)
+        if fm_match:
+            fm_text = fm_match.group(0)
+            parts.append(fm_text.strip())
+            used += len(fm_text)
+
+        # 2. Heading outline
+        headings = [
+            line for line in content.split("\n")
+            if _re.match(r"^#{1,4}\s", line)
+        ]
+        if headings:
+            outline = "Headings: " + " | ".join(h.strip() for h in headings)
+            if used + len(outline) < budget:
+                parts.append(outline)
+                used += len(outline)
+
+        # 3. File length metadata
+        meta = f"Total length: {len(content)} chars"
+        parts.append(meta)
+        used += len(meta)
+
+        # 4. Fill remaining budget with body text from the start
+        body_start = fm_match.end() if fm_match else 0
+        remaining = budget - used
+        if remaining > 50:
+            body_slice = content[body_start:body_start + remaining].strip()
+            if body_slice:
+                parts.append(f"Content preview:\n{body_slice}")
+
+        return "\n".join(parts)
+
+    def apply_organize_plan(self, plan_json: str) -> str:
+        """Apply an LLM-generated organization plan to imported files.
+
+        Expects a JSON array of file plans. Performs: type/tag/summary
+        updates, file moves, related-link insertion, and hub creation.
+        Returns a structured report.
+        """
+        import json as _json
+        from noteweaver.frontmatter import extract_frontmatter
+
+        try:
+            plan = _json.loads(plan_json)
+        except _json.JSONDecodeError as e:
+            return f"Error: invalid JSON — {e}"
+
+        if not isinstance(plan, list):
+            return "Error: expected a JSON array of file plans."
+
+        results: list[str] = []
+        processed = 0
+        moved = 0
+        links_added = 0
+        needs_review: list[str] = []
+        hubs_to_create: dict[str, list[str]] = {}
+        hubs_created: list[str] = []
+
+        with self.operation("Organize imported files"):
+            for item in plan:
+                path = item.get("path", "")
+                if not path:
+                    continue
+
+                try:
+                    content = self.read_file(path)
+                except FileNotFoundError:
+                    results.append(f"  ⚠ {path}: not found, skipped")
+                    continue
+
+                fm = extract_frontmatter(content)
+                if not fm:
+                    results.append(f"  ⚠ {path}: no frontmatter, skipped")
+                    continue
+
+                confidence = item.get("confidence", "high")
+                duplicate_of = item.get("duplicate_of")
+
+                if confidence == "low" or duplicate_of:
+                    reason = f"duplicate_of={duplicate_of}" if duplicate_of else "low confidence"
+                    needs_review.append(f"  - {path}: {reason}")
+                    # Still apply safe metadata updates for low-confidence items
+                    if confidence == "low" and not duplicate_of:
+                        pass  # fall through to metadata update
+                    else:
+                        continue
+
+                # Update frontmatter fields
+                fm_updates: dict = {}
+                if item.get("type") and item["type"] != fm.get("type"):
+                    fm_updates["type"] = item["type"]
+                if item.get("title") and item["title"] != fm.get("title"):
+                    fm_updates["title"] = item["title"]
+                if item.get("summary"):
+                    fm_updates["summary"] = item["summary"]
+                if item.get("tags"):
+                    new_tags = [t for t in item["tags"] if t != "imported"]
+                    fm_updates["tags"] = new_tags
+
+                # Remove 'imported' tag even if no other tag changes
+                if not fm_updates.get("tags"):
+                    old_tags = fm.get("tags") or []
+                    if "imported" in old_tags:
+                        fm_updates["tags"] = [t for t in old_tags if t != "imported"]
+
+                if fm_updates:
+                    fm.update(fm_updates)
+                    import yaml as _yaml
+                    from noteweaver.frontmatter import FRONTMATTER_PATTERN
+                    fm_str = _yaml.dump(
+                        fm, default_flow_style=False, allow_unicode=True,
+                    ).strip()
+                    body = FRONTMATTER_PATTERN.sub("", content, count=1)
+                    content = f"---\n{fm_str}\n---\n{body}"
+                    self.write_file(path, content)
+
+                # Move file if needed
+                actual_path = path
+                move_to = item.get("move_to")
+                if move_to and move_to != path:
+                    try:
+                        self.write_file(move_to, content)
+                        original = self._resolve(path)
+                        if original.is_file():
+                            original.unlink()
+                        actual_path = move_to
+                        moved += 1
+                    except Exception as e:
+                        results.append(f"  ⚠ move {path} → {move_to} failed: {e}")
+
+                # Add related links
+                for related_title in (item.get("related") or []):
+                    try:
+                        existing = self.read_file(actual_path)
+                        link = f"[[{related_title}]]"
+                        if link not in existing:
+                            related_pattern = re.compile(
+                                r"(## Related\b.*)", re.IGNORECASE | re.DOTALL,
+                            )
+                            match = related_pattern.search(existing)
+                            if match:
+                                section = match.group(1)
+                                new_section = section.rstrip() + f"\n- {link}\n"
+                                new_content = existing[:match.start()] + new_section
+                            else:
+                                new_content = existing.rstrip() + f"\n\n## Related\n\n- {link}\n"
+                            self.write_file(actual_path, new_content)
+                            links_added += 1
+                    except Exception:
+                        pass
+
+                # Collect hub assignments
+                hub_name = item.get("hub")
+                if hub_name:
+                    title = item.get("title") or fm.get("title") or ""
+                    if title:
+                        hubs_to_create.setdefault(hub_name, []).append(title)
+
+                processed += 1
+                results.append(f"  ✓ {path}" + (f" → {move_to}" if move_to and move_to != path else ""))
+
+            # Create/update hubs
+            for hub_name, page_titles in hubs_to_create.items():
+                hub_slug = hub_name.lower().replace(" ", "-")
+                hub_slug = re.sub(r"[^a-z0-9-]", "", hub_slug)
+                hub_slug = re.sub(r"-{2,}", "-", hub_slug).strip("-")[:60]
+                hub_path = f"wiki/concepts/{hub_slug}.md"
+
+                try:
+                    existing_hub = self.read_file(hub_path)
+                    for pt in page_titles:
+                        link = f"[[{pt}]]"
+                        if link not in existing_hub:
+                            existing_hub = existing_hub.rstrip() + f"\n- {link}\n"
+                    self.write_file(hub_path, existing_hub)
+                    results.append(f"  ✓ Updated hub: {hub_path} (+{len(page_titles)} links)")
+                except FileNotFoundError:
+                    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+                    links_block = "\n".join(f"- [[{pt}]]" for pt in page_titles)
+                    hub_content = (
+                        f"---\ntitle: {hub_name}\ntype: hub\n"
+                        f"summary: Hub for {hub_name} topics\n"
+                        f"tags: [{hub_slug}]\n"
+                        f"created: {today}\nupdated: {today}\n---\n\n"
+                        f"# {hub_name}\n\n"
+                        f"Overview page for {hub_name} related content.\n\n"
+                        f"## Pages\n\n{links_block}\n\n"
+                        f"## Related\n"
+                    )
+                    self.write_file(hub_path, hub_content)
+                    hubs_created.append(hub_name)
+                    results.append(f"  ✓ Created hub: {hub_path} ({len(page_titles)} pages)")
+
+            self.rebuild_index()
+            self.append_log(
+                "organize",
+                f"Organized {processed} imported files",
+                f"Moved: {moved}, Links added: {links_added}, "
+                f"Hubs created: {len(hubs_created)}",
+            )
+
+        # Build report
+        report_lines = [
+            f"Organized {processed}/{len(plan)} files:\n",
+            "\n".join(results),
+        ]
+        if hubs_created:
+            report_lines.append(f"\nNew hubs: {', '.join(hubs_created)}")
+        if needs_review:
+            report_lines.append(f"\n⚠ Needs review ({len(needs_review)} files):")
+            report_lines.append("\n".join(needs_review))
+        report_lines.append(
+            f"\nSummary: {processed} processed, {moved} moved, "
+            f"{links_added} links added, {len(hubs_created)} hubs created"
+        )
+        return "\n".join(report_lines)
 
     def import_directory(self, source_dir: str) -> str:
         """Import .md files from an external directory into the vault.

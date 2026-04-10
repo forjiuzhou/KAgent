@@ -55,7 +55,8 @@ class TestPromptStructure:
                       "read_transcript", "append_log",
                       "find_existing_page", "append_section",
                       "append_to_section", "update_frontmatter",
-                      "add_related_link"]:
+                      "add_related_link", "scan_imports",
+                      "apply_organize_plan"]:
             assert tool in PROMPT_TOOLS, f"Missing tool: {tool}"
 
     def test_tools_has_common_requests(self) -> None:
@@ -76,7 +77,7 @@ class TestPromptStructure:
         assert "Use Chinese" in system_msg
 
     def test_prompt_token_budget(self) -> None:
-        assert len(SYSTEM_PROMPT) < 6500, f"System prompt too large: {len(SYSTEM_PROMPT)} chars"
+        assert len(SYSTEM_PROMPT) < 7500, f"System prompt too large: {len(SYSTEM_PROMPT)} chars"
 
 
 class TestHistoryCompression:
