@@ -110,6 +110,7 @@ TOOL_TIERS: dict[str, RiskTier] = {
     "save_source": RiskTier.MEDIUM_WRITE,
     "import_files": RiskTier.MEDIUM_WRITE,
     "promote_insight": RiskTier.MEDIUM_WRITE,
+    "merge_tags": RiskTier.MEDIUM_WRITE,
     "write_page": RiskTier.HIGH_WRITE,
 }
 

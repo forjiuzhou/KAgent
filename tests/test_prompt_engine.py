@@ -23,16 +23,13 @@ def agent(vault: Vault) -> KnowledgeAgent:
 
 
 class TestPromptStructure:
-    def test_identity_has_three_modes(self) -> None:
-        assert "Three Modes" in PROMPT_IDENTITY
+    def test_identity_has_two_capabilities(self) -> None:
         assert "Conversation" in PROMPT_IDENTITY
-        assert "Capture" in PROMPT_IDENTITY
-        assert "Organize" in PROMPT_IDENTITY
+        assert "Knowledge Capture" in PROMPT_IDENTITY
 
     def test_identity_has_tree_model(self) -> None:
         assert "index.md" in PROMPT_IDENTITY
         assert "Hub" in PROMPT_IDENTITY
-        assert "O(log n)" in PROMPT_IDENTITY
 
     def test_identity_has_object_types(self) -> None:
         assert "Canonical" in PROMPT_IDENTITY

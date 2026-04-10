@@ -53,6 +53,19 @@ class Gateway:
         self._active_chat_ids: set[str] = set()
         self._pending_notifications: list[str] = []
         self._notify_hour = int(os.environ.get("NW_NOTIFY_HOUR", "9"))
+        self._pending_organize_plan: list[dict] | None = None
+
+    def _load_last_digest_date(self) -> str | None:
+        path = self.vault.meta_dir / "last-digest-date"
+        if path.is_file():
+            return path.read_text(encoding="utf-8").strip() or None
+        return None
+
+    def _save_last_digest_date(self) -> None:
+        from datetime import datetime
+        path = self.vault.meta_dir / "last-digest-date"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(datetime.now().strftime("%Y-%m-%d"), encoding="utf-8")
 
     def _setup_adapters(self) -> None:
         """Detect which platforms are configured and create adapters."""
@@ -75,25 +88,55 @@ class Gateway:
                 "No IM adapters configured. Set NW_TELEGRAM_TOKEN to enable Telegram."
             )
 
+    _APPROVE_KEYWORDS = frozenset({
+        "好", "好的", "可以", "执行", "yes", "y", "ok", "确认",
+    })
+
     async def _handle_message(self, msg: IncomingMessage) -> str:
         """Route an incoming message to the Agent and return the reply.
 
-        Uses a lock to prevent concurrent agent operations on the same vault.
-        Periodically saves transcripts and session memory.
+        All writes are intercepted by chat() and collected as a pending
+        plan.  If a plan is pending, it is presented to the user.
+        Approval keywords trigger execution; any other message cancels.
         """
         self._active_chat_ids.add(msg.chat_id)
         async with self._lock:
+            # Check if user is approving a pending plan
+            if self._pending_organize_plan and msg.text.strip().lower() in self._APPROVE_KEYWORDS:
+                try:
+                    result = self.agent.execute_organize_plan(self._pending_organize_plan)
+                    self._pending_organize_plan = None
+                    return f"✅ {result}"
+                except Exception as e:
+                    self._pending_organize_plan = None
+                    log.error("Plan execution failed: %s", e)
+                    return f"执行失败: {e}"
+
+            if self._pending_organize_plan:
+                self._pending_organize_plan = None
+                self.agent._clear_pending_plan()
+
             reply_parts = []
             tool_parts = []
             try:
                 for chunk in self.agent.chat(msg.text):
-                    if chunk.startswith("  ↳ "):
+                    if chunk.startswith("  📋 ") or chunk.startswith("  ↳ "):
                         tool_parts.append(chunk.strip())
                     else:
                         reply_parts.append(chunk)
             except Exception as e:
                 log.error("Agent error: %s", e)
                 return f"Error: {e}"
+
+            # Check if chat() produced a pending plan (intercepted writes)
+            pending = self.agent._load_pending_plan()
+            if pending:
+                self._pending_organize_plan = pending
+                summary = self.agent.format_organize_plan(pending)
+                reply_parts.append(
+                    f"\n\n---\n\n📋 *变更计划*\n\n{summary}\n\n"
+                    "回复「好的」执行，或发送其他消息跳过。"
+                )
 
             self._message_count += 1
             if self._message_count % self._SAVE_INTERVAL == 0:
@@ -151,43 +194,43 @@ class Gateway:
             # --- Digest ---
             if now - last_digest >= digest_interval:
                 log.info("Cron: running digest...")
-                digest_summary = ""
                 async with self._lock:
-                    self.agent.set_attended(False)
                     try:
+                        since = self._load_last_digest_date()
+                        since_hint = f" Only review journals after {since}." if since else ""
                         for chunk in self.agent.chat(
-                            "Review recent journals and extract any insights worth "
-                            "promoting. Write promotion candidates to today's journal "
-                            "only — do NOT create wiki pages directly. Be brief."
+                            "Review recent journal entries and promote any insights "
+                            "worth capturing as wiki pages. Use promote_insight or "
+                            "write_page for each finding. Add links and tags."
+                            + since_hint
                         ):
-                            if not chunk.startswith("  ↳"):
-                                digest_summary += chunk
+                            pass
+                        pending = self.agent._load_pending_plan()
+                        if pending:
+                            self._pending_organize_plan = pending
+                            summary = self.agent.format_organize_plan(pending)
+                            self._pending_notifications.append(
+                                f"📋 *Digest plan*\n\n{summary}\n\n"
+                                "回复「好的」执行。"
+                            )
+                        self._save_last_digest_date()
                     except Exception as e:
                         log.error("Cron digest failed: %s", e)
-                    finally:
-                        self.agent.set_attended(True)
                 last_digest = now
 
-                if digest_summary.strip():
-                    self._pending_notifications.append(
-                        f"📋 *Digest completed*\n\n{digest_summary.strip()}"
-                    )
-
-            # --- Lint ---
+            # --- Audit (pure code, no LLM, no lock needed) ---
             if now - last_lint >= lint_interval:
-                log.info("Cron: running lint...")
-                async with self._lock:
-                    self.agent.set_attended(False)
-                    try:
-                        for chunk in self.agent.chat(
-                            "Quick health check: use vault_stats and report any issues. Be brief."
-                        ):
-                            if not chunk.startswith("  ↳"):
-                                log.info("Lint result: %s", chunk[:200])
-                    except Exception as e:
-                        log.error("Cron lint failed: %s", e)
-                    finally:
-                        self.agent.set_attended(True)
+                log.info("Cron: running vault audit...")
+                try:
+                    report = self.vault.audit_vault()
+                    self.vault.save_audit_report(report)
+                    if any(report.get(k) for k in report if k != "summary"):
+                        self._pending_notifications.append(
+                            f"🔍 *Vault Audit*\n\n{report['summary']}"
+                        )
+                    log.info("Audit result: %s", report.get("summary", ""))
+                except Exception as e:
+                    log.error("Cron audit failed: %s", e)
                 last_lint = now
 
             # --- Notification delivery at configured hour ---

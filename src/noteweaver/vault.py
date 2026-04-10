@@ -454,8 +454,56 @@ class Vault:
         new_content, n = self._UPDATED_RE.subn(rf"\g<1>{today}", content, count=1)
         return new_content if n else content
 
+    _TAG_NORMALIZE_RE = re.compile(r"[^a-z0-9\u4e00-\u9fff\u3040-\u309f\u30a0-\u30ff-]")
+
+    @classmethod
+    def normalize_tag(cls, tag: str) -> str:
+        """Normalize a tag: lowercase, replace spaces/underscores with hyphens,
+        strip non-alphanumeric characters (preserving CJK)."""
+        t = tag.lower().strip().replace(" ", "-").replace("_", "-")
+        t = cls._TAG_NORMALIZE_RE.sub("", t)
+        t = re.sub(r"-{2,}", "-", t).strip("-")
+        return t
+
+    def _normalize_tags_in_content(self, content: str) -> str:
+        """Normalize tags in frontmatter before writing."""
+        from noteweaver.frontmatter import extract_frontmatter, FRONTMATTER_PATTERN
+        fm = extract_frontmatter(content)
+        if not fm or not fm.get("tags"):
+            return content
+        tags = fm["tags"]
+        if not isinstance(tags, list):
+            return content
+        normalized = [self.normalize_tag(t) for t in tags if t]
+        normalized = list(dict.fromkeys(t for t in normalized if t))
+        if normalized == tags:
+            return content
+        fm["tags"] = normalized
+        import yaml as _yaml
+        fm_str = _yaml.dump(fm, default_flow_style=False, allow_unicode=True).strip()
+        body = FRONTMATTER_PATTERN.sub("", content, count=1)
+        return f"---\n{fm_str}\n---\n{body}"
+
+    def resolve_title(self, title: str) -> str | None:
+        """Resolve a page title to its path. Returns None if not found."""
+        title_lower = title.lower()
+        for rel_path in self.list_files("wiki"):
+            try:
+                content = self.read_file(rel_path)
+            except (FileNotFoundError, PermissionError):
+                continue
+            from noteweaver.frontmatter import extract_frontmatter
+            fm = extract_frontmatter(content)
+            if fm and fm.get("title", "").lower() == title_lower:
+                return rel_path
+        return None
+
     def write_file(self, rel_path: str, content: str) -> None:
-        """Write a file in the wiki area. Refuses to write into sources/."""
+        """Write a file in the wiki area. Refuses to write into sources/.
+
+        Enforces title uniqueness: if another wiki file already has the
+        same frontmatter title, the write is rejected.
+        """
         path = self._resolve(rel_path)
         if self._is_in_sources(path):
             raise PermissionError(
@@ -467,6 +515,9 @@ class Vault:
             )
         if rel_path.startswith("wiki/") and rel_path not in self._SKIP_UPDATED:
             content = self._touch_updated(content)
+        if rel_path.startswith("wiki/"):
+            content = self._normalize_tags_in_content(content)
+            self._check_title_unique(rel_path, content)
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(content, encoding="utf-8")
         self._index_file(rel_path, content)
@@ -475,6 +526,30 @@ class Vault:
             self._operation_dirty = True
         else:
             self._git_commit(f"Update {rel_path}")
+
+    _title_check_skip: set[str] = set()
+
+    def _check_title_unique(self, rel_path: str, content: str) -> None:
+        """Raise if another file already uses the same title.
+
+        Exempts archive paths, the file being overwritten, and paths
+        in ``_title_check_skip`` (used during file moves).
+        """
+        if "/archive/" in rel_path:
+            return
+        from noteweaver.frontmatter import extract_frontmatter
+        fm = extract_frontmatter(content)
+        if not fm or not fm.get("title"):
+            return
+        title = fm["title"]
+        existing = self.resolve_title(title)
+        if (existing and existing != rel_path
+                and "/archive/" not in existing
+                and existing not in self._title_check_skip):
+            raise PermissionError(
+                f"Title '{title}' already used by {existing}. "
+                f"Titles must be unique because [[wiki-links]] depend on them."
+            )
 
     def save_source(self, rel_path: str, content: str) -> None:
         """Write a file to sources/. Only creates new files, never overwrites."""
@@ -725,6 +800,341 @@ class Vault:
         }
 
     # ------------------------------------------------------------------
+    # Vault audit
+    # ------------------------------------------------------------------
+
+    def audit_vault(self) -> dict:
+        """Full vault health audit. Pure code, no LLM.
+
+        Scans frontmatter and content to produce a structured findings
+        report.  Each finding category is a list of dicts with enough
+        detail for an LLM or CLI to act on.
+        """
+        from noteweaver.frontmatter import extract_frontmatter
+
+        all_pages: list[dict] = []
+        for rel_path in self.list_files("wiki"):
+            if rel_path in ("wiki/index.md", "wiki/log.md"):
+                continue
+            if "/archive/" in rel_path:
+                continue
+            try:
+                content = self.read_file(rel_path)
+                fm = extract_frontmatter(content)
+                if fm is None:
+                    continue
+                all_pages.append({
+                    "path": rel_path,
+                    "fm": fm,
+                    "content": content,
+                })
+            except (FileNotFoundError, PermissionError):
+                continue
+
+        if not all_pages:
+            return {"summary": "0 issues found (vault is empty)"}
+
+        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        stale_imports: list[dict] = []
+        hub_candidates: list[dict] = []
+        orphan_pages: list[str] = []
+        missing_summaries: list[str] = []
+        broken_links: list[dict] = []
+        missing_connections: list[dict] = []
+        similar_tags: list[dict] = []
+
+        # Pre-compute lookups
+        titles_to_path: dict[str, str] = {}
+        hubs: set[str] = set()
+        hub_tags: set[str] = set()
+        tag_pages: dict[str, list[str]] = {}
+
+        for p in all_pages:
+            fm = p["fm"]
+            title = fm.get("title", "")
+            ptype = fm.get("type", "")
+            path = p["path"]
+            if title:
+                titles_to_path[title] = path
+            if ptype == "hub":
+                hubs.add(title)
+                for t in (fm.get("tags") or []):
+                    hub_tags.add(t.lower())
+            for t in (fm.get("tags") or []):
+                tag_pages.setdefault(t, []).append(path)
+
+        # 1. Stale imports: tagged [imported] with updated > 7 days ago
+        for p in all_pages:
+            fm = p["fm"]
+            tags = fm.get("tags") or []
+            if "imported" not in tags:
+                continue
+            updated = str(fm.get("updated", ""))
+            days = self._days_since(updated, today)
+            stale_imports.append({
+                "path": p["path"],
+                "days_since_update": days,
+            })
+
+        # 2. Hub candidates: tags with 3+ pages and no matching hub
+        for tag, pages in tag_pages.items():
+            if tag in ("imported", "journal", "pinned"):
+                continue
+            if len(pages) >= 3 and tag.lower() not in hub_tags:
+                hub_candidates.append({
+                    "tag": tag,
+                    "page_count": len(pages),
+                    "pages": pages[:5],
+                })
+
+        # 3. Orphan pages: no inbound links, not hub/journal
+        for p in all_pages:
+            fm = p["fm"]
+            title = fm.get("title", "")
+            ptype = fm.get("type", "")
+            if ptype in ("hub", "journal"):
+                continue
+            if title and self.backlinks.reference_count(title) == 0:
+                orphan_pages.append(p["path"])
+
+        # 4. Missing summaries
+        for p in all_pages:
+            fm = p["fm"]
+            summary = fm.get("summary", "")
+            if not summary or summary.startswith("Imported from"):
+                missing_summaries.append(p["path"])
+
+        # 5. Broken links: [[Title]] pointing to non-existent pages
+        from noteweaver.backlinks import WIKILINK_PATTERN
+        for p in all_pages:
+            links = WIKILINK_PATTERN.findall(p["content"])
+            for link_title in set(links):
+                if link_title not in titles_to_path:
+                    broken_links.append({
+                        "page": p["path"],
+                        "link_title": link_title,
+                    })
+
+        # 6. Missing connections: pages sharing 2+ tags but no mutual link
+        paths_by_tag: dict[str, set[str]] = {}
+        for p in all_pages:
+            fm = p["fm"]
+            for t in (fm.get("tags") or []):
+                paths_by_tag.setdefault(t, set()).add(p["path"])
+        checked_pairs: set[tuple[str, str]] = set()
+        for tag, paths in paths_by_tag.items():
+            if len(paths) > 20:
+                continue
+            path_list = sorted(paths)
+            for i, pa in enumerate(path_list):
+                for pb in path_list[i + 1:]:
+                    pair = (pa, pb)
+                    if pair in checked_pairs:
+                        continue
+                    checked_pairs.add(pair)
+                    shared = [
+                        t for t in (tag_pages.keys())
+                        if pa in tag_pages.get(t, []) and pb in tag_pages.get(t, [])
+                    ]
+                    if len(shared) < 2:
+                        continue
+                    outlinks_a = set(self.backlinks.outlinks_for(pa))
+                    outlinks_b = set(self.backlinks.outlinks_for(pb))
+                    title_a = next(
+                        (p["fm"].get("title", "") for p in all_pages if p["path"] == pa), ""
+                    )
+                    title_b = next(
+                        (p["fm"].get("title", "") for p in all_pages if p["path"] == pb), ""
+                    )
+                    if title_b not in outlinks_a and title_a not in outlinks_b:
+                        missing_connections.append({
+                            "page_a": pa,
+                            "page_b": pb,
+                            "shared_tags": shared[:5],
+                        })
+
+        # 7. Similar tags: potential duplicates
+        all_tags = sorted(tag_pages.keys())
+        checked_tag_pairs: set[tuple[str, str]] = set()
+        for i, ta in enumerate(all_tags):
+            for tb in all_tags[i + 1:]:
+                pair = (ta, tb)
+                if pair in checked_tag_pairs:
+                    continue
+                checked_tag_pairs.add(pair)
+                reason = None
+                if ta in tb or tb in ta:
+                    if len(ta) >= 2 and len(tb) >= 2:
+                        reason = "substring"
+                elif len(ta) > 3 and len(tb) > 3:
+                    dist = self._edit_distance(ta, tb)
+                    if dist <= 2:
+                        reason = f"edit distance {dist}"
+                if reason:
+                    similar_tags.append({
+                        "tag_a": ta, "tag_b": tb, "reason": reason,
+                    })
+
+        # Build summary line
+        counts = []
+        if stale_imports:
+            counts.append(f"{len(stale_imports)} stale import(s)")
+        if hub_candidates:
+            counts.append(f"{len(hub_candidates)} hub candidate(s)")
+        if orphan_pages:
+            counts.append(f"{len(orphan_pages)} orphan page(s)")
+        if missing_summaries:
+            counts.append(f"{len(missing_summaries)} missing summary(ies)")
+        if broken_links:
+            counts.append(f"{len(broken_links)} broken link(s)")
+        if missing_connections:
+            counts.append(f"{len(missing_connections)} missing connection(s)")
+        if similar_tags:
+            counts.append(f"{len(similar_tags)} similar tag pair(s)")
+
+        total = sum([
+            len(stale_imports), len(hub_candidates), len(orphan_pages),
+            len(missing_summaries), len(broken_links), len(missing_connections),
+            len(similar_tags),
+        ])
+        summary = (
+            f"{total} issue(s) found: {', '.join(counts)}"
+            if counts else "0 issues found"
+        )
+
+        return {
+            "stale_imports": stale_imports,
+            "hub_candidates": hub_candidates,
+            "orphan_pages": orphan_pages,
+            "missing_summaries": missing_summaries,
+            "broken_links": broken_links,
+            "missing_connections": missing_connections,
+            "similar_tags": similar_tags,
+            "summary": summary,
+        }
+
+    @staticmethod
+    def _edit_distance(a: str, b: str) -> int:
+        """Levenshtein distance between two strings."""
+        if len(a) < len(b):
+            return Vault._edit_distance(b, a)
+        if not b:
+            return len(a)
+        prev = list(range(len(b) + 1))
+        for i, ca in enumerate(a):
+            curr = [i + 1]
+            for j, cb in enumerate(b):
+                curr.append(min(
+                    prev[j + 1] + 1,
+                    curr[j] + 1,
+                    prev[j] + (0 if ca == cb else 1),
+                ))
+            prev = curr
+        return prev[-1]
+
+    def save_audit_report(self, report: dict) -> Path:
+        """Persist an audit report to ``.meta/audit-report.json``."""
+        import json as _json
+        path = self.meta_dir / "audit-report.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            _json.dumps(report, indent=2, ensure_ascii=False),
+            encoding="utf-8",
+        )
+        return path
+
+    @staticmethod
+    def _days_since(date_str: str, today_str: str) -> int | None:
+        """Return days between *date_str* and *today_str* (YYYY-MM-DD)."""
+        try:
+            d = datetime.strptime(date_str, "%Y-%m-%d")
+            t = datetime.strptime(today_str, "%Y-%m-%d")
+            return (t - d).days
+        except (ValueError, TypeError):
+            return None
+
+    # ------------------------------------------------------------------
+    # Vault context (shared by scan_imports and session organize)
+    # ------------------------------------------------------------------
+
+    def scan_vault_context(self) -> str:
+        """Build a minimal vault overview for the LLM system prompt.
+
+        Only shows the top level of the tree: hub names with page counts,
+        tags, and a count of unorganized pages.  This is O(number of hubs),
+        constant regardless of total vault size.
+
+        The LLM uses tools to drill deeper:
+        - ``read_page`` on a hub to see its child pages
+        - ``list_page_summaries`` to scan a directory
+        - ``search_vault`` or ``find_existing_page`` for targeted lookup
+        """
+        _SKIP_PATHS = {"wiki/index.md", "wiki/log.md"}
+        all_summaries = self.read_frontmatters("wiki")
+        existing_tags: set[str] = set()
+        hubs: list[dict] = []
+        non_hub_count = 0
+        unorganized_count = 0
+        total = 0
+
+        hub_tag_set: set[str] = set()
+
+        for ps in all_summaries:
+            if ps.get("path") in _SKIP_PATHS:
+                continue
+            if ps.get("type") in ("journal", "archive"):
+                continue
+            total += 1
+            for t in (ps.get("tags") or []):
+                if t != "imported":
+                    existing_tags.add(t)
+            if ps.get("type") == "hub":
+                hubs.append(ps)
+                for t in (ps.get("tags") or []):
+                    hub_tag_set.add(t)
+            else:
+                non_hub_count += 1
+
+        for ps in all_summaries:
+            if ps.get("path") in _SKIP_PATHS:
+                continue
+            if ps.get("type") in ("hub", "journal", "archive"):
+                continue
+            page_tags = set(ps.get("tags") or [])
+            if not (page_tags & hub_tag_set):
+                unorganized_count += 1
+
+        lines: list[str] = []
+
+        if hubs:
+            lines.append("Hubs:")
+            for hub in hubs:
+                hub_tags = set(hub.get("tags") or [])
+                child_count = sum(
+                    1 for ps in all_summaries
+                    if ps.get("path") not in _SKIP_PATHS
+                    and ps.get("type") not in ("hub", "journal", "archive")
+                    and (set(ps.get("tags") or []) & hub_tags)
+                )
+                lines.append(f"  {hub['title']} ({child_count} pages) → {hub['path']}")
+
+        if existing_tags:
+            sorted_tags = sorted(existing_tags)
+            if len(sorted_tags) > 20:
+                lines.append(f"Tags ({len(sorted_tags)}): {', '.join(sorted_tags[:20])}, ...")
+            else:
+                lines.append(f"Tags: {', '.join(sorted_tags)}")
+
+        if unorganized_count:
+            lines.append(f"Unorganized: {unorganized_count} page(s) not under any hub")
+
+        lines.append(f"Total: {total} pages")
+        lines.append("")
+        lines.append("Use read_page on a hub, list_page_summaries, or search_vault to explore.")
+
+        return "\n".join(lines)
+
+    # ------------------------------------------------------------------
     # Organize imports: scan + apply
     # ------------------------------------------------------------------
 
@@ -769,20 +1179,6 @@ class Vault:
             min(self._PER_FILE_MAX, self._TOTAL_SCAN_BUDGET // n),
         )
 
-        # Collect vault context: existing tags, hubs, page titles
-        all_summaries = self.read_frontmatters("wiki")
-        existing_tags: set[str] = set()
-        existing_titles: list[str] = []
-        existing_hubs: list[str] = []
-        for ps in all_summaries:
-            for t in (ps.get("tags") or []):
-                if t != "imported":
-                    existing_tags.add(t)
-            if ps.get("title"):
-                existing_titles.append(ps["title"])
-            if ps.get("type") == "hub":
-                existing_hubs.append(ps["title"])
-
         # Build per-file digest
         file_sections: list[str] = []
         for i, page in enumerate(imported_pages, 1):
@@ -791,18 +1187,13 @@ class Vault:
             )
             file_sections.append(f"### File {i}: {page['path']}\n{digest}")
 
-        vault_ctx_lines = [
-            f"Existing tags: {', '.join(sorted(existing_tags)) or '(none)'}",
-            f"Existing hubs: {', '.join(existing_hubs) or '(none)'}",
-            f"Existing page titles ({len(existing_titles)}): "
-            + ", ".join(existing_titles[:40]),
-        ]
+        vault_ctx = self.scan_vault_context()
 
         output_parts = [
             f"## Imported files to organize: {n}\n",
             f"Per-file character budget: {per_file}\n",
             "## Vault context\n",
-            "\n".join(vault_ctx_lines),
+            vault_ctx,
             "\n## File details\n",
             "\n\n".join(file_sections),
             "\n## Instructions\n",
@@ -967,13 +1358,16 @@ class Vault:
                 move_to = item.get("move_to")
                 if move_to and move_to != path:
                     try:
+                        self._title_check_skip.add(path)
                         self.write_file(move_to, content)
+                        self._title_check_skip.discard(path)
                         original = self._resolve(path)
                         if original.is_file():
                             original.unlink()
                         actual_path = move_to
                         moved += 1
                     except Exception as e:
+                        self._title_check_skip.discard(path)
                         results.append(f"  ⚠ move {path} → {move_to} failed: {e}")
 
                 # Add related links

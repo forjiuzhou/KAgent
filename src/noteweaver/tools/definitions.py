@@ -25,21 +25,21 @@ TOOL_SCHEMAS: list[dict] = [
         "function": {
             "name": "read_page",
             "description": (
-                "Read a file from the vault. By default reads the full content. "
-                "Use max_chars to read only the beginning (frontmatter + first "
-                "paragraph) for a quick relevance check before committing to "
-                "a full read. Path is relative to vault root."
+                "Read a file from the vault. Accepts either a file path "
+                "(e.g. 'wiki/concepts/attention.md') or a page title "
+                "(e.g. 'Attention Mechanism'). Use max_chars to read only "
+                "the beginning for a quick relevance check."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
                     "path": {
                         "type": "string",
-                        "description": "Relative path from vault root, e.g. 'wiki/index.md'",
+                        "description": "File path (e.g. 'wiki/concepts/attention.md') or page title (e.g. 'Attention Mechanism')",
                     },
                     "max_chars": {
                         "type": "integer",
-                        "description": "Optional. Max characters to read. Use ~500 for a quick relevance check (frontmatter + summary). Omit for full content.",
+                        "description": "Optional. Max characters to read. Use ~500 for a quick relevance check. Omit for full content.",
                     },
                 },
                 "required": ["path"],
@@ -524,6 +524,32 @@ TOOL_SCHEMAS: list[dict] = [
     {
         "type": "function",
         "function": {
+            "name": "merge_tags",
+            "description": (
+                "Merge one tag into another across all wiki pages. "
+                "Every page with old_tag gets it replaced by new_tag. "
+                "Use this to clean up tag fragmentation, e.g. merge "
+                "'ml' into 'machine-learning'."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "old_tag": {
+                        "type": "string",
+                        "description": "The tag to replace, e.g. 'ml'",
+                    },
+                    "new_tag": {
+                        "type": "string",
+                        "description": "The tag to merge into, e.g. 'machine-learning'",
+                    },
+                },
+                "required": ["old_tag", "new_tag"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "fetch_url",
             "description": (
                 "Fetch a web page and extract its main content as markdown. "
@@ -550,16 +576,30 @@ TOOL_SCHEMAS: list[dict] = [
 # Tool handlers
 # ======================================================================
 
+def _resolve_path_or_title(vault: Vault, path_or_title: str) -> str:
+    """Resolve a path-or-title argument to an actual file path."""
+    if "/" in path_or_title or path_or_title.endswith(".md"):
+        return path_or_title
+    resolved = vault.resolve_title(path_or_title)
+    if resolved is None:
+        raise FileNotFoundError(
+            f"No page with title '{path_or_title}'. "
+            "Use find_existing_page or list_page_summaries to search."
+        )
+    return resolved
+
+
 def handle_read_page(vault: Vault, path: str, max_chars: int = 0) -> str:
     try:
+        resolved = _resolve_path_or_title(vault, path)
         if max_chars and max_chars > 0:
-            content = vault.read_file_partial(path, max_chars)
+            content = vault.read_file_partial(resolved, max_chars)
             if len(content) >= max_chars:
                 content += "\n\n... (truncated, use read_page without max_chars for full content)"
             return content
-        return vault.read_file(path)
-    except FileNotFoundError:
-        return f"Error: file not found: {path}"
+        return vault.read_file(resolved)
+    except FileNotFoundError as e:
+        return f"Error: {e}"
     except PermissionError as e:
         return f"Error: {e}"
 
@@ -569,11 +609,20 @@ def handle_list_page_summaries(vault: Vault, directory: str = "wiki") -> str:
     if not results:
         return f"No pages with frontmatter in {directory}/"
     lines = []
+    imported_count = 0
     for r in results:
         tags_str = f"  tags: {', '.join(r['tags'])}" if r['tags'] else ""
         summary_str = f"\n    {r['summary']}" if r['summary'] else ""
         lines.append(f"- [{r['type']}] **{r['title']}** ({r['path']}){tags_str}{summary_str}")
-    return "\n".join(lines)
+        if "imported" in (r.get("tags") or []):
+            imported_count += 1
+    result = "\n".join(lines)
+    if imported_count:
+        result += (
+            f"\n\nNote: {imported_count} file(s) still tagged [imported] — "
+            "consider running scan_imports + apply_organize_plan to classify them."
+        )
+    return result
 
 
 INDEX_TOKEN_BUDGET = 4000  # ~1000 tokens ≈ ~4000 chars
@@ -1036,6 +1085,52 @@ def handle_promote_insight(
     return f"OK: created new {target_type} page {path} from promoted insight"
 
 
+def handle_merge_tags(vault: Vault, old_tag: str, new_tag: str) -> str:
+    """Merge old_tag into new_tag across all wiki pages."""
+    old_normalized = vault.normalize_tag(old_tag)
+    new_normalized = vault.normalize_tag(new_tag)
+    if not old_normalized or not new_normalized:
+        return "Error: tags cannot be empty."
+    if old_normalized == new_normalized:
+        return f"Tags are already the same after normalization: '{old_normalized}'"
+
+    from noteweaver.frontmatter import extract_frontmatter, FRONTMATTER_PATTERN
+
+    updated_files = 0
+    for rel_path in vault.list_files("wiki"):
+        try:
+            content = vault.read_file(rel_path)
+        except (FileNotFoundError, PermissionError):
+            continue
+        fm = extract_frontmatter(content)
+        if not fm or not fm.get("tags") or not isinstance(fm["tags"], list):
+            continue
+        normalized_tags = [vault.normalize_tag(t) for t in fm["tags"]]
+        if old_normalized not in normalized_tags:
+            continue
+        new_tags = []
+        for t in normalized_tags:
+            if t == old_normalized:
+                if new_normalized not in new_tags:
+                    new_tags.append(new_normalized)
+            else:
+                if t not in new_tags:
+                    new_tags.append(t)
+        fm["tags"] = new_tags
+        fm_str = yaml.dump(fm, default_flow_style=False, allow_unicode=True).strip()
+        body = FRONTMATTER_PATTERN.sub("", content, count=1)
+        new_content = f"---\n{fm_str}\n---\n{body}"
+        vault.write_file(rel_path, new_content)
+        updated_files += 1
+
+    if updated_files == 0:
+        return f"No pages found with tag '{old_normalized}'."
+    return (
+        f"OK: merged tag '{old_normalized}' → '{new_normalized}' "
+        f"in {updated_files} file(s)."
+    )
+
+
 def handle_fetch_url(vault: Vault, url: str) -> str:
     try:
         import httpx
@@ -1103,6 +1198,7 @@ TOOL_HANDLERS: dict[str, Any] = {
     "find_existing_page": handle_find_existing_page,
     "read_transcript": handle_read_transcript,
     "promote_insight": handle_promote_insight,
+    "merge_tags": handle_merge_tags,
     "fetch_url": handle_fetch_url,
 }
 
