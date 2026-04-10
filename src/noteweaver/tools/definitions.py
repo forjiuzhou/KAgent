@@ -212,7 +212,8 @@ TOOL_SCHEMAS: list[dict] = [
                 "Scans the directory for .md files, auto-classifies them by "
                 "frontmatter, adds frontmatter to files that lack it, and "
                 "rebuilds the index. Use when the user wants to import existing "
-                "notes or documents."
+                "notes or documents. After importing, call scan_imports to "
+                "prepare for organization."
             ),
             "parameters": {
                 "type": "object",
@@ -223,6 +224,55 @@ TOOL_SCHEMAS: list[dict] = [
                     },
                 },
                 "required": ["directory"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "scan_imports",
+            "description": (
+                "Scan all files tagged [imported] and prepare a structured "
+                "summary for organization planning. Returns file digests "
+                "(frontmatter, headings, content preview) plus vault context "
+                "(existing tags, hubs, pages). Use this after import_files "
+                "to get the information needed for your organization plan. "
+                "After reviewing the scan results, call apply_organize_plan "
+                "with your decisions."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {},
+                "required": [],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "apply_organize_plan",
+            "description": (
+                "Apply an organization plan to imported files. Takes a JSON "
+                "array where each element specifies: path, type, title, "
+                "summary, tags, move_to, related, hub, duplicate_of, and "
+                "confidence. Executes all updates (frontmatter, moves, "
+                "links, hub creation) in a single batch operation. Items "
+                "with confidence=low or duplicate_of set are flagged for "
+                "user review instead of being auto-processed."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "plan": {
+                        "type": "string",
+                        "description": (
+                            "JSON array of file plans. Each element: "
+                            "{path, type, title, summary, tags, move_to, "
+                            "related, hub, duplicate_of, confidence}"
+                        ),
+                    },
+                },
+                "required": ["plan"],
             },
         },
     },
@@ -637,6 +687,14 @@ def handle_import_files(vault: Vault, directory: str) -> str:
     return vault.import_directory(directory)
 
 
+def handle_scan_imports(vault: Vault) -> str:
+    return vault.scan_imports()
+
+
+def handle_apply_organize_plan(vault: Vault, plan: str) -> str:
+    return vault.apply_organize_plan(plan)
+
+
 def handle_vault_stats(vault: Vault) -> str:
     metrics = vault.health_metrics()
     if metrics["total_pages"] == 0:
@@ -1034,6 +1092,8 @@ TOOL_HANDLERS: dict[str, Any] = {
     "archive_page": handle_archive_page,
     "save_source": handle_save_source,
     "import_files": handle_import_files,
+    "scan_imports": handle_scan_imports,
+    "apply_organize_plan": handle_apply_organize_plan,
     "vault_stats": handle_vault_stats,
     "get_backlinks": handle_get_backlinks,
     "append_section": handle_append_section,

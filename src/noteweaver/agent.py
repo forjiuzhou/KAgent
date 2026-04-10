@@ -129,6 +129,8 @@ PROMPT_TOOLS = """\
 | `save_source(path, content)` | Save to sources/ (immutable, create-only). |
 | `fetch_url(url)` | Fetch web page → markdown. Then save_source + wiki pages. |
 | `import_files(directory)` | Batch import .md files. Auto-classifies. |
+| `scan_imports()` | After import: scan imported files + vault context for planning. |
+| `apply_organize_plan(plan)` | Apply organization decisions as a single batch. |
 | `archive_page(path, reason)` | Move to wiki/archive/. Never delete. |
 | `vault_stats()` | Health metrics: orphan rate, hub coverage, etc. |
 | `get_backlinks(title)` | Find all pages that link to a given page. |
@@ -169,6 +171,14 @@ Navigate first, search to fill gaps.
   when you only need to add or update part of a page.
 - **Default to read-only**: in Mode 1 (conversation), enhance your answers \
   with knowledge base content, but do NOT write unless there's a real reason.
+- **Import + organize workflow**: when the user asks to import a folder AND \
+  organize it, use this 3-step pipeline: (1) `import_files(directory)` to \
+  bring files into the vault, (2) `scan_imports()` to get all file digests \
+  and vault context, (3) review the scan results and call \
+  `apply_organize_plan(plan)` with your decisions for ALL files at once. \
+  Do NOT process files one-by-one with individual tool calls. The plan step \
+  is where you add value — classify, tag, deduplicate, link, and assign \
+  hubs. The apply step executes your plan in bulk.
 
 If vault is empty, welcome the user and suggest what they can do.
 """
