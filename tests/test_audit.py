@@ -195,6 +195,7 @@ class TestScanVaultContext:
         )
         ctx = vault.scan_vault_context()
         assert "ML (1 pages)" in ctx
+        assert "wiki/concepts/ml.md" in ctx
         assert "ml" in ctx
         assert "dl" in ctx
 
@@ -210,6 +211,7 @@ class TestScanVaultContext:
             )
         ctx = vault.scan_vault_context()
         assert "React (5 pages)" in ctx
+        assert "wiki/concepts/react-hub.md" in ctx
         assert "Total: 6 pages" in ctx
 
     def test_unorganized_count(self, vault: Vault) -> None:
@@ -680,6 +682,54 @@ class TestProgressiveDisclosure:
         }}]
         report = agent._ensure_progressive_disclosure(plan)
         assert len(report) == 0
+
+
+# ======================================================================
+# Tag normalization
+# ======================================================================
+
+
+class TestTagNormalization:
+    def test_lowercase(self) -> None:
+        assert Vault.normalize_tag("ML") == "ml"
+        assert Vault.normalize_tag("React") == "react"
+
+    def test_spaces_to_hyphens(self) -> None:
+        assert Vault.normalize_tag("machine learning") == "machine-learning"
+
+    def test_underscores_to_hyphens(self) -> None:
+        assert Vault.normalize_tag("deep_learning") == "deep-learning"
+
+    def test_strips_special_chars(self) -> None:
+        assert Vault.normalize_tag("c++") == "c"
+        assert Vault.normalize_tag("node.js") == "nodejs"
+
+    def test_preserves_cjk(self) -> None:
+        assert Vault.normalize_tag("机器学习") == "机器学习"
+        assert Vault.normalize_tag("React 入门") == "react-入门"
+
+    def test_collapses_hyphens(self) -> None:
+        assert Vault.normalize_tag("a--b---c") == "a-b-c"
+
+    def test_write_normalizes_tags(self, vault: Vault) -> None:
+        vault.write_file(
+            "wiki/concepts/test.md",
+            "---\ntitle: Test\ntype: note\ntags: [Machine Learning, deep_learning, ML]\n---\n# T",
+        )
+        from noteweaver.frontmatter import extract_frontmatter
+        content = vault.read_file("wiki/concepts/test.md")
+        fm = extract_frontmatter(content)
+        assert fm["tags"] == ["machine-learning", "deep-learning", "ml"]
+
+    def test_deduplicates_after_normalize(self, vault: Vault) -> None:
+        vault.write_file(
+            "wiki/concepts/test.md",
+            "---\ntitle: Test\ntype: note\ntags: [ML, ml, Ml]\n---\n# T",
+        )
+        from noteweaver.frontmatter import extract_frontmatter
+        content = vault.read_file("wiki/concepts/test.md")
+        fm = extract_frontmatter(content)
+        assert fm["tags"] == ["ml"]
 
 
 # ======================================================================

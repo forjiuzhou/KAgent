@@ -454,6 +454,36 @@ class Vault:
         new_content, n = self._UPDATED_RE.subn(rf"\g<1>{today}", content, count=1)
         return new_content if n else content
 
+    _TAG_NORMALIZE_RE = re.compile(r"[^a-z0-9\u4e00-\u9fff\u3040-\u309f\u30a0-\u30ff-]")
+
+    @classmethod
+    def normalize_tag(cls, tag: str) -> str:
+        """Normalize a tag: lowercase, replace spaces/underscores with hyphens,
+        strip non-alphanumeric characters (preserving CJK)."""
+        t = tag.lower().strip().replace(" ", "-").replace("_", "-")
+        t = cls._TAG_NORMALIZE_RE.sub("", t)
+        t = re.sub(r"-{2,}", "-", t).strip("-")
+        return t
+
+    def _normalize_tags_in_content(self, content: str) -> str:
+        """Normalize tags in frontmatter before writing."""
+        from noteweaver.frontmatter import extract_frontmatter, FRONTMATTER_PATTERN
+        fm = extract_frontmatter(content)
+        if not fm or not fm.get("tags"):
+            return content
+        tags = fm["tags"]
+        if not isinstance(tags, list):
+            return content
+        normalized = [self.normalize_tag(t) for t in tags if t]
+        normalized = list(dict.fromkeys(t for t in normalized if t))
+        if normalized == tags:
+            return content
+        fm["tags"] = normalized
+        import yaml as _yaml
+        fm_str = _yaml.dump(fm, default_flow_style=False, allow_unicode=True).strip()
+        body = FRONTMATTER_PATTERN.sub("", content, count=1)
+        return f"---\n{fm_str}\n---\n{body}"
+
     def write_file(self, rel_path: str, content: str) -> None:
         """Write a file in the wiki area. Refuses to write into sources/."""
         path = self._resolve(rel_path)
@@ -467,6 +497,8 @@ class Vault:
             )
         if rel_path.startswith("wiki/") and rel_path not in self._SKIP_UPDATED:
             content = self._touch_updated(content)
+        if rel_path.startswith("wiki/"):
+            content = self._normalize_tags_in_content(content)
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(content, encoding="utf-8")
         self._index_file(rel_path, content)
@@ -986,7 +1018,7 @@ class Vault:
         lines: list[str] = []
 
         if hubs:
-            hub_parts: list[str] = []
+            lines.append("Hubs:")
             for hub in hubs:
                 hub_tags = set(hub.get("tags") or [])
                 child_count = sum(
@@ -995,8 +1027,7 @@ class Vault:
                     and ps.get("type") not in ("hub", "journal", "archive")
                     and (set(ps.get("tags") or []) & hub_tags)
                 )
-                hub_parts.append(f"{hub['title']} ({child_count} pages)")
-            lines.append(f"Hubs: {', '.join(hub_parts)}")
+                lines.append(f"  {hub['title']} ({child_count} pages) → {hub['path']}")
 
         if existing_tags:
             sorted_tags = sorted(existing_tags)
