@@ -978,25 +978,32 @@ class KnowledgeAgent:
                     else:
                         yield f"  ↳ {tool_call.name}({self._summarize_args(fn_args)})"
 
+                        verdict = check_pre_dispatch(
+                            tool_call.name, fn_args, self._policy_ctx,
+                        )
+
                         t0 = time.monotonic()
                         error_msg: str | None = None
-                        try:
-                            result = dispatch_tool(
-                                self.vault, tool_call.name, fn_args
-                            )
-                        except Exception as exc:
-                            error_msg = f"{type(exc).__name__}: {exc}"
-                            result = (
-                                f"Error executing {tool_call.name}: {error_msg}"
-                            )
+                        if not verdict.allowed:
+                            result = f"Policy blocked: {verdict.warning}"
+                        else:
+                            try:
+                                result = dispatch_tool(
+                                    self.vault, tool_call.name, fn_args
+                                )
+                            except Exception as exc:
+                                error_msg = f"{type(exc).__name__}: {exc}"
+                                result = (
+                                    f"Error executing {tool_call.name}: {error_msg}"
+                                )
 
                         duration_ms = (time.monotonic() - t0) * 1000
 
                         self._trace.record_tool_call(
                             name=tool_call.name,
                             arguments=fn_args,
-                            policy_allowed=True,
-                            policy_warning=None,
+                            policy_allowed=verdict.allowed,
+                            policy_warning=verdict.warning,
                             result_preview=result,
                             duration_ms=duration_ms,
                             error=error_msg,
@@ -1288,10 +1295,19 @@ class KnowledgeAgent:
             for action in plan:
                 name = action.get("name", "")
                 args = action.get("arguments", {})
+
+                verdict = check_pre_dispatch(name, args, self._policy_ctx)
+                if not verdict.allowed:
+                    results.append(f"✗ {name}: blocked by policy — {verdict.warning}")
+                    continue
+
                 try:
                     result = dispatch_tool(self.vault, name, args)
+                    self._policy_ctx.record_tool_call(name, args)
                     is_error = result.startswith("Error")
                     results.append(f"{'✗' if is_error else '✓'} {name}: {result[:120]}")
+                    if verdict.warning:
+                        results.append(f"  ⚠ {verdict.warning}")
                 except Exception as e:
                     results.append(f"✗ {name}: {e}")
 

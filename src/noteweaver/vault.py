@@ -834,6 +834,10 @@ class Vault:
         if not all_pages:
             return {"summary": "0 issues found (vault is empty)"}
 
+        # Rebuild backlink index from current files to avoid stale data
+        bl_pages = [{"path": p["path"], "content": p["content"]} for p in all_pages]
+        self.backlinks.rebuild(bl_pages)
+
         today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
         stale_imports: list[dict] = []
         hub_candidates: list[dict] = []
@@ -871,10 +875,11 @@ class Vault:
                 continue
             updated = str(fm.get("updated", ""))
             days = self._days_since(updated, today)
-            stale_imports.append({
-                "path": p["path"],
-                "days_since_update": days,
-            })
+            if days is not None and days > 7:
+                stale_imports.append({
+                    "path": p["path"],
+                    "days_since_update": days,
+                })
 
         # 2. Hub candidates: tags with 3+ pages and no matching hub
         for tag, pages in tag_pages.items():
@@ -1364,6 +1369,8 @@ class Vault:
                         original = self._resolve(path)
                         if original.is_file():
                             original.unlink()
+                        self.search.remove(path)
+                        self.backlinks.remove_page(path)
                         actual_path = move_to
                         moved += 1
                     except Exception as e:

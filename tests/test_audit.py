@@ -52,9 +52,26 @@ class TestAuditVault:
             "wiki/concepts/stale.md",
             _page("Stale Import", tags=["imported"], summary="Imported from x.md"),
         )
+        # write_file auto-sets updated to today; manually backdate to trigger >7 days
+        import re as _re
+        from datetime import datetime, timezone, timedelta
+        path = vault._resolve("wiki/concepts/stale.md")
+        content = path.read_text(encoding="utf-8")
+        old_date = (datetime.now(timezone.utc) - timedelta(days=10)).strftime("%Y-%m-%d")
+        content = _re.sub(r"updated: \d{4}-\d{2}-\d{2}", f"updated: {old_date}", content)
+        path.write_text(content, encoding="utf-8")
         report = vault.audit_vault()
         assert len(report["stale_imports"]) == 1
         assert report["stale_imports"][0]["path"] == "wiki/concepts/stale.md"
+
+    def test_recent_imports_not_stale(self, vault: Vault) -> None:
+        """Imports updated within 7 days should not be flagged as stale."""
+        vault.write_file(
+            "wiki/concepts/fresh.md",
+            _page("Fresh Import", tags=["imported"], summary="Imported from y.md"),
+        )
+        report = vault.audit_vault()
+        assert len(report["stale_imports"]) == 0
 
     def test_orphan_pages(self, vault: Vault) -> None:
         vault.write_file("wiki/concepts/lonely.md", _page("Lonely Note"))
@@ -419,6 +436,8 @@ class TestExecuteOrganizePlan:
             "wiki/concepts/test.md",
             _page("Test", summary="A test page"),
         )
+        # Policy requires the page to be read before editing
+        agent._policy_ctx.pages_read.append("wiki/concepts/test.md")
         plan = [{
             "name": "append_section",
             "arguments": {
@@ -434,6 +453,8 @@ class TestExecuteOrganizePlan:
 
     def test_execute_updates_frontmatter(self, vault: Vault, agent: KnowledgeAgent) -> None:
         vault.write_file("wiki/concepts/test.md", _page("Test"))
+        # Policy requires the page to be read before editing
+        agent._policy_ctx.pages_read.append("wiki/concepts/test.md")
         plan = [{
             "name": "update_frontmatter",
             "arguments": {
@@ -447,6 +468,20 @@ class TestExecuteOrganizePlan:
         content = vault.read_file("wiki/concepts/test.md")
         fm = extract_frontmatter(content)
         assert "updated-tag" in fm["tags"]
+
+    def test_execute_blocks_unread_page(self, vault: Vault, agent: KnowledgeAgent) -> None:
+        """Policy blocks editing a page that wasn't read in this session."""
+        vault.write_file("wiki/concepts/test.md", _page("Test", summary="A test page"))
+        plan = [{
+            "name": "append_section",
+            "arguments": {
+                "path": "wiki/concepts/test.md",
+                "heading": "Sneaky",
+                "content": "Blind edit.",
+            },
+        }]
+        result = agent.execute_organize_plan(plan)
+        assert "blocked by policy" in result
 
     def test_execute_handles_errors(self, vault: Vault, agent: KnowledgeAgent) -> None:
         plan = [{
