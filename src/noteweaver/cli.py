@@ -87,11 +87,16 @@ def _finalize_session(
 ) -> None:
     """Save transcript, session memory, trace, and (conditionally) journal.
 
+    Also proposes a session organize plan if there's enough substance.
     Transcript, trace, and session memory are always saved.
     Journal is only written when the session has substance: a write
     operation occurred, there were enough exchanges, or it's a
     system-initiated command (ingest/lint/digest).
     """
+    # Session organize: propose knowledge extraction before saving
+    if session_type == "chat" and _session_has_substance(agent, exchanges):
+        _propose_session_organize(agent)
+
     try:
         transcript_path = agent.save_transcript()
         log.debug("Transcript saved to %s", transcript_path)
@@ -119,6 +124,57 @@ def _finalize_session(
             vault, agent, exchanges, session_type,
             transcript_ref=str(transcript_path) if transcript_path else None,
         )
+
+
+def _propose_session_organize(agent: KnowledgeAgent) -> None:
+    """Generate an organize plan and interactively ask user for approval."""
+    try:
+        plan = agent.generate_organize_plan()
+    except Exception as e:
+        log.warning("Session organize plan generation failed: %s", e)
+        return
+
+    if not plan:
+        return
+
+    summary = agent.format_organize_plan(plan)
+    console.print(
+        Panel(
+            f"[bold]💡 整理建议[/bold]\n\n{summary}",
+            border_style="yellow",
+        )
+    )
+
+    try:
+        answer = input("执行这些整理操作？(y/n/部分编号，如 '1,3') ").strip().lower()
+    except (EOFError, KeyboardInterrupt):
+        console.print("[info]跳过整理。[/info]")
+        return
+
+    if not answer or answer in ("n", "no", "否"):
+        agent._clear_pending_plan()
+        console.print("[info]已跳过。[/info]")
+        return
+
+    if answer in ("y", "yes", "是", "好", "好的"):
+        result = agent.execute_organize_plan(plan)
+        console.print(f"\n[dim]{result}[/dim]")
+        return
+
+    # Partial selection: parse comma-separated indices
+    try:
+        indices = {int(x.strip()) for x in answer.split(",") if x.strip().isdigit()}
+        if indices:
+            selected = [plan[i - 1] for i in sorted(indices) if 1 <= i <= len(plan)]
+            if selected:
+                result = agent.execute_organize_plan(selected)
+                console.print(f"\n[dim]{result}[/dim]")
+                return
+    except (ValueError, IndexError):
+        pass
+
+    agent._clear_pending_plan()
+    console.print("[info]未识别的输入，跳过整理。[/info]")
 
 
 def cmd_chat(vault_path: Path) -> None:
@@ -169,6 +225,10 @@ def cmd_chat(vault_path: Path) -> None:
             console.print(f"[red]Error: {e}[/red]")
             exchange["reply"] = f"(error: {e})"
         exchanges.append(exchange)
+
+        # Periodic organize proposal during long conversations
+        if agent.should_organize():
+            _propose_session_organize(agent)
 
     _finalize_session(vault, agent, exchanges, "chat")
 
@@ -383,38 +443,81 @@ def cmd_ingest(vault_path: Path, url: str) -> None:
 
 
 def cmd_lint(vault_path: Path) -> None:
-    """Run a health check on the knowledge base."""
-    vault, agent = _make_agent(vault_path)
+    """Run a health check on the knowledge base.
 
-    console.print("[bold]Running knowledge base health check...[/bold]\n")
-    prompt = (
-        "Please lint/health-check the wiki. Use list_page_summaries to scan "
-        "all pages, then check for:\n"
-        "1. Orphan pages (no inbound [[links]] from other pages)\n"
-        "2. Mentioned but missing pages (referenced via [[link]] but no page exists)\n"
-        "3. Stale or contradictory information across pages\n"
-        "4. Pages missing summary or tags in frontmatter\n"
-        "5. Topics with 3+ pages but no Hub\n"
-        "6. Suggestions for new pages or connections\n"
-        "Report your findings and log them."
-    )
-    exchange: dict = {"user": "lint", "tools": [], "reply": ""}
-    try:
-        for chunk in agent.chat(prompt):
-            if chunk.startswith("  ↳ "):
-                console.print(f"[tool]{chunk}[/tool]")
-                exchange["tools"].append(chunk.strip())
-            else:
-                exchange["reply"] = chunk
-                console.print()
-                console.print(Markdown(chunk))
+    Phase 1: code-based audit (fast, no LLM).
+    Phase 2: if issues found and an API key is available, hand the
+    structured report to the agent for deeper analysis.
+    """
+    import json as _json
 
-        if exchange["reply"]:
-            vault.append_log("lint", "Health check completed", exchange["reply"][:500])
-        _finalize_session(vault, agent, [exchange], "lint")
-    except Exception as e:
-        console.print(f"[red]Error: {e}[/red]")
+    vault = Vault(vault_path)
+    if not vault.exists():
+        console.print("[red]No vault found.[/red] Run `nw init` first.")
         sys.exit(1)
+
+    console.print("[bold]Running vault audit...[/bold]\n")
+
+    report = vault.audit_vault()
+    vault.save_audit_report(report)
+    console.print(f"[info]{report['summary']}[/info]\n")
+
+    # Display findings
+    for key, label in [
+        ("stale_imports", "Stale imports"),
+        ("hub_candidates", "Hub candidates"),
+        ("orphan_pages", "Orphan pages"),
+        ("missing_summaries", "Missing summaries"),
+        ("broken_links", "Broken links"),
+        ("missing_connections", "Missing connections"),
+    ]:
+        items = report.get(key, [])
+        if not items:
+            continue
+        console.print(f"[bold]{label}[/bold] ({len(items)}):")
+        for item in items[:10]:
+            if isinstance(item, str):
+                console.print(f"  - {item}")
+            elif isinstance(item, dict):
+                console.print(f"  - {_json.dumps(item, ensure_ascii=False)}")
+        if len(items) > 10:
+            console.print(f"  ... and {len(items) - 10} more")
+        console.print()
+
+    # Phase 2: LLM analysis if issues found and API key available
+    cfg = Config.load(vault_path)
+    has_issues = report.get("summary", "").startswith("0") is False and "0 issues" not in report.get("summary", "")
+    if has_issues and cfg.api_key:
+        console.print("[bold]Running LLM analysis...[/bold]\n")
+        _, agent = _make_agent(vault_path)
+
+        prompt = (
+            f"Vault audit found these issues:\n\n"
+            f"{_json.dumps(report, indent=2, ensure_ascii=False)}\n\n"
+            "Please analyze the findings above. For each category with issues, "
+            "suggest concrete actions to fix them. Prioritize by impact. "
+            "Be concise — the audit already found the problems, you just need "
+            "to recommend next steps. Log your analysis."
+        )
+        exchange: dict = {"user": "lint", "tools": [], "reply": ""}
+        try:
+            for chunk in agent.chat(prompt):
+                if chunk.startswith("  ↳ "):
+                    console.print(f"[tool]{chunk}[/tool]")
+                    exchange["tools"].append(chunk.strip())
+                else:
+                    exchange["reply"] = chunk
+                    console.print()
+                    console.print(Markdown(chunk))
+
+            if exchange["reply"]:
+                vault.append_log("lint", "Health check completed", exchange["reply"][:500])
+            _finalize_session(vault, agent, [exchange], "lint")
+        except Exception as e:
+            console.print(f"[red]LLM analysis failed: {e}[/red]")
+    elif has_issues:
+        console.print("[info]Set an API key to get LLM-powered analysis of these findings.[/info]")
+        vault.append_log("lint", "Audit completed", report["summary"])
 
 
 def cmd_digest(vault_path: Path) -> None:

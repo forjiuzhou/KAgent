@@ -623,6 +623,20 @@ class KnowledgeAgent:
                 )
                 pending_proposals_injected = True
 
+        # Inject vault audit summary if available
+        audit_path = self.vault.meta_dir / "audit-report.json"
+        if audit_path.is_file():
+            try:
+                audit_report = json.loads(audit_path.read_text(encoding="utf-8"))
+                audit_summary = audit_report.get("summary", "")
+                if audit_summary and "0 issues" not in audit_summary:
+                    system_content += (
+                        f"\n\n## Vault Health\n\n{audit_summary}\n"
+                        "Mention this to the user when relevant."
+                    )
+            except (json.JSONDecodeError, OSError):
+                pass
+
         result: list[dict] = [{"role": "system", "content": system_content}]
 
         # 2. Session summary (replaces messages[1:boundary])
@@ -1051,6 +1065,228 @@ class KnowledgeAgent:
                     sections[current_key].append(item)
 
         return sections
+
+    # ------------------------------------------------------------------
+    # Session organize: plan → approve → execute
+    # ------------------------------------------------------------------
+
+    _ORGANIZE_CHAR_THRESHOLD = 3000
+    _ORGANIZE_DIGEST_MAX = 8000
+    _last_organize_boundary: int = 1
+
+    ORGANIZE_SESSION_PROMPT = (
+        "You are a knowledge management assistant. Given a conversation digest "
+        "and the current vault structure, decide what knowledge should be captured "
+        "or updated in the vault.\n\n"
+        "Use the available tools to make changes. Call as many tools as needed "
+        "in a single response. Each tool call represents one action.\n\n"
+        "Guidelines:\n"
+        "- Only capture insights, decisions, conclusions, and new knowledge — "
+        "not every conversational exchange.\n"
+        "- Prefer updating existing pages (append_section, append_to_section, "
+        "update_frontmatter) over creating new ones (write_page).\n"
+        "- Before creating a new page, check find_existing_page first.\n"
+        "- Use the user's language for content.\n"
+        "- If nothing is worth capturing, respond with a text message saying so "
+        "(do not call any tools).\n"
+        "- Keep captured content concise and well-structured."
+    )
+
+    def _build_conversation_digest(self, since_boundary: int | None = None) -> str:
+        """Build a compact digest of recent conversation for organize planning.
+
+        Extracts user messages, assistant replies, and tool call summaries
+        from ``self.messages[since_boundary:]``, respecting a character
+        budget of ``_ORGANIZE_DIGEST_MAX``.
+        """
+        boundary = since_boundary if since_boundary is not None else self._last_organize_boundary
+        recent = self.messages[boundary:]
+
+        parts: list[str] = []
+        budget = self._ORGANIZE_DIGEST_MAX
+
+        for m in recent:
+            if budget <= 0:
+                break
+            role = _msg_role(m)
+            content = _msg_content(m)
+
+            if role == "user" and content:
+                entry = f"User: {content[:500]}"
+                parts.append(entry)
+                budget -= len(entry)
+            elif role == "assistant" and content:
+                entry = f"Assistant: {content[:300]}"
+                parts.append(entry)
+                budget -= len(entry)
+            elif role == "assistant":
+                tc_list = (
+                    m.get("tool_calls", [])
+                    if isinstance(m, dict)
+                    else getattr(m, "tool_calls", []) or []
+                )
+                for tc in tc_list:
+                    if isinstance(tc, dict):
+                        fn = tc.get("function", {})
+                        name = fn.get("name", "")
+                        args_raw = fn.get("arguments", "{}")
+                    else:
+                        name = getattr(tc, "name", "")
+                        args_raw = getattr(tc, "arguments", "{}")
+                    try:
+                        args = json.loads(args_raw) if isinstance(args_raw, str) else args_raw
+                    except (json.JSONDecodeError, TypeError):
+                        args = {}
+                    path = args.get("path", args.get("title", ""))
+                    entry = f"Tool: {name}({path})" if path else f"Tool: {name}()"
+                    parts.append(entry)
+                    budget -= len(entry)
+            elif role == "tool" and content:
+                entry = f"Result: {content[:200]}"
+                parts.append(entry)
+                budget -= len(entry)
+
+        return "\n".join(parts)
+
+    def should_organize(self) -> bool:
+        """Check if enough new conversation content has accumulated."""
+        recent_chars = sum(
+            len(_msg_content(m))
+            for m in self.messages[self._last_organize_boundary:]
+            if _msg_role(m) in ("user", "assistant") and _msg_content(m)
+        )
+        return recent_chars >= self._ORGANIZE_CHAR_THRESHOLD
+
+    def generate_organize_plan(self) -> list[dict] | None:
+        """Use one LLM call with tool calling to generate an organize plan.
+
+        Returns a list of ``{name, arguments}`` dicts representing tool
+        calls the LLM wants to make, or ``None`` if there is nothing
+        worth capturing.  The plan is persisted to
+        ``.meta/pending-organize.json``.
+        """
+        if len(self.messages) <= 2:
+            return None
+
+        digest = self._build_conversation_digest()
+        vault_ctx = self.vault.scan_vault_context()
+
+        messages = [
+            {"role": "system", "content": self.ORGANIZE_SESSION_PROMPT},
+            {"role": "user", "content": (
+                f"## Conversation Digest\n\n{digest}\n\n"
+                f"---\n\n## Current Vault Structure\n\n{vault_ctx}"
+            )},
+        ]
+
+        try:
+            completion, _ = self.provider.chat_completion(
+                model=self.model,
+                messages=messages,
+                tools=TOOL_SCHEMAS,
+            )
+        except Exception:
+            return None
+
+        if not completion.tool_calls:
+            return None
+
+        plan = []
+        for tc in completion.tool_calls:
+            try:
+                args = json.loads(tc.arguments)
+            except (json.JSONDecodeError, TypeError):
+                args = {}
+            plan.append({"name": tc.name, "arguments": args})
+
+        self._save_pending_plan(plan)
+        return plan
+
+    def format_organize_plan(self, plan: list[dict]) -> str:
+        """Format a plan as a human-readable summary."""
+        if not plan:
+            return ""
+        lines: list[str] = []
+        for i, action in enumerate(plan, 1):
+            name = action["name"]
+            args = action.get("arguments", {})
+            if name == "write_page":
+                title = args.get("path", "?").rsplit("/", 1)[-1].replace(".md", "").replace("-", " ")
+                lines.append(f"{i}. 新建页面 {args.get('path', '?')}")
+            elif name == "append_section":
+                lines.append(f"{i}. 给「{args.get('path', '?')}」添加 section「{args.get('heading', '?')}」")
+            elif name == "append_to_section":
+                lines.append(f"{i}. 给「{args.get('path', '?')}」的「{args.get('heading', '?')}」追加内容")
+            elif name == "update_frontmatter":
+                fields = list(args.get("fields", {}).keys())
+                lines.append(f"{i}. 更新「{args.get('path', '?')}」的 {', '.join(fields) or 'metadata'}")
+            elif name == "add_related_link":
+                lines.append(f"{i}. 给「{args.get('path', '?')}」添加链接 → {args.get('title', '?')}")
+            elif name == "promote_insight":
+                lines.append(f"{i}. 提升 insight「{args.get('title', '?')}」到 wiki")
+            elif name == "find_existing_page":
+                lines.append(f"{i}. 查找已有页面「{args.get('title', '?')}」")
+            else:
+                summary_parts = [f"{k}={str(v)[:40]}" for k, v in args.items()]
+                lines.append(f"{i}. {name}({', '.join(summary_parts[:3])})")
+        return "\n".join(lines)
+
+    def execute_organize_plan(self, plan: list[dict] | None = None) -> str:
+        """Execute a previously generated organize plan.
+
+        If *plan* is not given, loads from ``.meta/pending-organize.json``.
+        Dispatches tool calls through the standard ``dispatch_tool`` path.
+        Returns a human-readable execution report.
+        """
+        if plan is None:
+            plan = self._load_pending_plan()
+        if not plan:
+            return "没有待执行的整理计划。"
+
+        results: list[str] = []
+        with self.vault.operation("Session organize"):
+            for action in plan:
+                name = action.get("name", "")
+                args = action.get("arguments", {})
+                try:
+                    result = dispatch_tool(self.vault, name, args)
+                    is_error = result.startswith("Error")
+                    results.append(f"{'✗' if is_error else '✓'} {name}: {result[:120]}")
+                except Exception as e:
+                    results.append(f"✗ {name}: {e}")
+
+        self._clear_pending_plan()
+        self._last_organize_boundary = len(self.messages)
+
+        success = sum(1 for r in results if r.startswith("✓"))
+        return (
+            f"执行了 {len(results)} 项操作（{success} 成功）：\n"
+            + "\n".join(results)
+        )
+
+    def _save_pending_plan(self, plan: list[dict]) -> Path:
+        path = self.vault.meta_dir / "pending-organize.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            json.dumps(plan, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        return path
+
+    def _load_pending_plan(self) -> list[dict] | None:
+        path = self.vault.meta_dir / "pending-organize.json"
+        if not path.is_file():
+            return None
+        try:
+            plan = json.loads(path.read_text(encoding="utf-8"))
+            return plan if isinstance(plan, list) else None
+        except (json.JSONDecodeError, OSError):
+            return None
+
+    def _clear_pending_plan(self) -> None:
+        path = self.vault.meta_dir / "pending-organize.json"
+        if path.is_file():
+            path.unlink()
 
     # ------------------------------------------------------------------
     # Sizing helpers

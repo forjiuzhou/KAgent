@@ -569,11 +569,20 @@ def handle_list_page_summaries(vault: Vault, directory: str = "wiki") -> str:
     if not results:
         return f"No pages with frontmatter in {directory}/"
     lines = []
+    imported_count = 0
     for r in results:
         tags_str = f"  tags: {', '.join(r['tags'])}" if r['tags'] else ""
         summary_str = f"\n    {r['summary']}" if r['summary'] else ""
         lines.append(f"- [{r['type']}] **{r['title']}** ({r['path']}){tags_str}{summary_str}")
-    return "\n".join(lines)
+        if "imported" in (r.get("tags") or []):
+            imported_count += 1
+    result = "\n".join(lines)
+    if imported_count:
+        result += (
+            f"\n\nNote: {imported_count} file(s) still tagged [imported] — "
+            "consider running scan_imports + apply_organize_plan to classify them."
+        )
+    return result
 
 
 INDEX_TOKEN_BUDGET = 4000  # ~1000 tokens ≈ ~4000 chars

@@ -53,6 +53,7 @@ class Gateway:
         self._active_chat_ids: set[str] = set()
         self._pending_notifications: list[str] = []
         self._notify_hour = int(os.environ.get("NW_NOTIFY_HOUR", "9"))
+        self._pending_organize_plan: list[dict] | None = None
 
     def _setup_adapters(self) -> None:
         """Detect which platforms are configured and create adapters."""
@@ -75,14 +76,35 @@ class Gateway:
                 "No IM adapters configured. Set NW_TELEGRAM_TOKEN to enable Telegram."
             )
 
+    _ORGANIZE_APPROVE_KEYWORDS = frozenset({
+        "好", "好的", "可以", "执行", "yes", "y", "ok", "确认",
+    })
+
     async def _handle_message(self, msg: IncomingMessage) -> str:
         """Route an incoming message to the Agent and return the reply.
 
         Uses a lock to prevent concurrent agent operations on the same vault.
-        Periodically saves transcripts and session memory.
+        Periodically saves transcripts, session memory, and proposes
+        session organize plans when enough conversation accumulates.
         """
         self._active_chat_ids.add(msg.chat_id)
         async with self._lock:
+            # Check if user is approving a pending organize plan
+            if self._pending_organize_plan and msg.text.strip().lower() in self._ORGANIZE_APPROVE_KEYWORDS:
+                try:
+                    result = self.agent.execute_organize_plan(self._pending_organize_plan)
+                    self._pending_organize_plan = None
+                    return f"✅ {result}"
+                except Exception as e:
+                    self._pending_organize_plan = None
+                    log.error("Organize execution failed: %s", e)
+                    return f"整理执行失败: {e}"
+
+            # Clear stale pending plan on any other message
+            if self._pending_organize_plan:
+                self._pending_organize_plan = None
+                self.agent._clear_pending_plan()
+
             reply_parts = []
             tool_parts = []
             try:
@@ -102,6 +124,21 @@ class Gateway:
                     self.agent.save_session_memory()
                 except Exception as e:
                     log.warning("Failed to save transcript/memory: %s", e)
+
+                # Propose organize plan at save intervals
+                if self.agent.should_organize():
+                    try:
+                        plan = self.agent.generate_organize_plan()
+                        if plan:
+                            self._pending_organize_plan = plan
+                            summary = self.agent.format_organize_plan(plan)
+                            organize_msg = (
+                                f"💡 *整理建议*\n\n{summary}\n\n"
+                                "回复「好的」执行，或发送其他消息跳过。"
+                            )
+                            reply_parts.append(f"\n\n---\n\n{organize_msg}")
+                    except Exception as e:
+                        log.warning("Session organize plan failed: %s", e)
 
             reply = "\n\n".join(reply_parts) if reply_parts else "(no response)"
 
@@ -173,21 +210,19 @@ class Gateway:
                         f"📋 *Digest completed*\n\n{digest_summary.strip()}"
                     )
 
-            # --- Lint ---
+            # --- Audit (pure code, no LLM, no lock needed) ---
             if now - last_lint >= lint_interval:
-                log.info("Cron: running lint...")
-                async with self._lock:
-                    self.agent.set_attended(False)
-                    try:
-                        for chunk in self.agent.chat(
-                            "Quick health check: use vault_stats and report any issues. Be brief."
-                        ):
-                            if not chunk.startswith("  ↳"):
-                                log.info("Lint result: %s", chunk[:200])
-                    except Exception as e:
-                        log.error("Cron lint failed: %s", e)
-                    finally:
-                        self.agent.set_attended(True)
+                log.info("Cron: running vault audit...")
+                try:
+                    report = self.vault.audit_vault()
+                    self.vault.save_audit_report(report)
+                    if any(report.get(k) for k in report if k != "summary"):
+                        self._pending_notifications.append(
+                            f"🔍 *Vault Audit*\n\n{report['summary']}"
+                        )
+                    log.info("Audit result: %s", report.get("summary", ""))
+                except Exception as e:
+                    log.error("Cron audit failed: %s", e)
                 last_lint = now
 
             # --- Notification delivery at configured hour ---
