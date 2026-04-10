@@ -97,10 +97,10 @@ class TestChatFlow:
         assert provider.chat_completion.call_count == 2
 
     def test_write_page_flow(self, vault: Vault) -> None:
-        """Agent checks for duplicates, then creates a new page.
+        """Agent checks for duplicates, then proposes a new page.
 
-        The page body must be ≥200 chars (policy: note minimum length)
-        and find_existing_page must be called first (policy: dedup).
+        Writes are intercepted and collected as a pending plan.
+        The page is NOT created until execute_organize_plan is called.
         """
         body_text = (
             "This is a comprehensive test note that covers the fundamentals "
@@ -137,12 +137,21 @@ class TestChatFlow:
         assert any("find_existing_page" in r for r in responses)
         assert any("write_page" in r for r in responses)
 
-        # Verify the page was actually created
+        # Write is intercepted — page NOT created yet
+        assert not (vault.root / "wiki" / "concepts" / "test-note.md").exists()
+
+        # Pending plan should have the write
+        plan = agent._load_pending_plan()
+        assert plan is not None
+        assert any(a["name"] == "write_page" for a in plan)
+
+        # Executing the plan creates the page
+        agent.execute_organize_plan(plan)
         content = vault.read_file("wiki/concepts/test-note.md")
         assert "Test Note" in content
 
     def test_append_section_flow(self, vault: Vault) -> None:
-        """Agent reads page, then appends to it (read-before-write policy)."""
+        """Agent reads page, then proposes append. Write is intercepted."""
         page = (
             "---\ntitle: ML Basics\ntype: note\n"
             "summary: Machine learning basics\ntags: [ml]\n"
@@ -156,17 +165,11 @@ class TestChatFlow:
         provider.chat_completion.side_effect = [
             _make_completion(None, [{
                 "id": "tc1",
-                "name": "find_existing_page",
-                "arguments": {"title": "ML Basics"},
-            }]),
-            # Policy requires reading the page before editing it
-            _make_completion(None, [{
-                "id": "tc2",
                 "name": "read_page",
                 "arguments": {"path": "wiki/concepts/ml-basics.md"},
             }]),
             _make_completion(None, [{
-                "id": "tc3",
+                "id": "tc2",
                 "name": "append_section",
                 "arguments": {
                     "path": "wiki/concepts/ml-basics.md",
@@ -174,15 +177,24 @@ class TestChatFlow:
                     "content": "Learn patterns without labels.",
                 },
             }]),
-            _make_completion("Added a section on unsupervised learning."),
+            _make_completion("I've proposed adding unsupervised learning section."),
         ]
         agent = KnowledgeAgent(vault=vault, provider=provider)
 
         responses = list(agent.chat("Add info about unsupervised learning to ML basics"))
+
+        # Write intercepted — not applied yet
+        content = vault.read_file("wiki/concepts/ml-basics.md")
+        assert "## Unsupervised Learning" not in content
+
+        # Execute the plan
+        plan = agent._load_pending_plan()
+        assert plan is not None
+        agent.execute_organize_plan(plan)
+
         content = vault.read_file("wiki/concepts/ml-basics.md")
         assert "## Unsupervised Learning" in content
         assert "Learn patterns without labels" in content
-        # Original content preserved
         assert "## Supervised Learning" in content
 
     def test_multi_step_with_context_preserved(self, vault: Vault) -> None:

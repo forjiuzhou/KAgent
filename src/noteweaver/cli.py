@@ -93,9 +93,14 @@ def _finalize_session(
     operation occurred, there were enough exchanges, or it's a
     system-initiated command (ingest/lint/digest).
     """
-    # Session organize: propose knowledge extraction before saving
+    # Session organize: propose knowledge extraction on exit
     if session_type == "chat" and _session_has_substance(agent, exchanges):
-        _propose_session_organize(agent)
+        try:
+            plan = agent.generate_organize_plan()
+            if plan:
+                _approve_and_execute(agent, plan)
+        except Exception as e:
+            log.warning("Session organize failed: %s", e)
 
     try:
         transcript_path = agent.save_transcript()
@@ -126,29 +131,30 @@ def _finalize_session(
         )
 
 
-def _propose_session_organize(agent: KnowledgeAgent) -> None:
-    """Generate an organize plan and interactively ask user for approval."""
-    try:
-        plan = agent.generate_organize_plan()
-    except Exception as e:
-        log.warning("Session organize plan generation failed: %s", e)
-        return
+def _approve_and_execute(agent: KnowledgeAgent, plan: list[dict] | None = None) -> None:
+    """Present a pending plan to the user and execute on approval.
 
+    This is the unified approval flow used by chat, lint, digest, ingest,
+    and organize — all writes go through here.
+    """
+    if plan is None:
+        plan = agent._load_pending_plan()
     if not plan:
         return
 
     summary = agent.format_organize_plan(plan)
     console.print(
         Panel(
-            f"[bold]💡 整理建议[/bold]\n\n{summary}",
+            f"[bold]📋 变更计划[/bold]\n\n{summary}",
             border_style="yellow",
         )
     )
 
     try:
-        answer = input("执行这些整理操作？(y/n/部分编号，如 '1,3') ").strip().lower()
+        answer = input("执行？(y/n/部分编号，如 '1,3') ").strip().lower()
     except (EOFError, KeyboardInterrupt):
-        console.print("[info]跳过整理。[/info]")
+        console.print("[info]跳过。[/info]")
+        agent._clear_pending_plan()
         return
 
     if not answer or answer in ("n", "no", "否"):
@@ -161,7 +167,6 @@ def _propose_session_organize(agent: KnowledgeAgent) -> None:
         console.print(f"\n[dim]{result}[/dim]")
         return
 
-    # Partial selection: parse comma-separated indices
     try:
         indices = {int(x.strip()) for x in answer.split(",") if x.strip().isdigit()}
         if indices:
@@ -174,7 +179,7 @@ def _propose_session_organize(agent: KnowledgeAgent) -> None:
         pass
 
     agent._clear_pending_plan()
-    console.print("[info]未识别的输入，跳过整理。[/info]")
+    console.print("[info]未识别的输入，跳过。[/info]")
 
 
 def cmd_chat(vault_path: Path) -> None:
@@ -210,11 +215,24 @@ def cmd_chat(vault_path: Path) -> None:
         if user_input.lower() in ("exit", "quit", "/exit", "/quit"):
             console.print("[info]Bye.[/info]")
             break
+        if user_input.strip() == "/organize":
+            try:
+                plan = agent.generate_organize_plan()
+                if plan:
+                    _approve_and_execute(agent, plan)
+                else:
+                    console.print("[info]没有需要整理的内容。[/info]")
+            except Exception as e:
+                console.print(f"[red]整理失败: {e}[/red]")
+            continue
 
         exchange: dict = {"user": user_input, "tools": [], "reply": ""}
         try:
             for chunk in agent.chat(user_input):
-                if chunk.startswith("  ↳ "):
+                if chunk.startswith("  📋 "):
+                    console.print(f"[tool]{chunk}[/tool]")
+                    exchange["tools"].append(chunk.strip())
+                elif chunk.startswith("  ↳ "):
                     console.print(f"[tool]{chunk}[/tool]")
                     exchange["tools"].append(chunk.strip())
                 else:
@@ -226,9 +244,10 @@ def cmd_chat(vault_path: Path) -> None:
             exchange["reply"] = f"(error: {e})"
         exchanges.append(exchange)
 
-        # Periodic organize proposal during long conversations
-        if agent.should_organize():
-            _propose_session_organize(agent)
+        # If the LLM proposed any writes, present for approval
+        pending = agent._load_pending_plan()
+        if pending:
+            _approve_and_execute(agent, pending)
 
     _finalize_session(vault, agent, exchanges, "chat")
 
@@ -418,24 +437,33 @@ def _make_agent(vault_path: Path) -> tuple[Vault, KnowledgeAgent]:
 
 
 def cmd_ingest(vault_path: Path, url: str) -> None:
-    """Ingest a URL into the knowledge base (one-shot, no interactive chat)."""
+    """Ingest a URL into the knowledge base.
+
+    Uses plan→approve: agent fetches the URL, proposes wiki pages and
+    source archival as a plan, user approves, then executes.
+    """
     vault, agent = _make_agent(vault_path)
 
     console.print(f"[bold]Ingesting:[/bold] {url}")
     prompt = (
-        f"Please ingest this URL into the knowledge base: {url}\n"
-        "Fetch the content, create appropriate wiki pages, update the index and log."
+        f"Ingest this URL into the knowledge base: {url}\n"
+        "Fetch the content, save the source, create appropriate wiki pages, "
+        "add links and tags. Log what you did."
     )
     exchange: dict = {"user": f"ingest {url}", "tools": [], "reply": ""}
     try:
         for chunk in agent.chat(prompt):
-            if chunk.startswith("  ↳ "):
+            if chunk.startswith("  📋 ") or chunk.startswith("  ↳ "):
                 console.print(f"[tool]{chunk}[/tool]")
                 exchange["tools"].append(chunk.strip())
             else:
                 exchange["reply"] = chunk
                 console.print()
                 console.print(Markdown(chunk))
+
+        pending = agent._load_pending_plan()
+        if pending:
+            _approve_and_execute(agent, pending)
         _finalize_session(vault, agent, [exchange], "ingest")
     except Exception as e:
         console.print(f"[red]Error: {e}[/red]")
@@ -446,8 +474,8 @@ def cmd_lint(vault_path: Path) -> None:
     """Run a health check on the knowledge base.
 
     Phase 1: code-based audit (fast, no LLM).
-    Phase 2: if issues found and an API key is available, hand the
-    structured report to the agent for deeper analysis.
+    Phase 2: if issues found and an API key is available, LLM generates
+    a remediation plan → user approves → execute.
     """
     import json as _json
 
@@ -462,7 +490,6 @@ def cmd_lint(vault_path: Path) -> None:
     vault.save_audit_report(report)
     console.print(f"[info]{report['summary']}[/info]\n")
 
-    # Display findings
     for key, label in [
         ("stale_imports", "Stale imports"),
         ("hub_candidates", "Hub candidates"),
@@ -484,25 +511,25 @@ def cmd_lint(vault_path: Path) -> None:
             console.print(f"  ... and {len(items) - 10} more")
         console.print()
 
-    # Phase 2: LLM analysis if issues found and API key available
     cfg = Config.load(vault_path)
-    has_issues = report.get("summary", "").startswith("0") is False and "0 issues" not in report.get("summary", "")
+    has_issues = "0 issues" not in report.get("summary", "")
     if has_issues and cfg.api_key:
-        console.print("[bold]Running LLM analysis...[/bold]\n")
+        console.print("[bold]Generating remediation plan...[/bold]\n")
         _, agent = _make_agent(vault_path)
 
         prompt = (
             f"Vault audit found these issues:\n\n"
             f"{_json.dumps(report, indent=2, ensure_ascii=False)}\n\n"
-            "Please analyze the findings above. For each category with issues, "
-            "suggest concrete actions to fix them. Prioritize by impact. "
-            "Be concise — the audit already found the problems, you just need "
-            "to recommend next steps. Log your analysis."
+            "Fix these issues. For orphan pages, add links from related pages "
+            "or hubs. For missing summaries, generate appropriate summaries. "
+            "For hub candidates, create hubs. For broken links, create stub "
+            "pages or remove the links. For missing connections, add related "
+            "links between the pages. Log what you did."
         )
         exchange: dict = {"user": "lint", "tools": [], "reply": ""}
         try:
             for chunk in agent.chat(prompt):
-                if chunk.startswith("  ↳ "):
+                if chunk.startswith("  📋 ") or chunk.startswith("  ↳ "):
                     console.print(f"[tool]{chunk}[/tool]")
                     exchange["tools"].append(chunk.strip())
                 else:
@@ -510,29 +537,29 @@ def cmd_lint(vault_path: Path) -> None:
                     console.print()
                     console.print(Markdown(chunk))
 
-            if exchange["reply"]:
+            pending = agent._load_pending_plan()
+            if pending:
+                _approve_and_execute(agent, pending)
+            elif exchange["reply"]:
                 vault.append_log("lint", "Health check completed", exchange["reply"][:500])
             _finalize_session(vault, agent, [exchange], "lint")
         except Exception as e:
             console.print(f"[red]LLM analysis failed: {e}[/red]")
     elif has_issues:
-        console.print("[info]Set an API key to get LLM-powered analysis of these findings.[/info]")
+        console.print("[info]Set an API key to get LLM-powered remediation plans.[/info]")
         vault.append_log("lint", "Audit completed", report["summary"])
 
 
 def cmd_digest(vault_path: Path) -> None:
     """Review recent journals and extract insights worth promoting.
 
-    This is the 'background distillation' step — the Agent looks at
-    recent conversation logs and journals, identifies valuable content
-    that hasn't been captured as proper wiki pages, and offers to create
-    notes/canonicals from them.
+    Uses plan→approve: the agent reads journals, proposes promotions as
+    tool calls, user approves, then they execute.
     """
     vault, agent = _make_agent(vault_path)
 
     console.print("[bold]Reviewing recent journals for insights to extract...[/bold]\n")
 
-    # Check for available transcripts
     transcript_dir = vault.meta_dir / "transcripts"
     transcript_hint = ""
     if transcript_dir.is_dir():
@@ -547,24 +574,18 @@ def cmd_digest(vault_path: Path) -> None:
             )
 
     prompt = (
-        "Please review the recent journal entries in wiki/journals/. "
-        "For each journal, look for:\n"
-        "1. Insights, conclusions, or decisions worth promoting to a Note or Canonical\n"
+        "Review the recent journal entries in wiki/journals/. Look for:\n"
+        "1. Insights, conclusions, or decisions worth promoting to a wiki page\n"
         "2. Topics mentioned repeatedly that deserve their own page\n"
-        "3. Connections between different conversations that aren't yet linked\n\n"
-        "For each finding, write a structured proposal as a "
-        "'#### Promotion Candidates' section in today's journal. Each candidate "
-        "should include: proposed title, target type (note/canonical/synthesis), "
-        "a summary of the insight, and which journal entries it came from.\n\n"
-        "Do NOT create wiki pages directly — only write proposals to the journal. "
-        "The user will review and confirm promotions in their next session.\n\n"
-        "After writing proposals, report what you found."
+        "3. Connections between conversations that aren't yet linked\n\n"
+        "For each finding, use promote_insight or write_page to create the "
+        "appropriate wiki pages. Add links and tags. Log what you did."
         + transcript_hint
     )
     exchange: dict = {"user": "digest", "tools": [], "reply": ""}
     try:
         for chunk in agent.chat(prompt):
-            if chunk.startswith("  ↳ "):
+            if chunk.startswith("  📋 ") or chunk.startswith("  ↳ "):
                 console.print(f"[tool]{chunk}[/tool]")
                 exchange["tools"].append(chunk.strip())
             else:
@@ -572,10 +593,35 @@ def cmd_digest(vault_path: Path) -> None:
                 console.print()
                 console.print(Markdown(chunk))
 
+        pending = agent._load_pending_plan()
+        if pending:
+            _approve_and_execute(agent, pending)
         _finalize_session(vault, agent, [exchange], "digest")
     except Exception as e:
         console.print(f"[red]Error: {e}[/red]")
         sys.exit(1)
+
+
+def cmd_organize(vault_path: Path) -> None:
+    """Explicitly organize recent conversation knowledge into the vault.
+
+    Uses generate_organize_plan → approve → execute.
+    """
+    vault, agent = _make_agent(vault_path)
+
+    console.print("[bold]Generating organization plan from recent sessions...[/bold]\n")
+
+    try:
+        plan = agent.generate_organize_plan()
+    except Exception as e:
+        console.print(f"[red]Plan generation failed: {e}[/red]")
+        sys.exit(1)
+
+    if not plan:
+        console.print("[info]No knowledge worth capturing found in recent conversations.[/info]")
+        return
+
+    _approve_and_execute(agent, plan)
 
 
 def cmd_import(vault_path: Path, source_path: str) -> None:
@@ -733,6 +779,9 @@ def main() -> None:
     elif args[0] == "digest":
         vault_path = resolve_vault_path()
         cmd_digest(vault_path)
+    elif args[0] == "organize":
+        vault_path = resolve_vault_path()
+        cmd_organize(vault_path)
     elif args[0] == "import":
         if len(args) < 2:
             console.print("[red]Usage: nw import <path>[/red]")
@@ -761,6 +810,7 @@ def main() -> None:
                 "  [bold]nw chat[/bold]              Chat with the agent (default)\n"
                 "  [bold]nw ingest <url>[/bold]      Import a web article\n"
                 "  [bold]nw import <path>[/bold]     Import existing md files\n"
+                "  [bold]nw organize[/bold]          Organize recent conversation knowledge\n"
                 "  [bold]nw lint[/bold]              Health-check the knowledge base\n"
                 "  [bold]nw digest[/bold]            Extract insights from recent journals\n"
                 "  [bold]nw rebuild-index[/bold]     Rebuild index.md and search index\n"

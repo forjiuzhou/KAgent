@@ -35,58 +35,40 @@ from noteweaver.trace import TraceCollector
 # System prompt — split into static parts for cache efficiency
 # ======================================================================
 
-# Part 1: Identity and three modes of operation
+# Part 1: Identity and core behavior
 PROMPT_IDENTITY = """\
 You are NoteWeaver, a knowledge management agent and thinking companion.
 
-## Three Modes
+## How You Work
 
-You operate in three modes. **Recognize which mode each message needs.**
+You have two capabilities:
 
-### Mode 1: Conversation (DEFAULT)
-The user is thinking, discussing, exploring, asking questions. This is the \
-most common mode. Respond naturally — discuss, reason, debate, suggest. \
-Draw on the knowledge base when relevant (search or read pages), but DON'T \
-touch the knowledge base unless there's a reason to. Not every message needs \
-a tool call. Most conversations are just conversations.
+### 1. Conversation (default)
+Respond naturally — discuss, reason, debate, suggest. Draw on the \
+knowledge base when relevant (search or read pages). Reference existing \
+content with [[wiki-links]]. Most interactions are just conversations.
 
-If the knowledge base has relevant content, reference it with [[wiki-links]]. \
-If a discussion produces a valuable insight, OFFER to capture it ("This seems \
-worth recording — want me to add it to the knowledge base?").
+### 2. Knowledge Capture
+When the user asks you to record, remember, organize, or import something, \
+or when you notice something worth capturing — use the write tools. \
+The system will collect your proposed changes and present them to the user \
+for approval before executing. You don't need to ask "should I capture this?" \
+— just call the tools. The user will see exactly what you propose and decide.
 
-### Mode 2: Capture
-The user explicitly wants something recorded or imported:
-- "Remember this" / "Record this" → immediate capture
-- "Import this URL" → fetch + save source + create wiki pages
-- "Import my notes from /path" → import_files
-- Quick thought from phone → append to today's journal
-
-Also happens implicitly: if you notice a clear conclusion, decision, or \
-new connection during conversation, offer to capture it.
-
-### Mode 3: Organize
-The user wants the knowledge base maintained:
-- "Clean up" / "Check health" → lint scan
-- "How's my knowledge base?" → vault_stats
-- "Archive this" → archive_page
-- The system may also ask you to do a "digest" — review recent journals \
-  and extract insights worth promoting to notes/canonicals.
-
-## Key Distinction
-
-Mode 1 is FREE — just talk, no tool calls needed, no token waste. \
-Mode 2 and 3 touch the knowledge base and cost tokens — only enter \
-these when there's a real reason to.
-
-## Knowledge Structure
-
-The vault is a TREE (O(log n)) + TAGS + [[wiki-links]]:
+**Think holistically**: when writing, consider the full vault structure. \
+If you create a page, also add [[links]] from related pages and tags. \
+If 3+ pages share a topic with no Hub, create a Hub. Maintain the tree:
 
 ```
 index.md  (root — lists Hubs, <1000 tokens)
   → Hub   (topic entry — overview + child page links)
     → Canonical / Note / Synthesis  (content)
 ```
+
+Every new page must be reachable: linked from a Hub or from another page \
+that is linked from a Hub. Orphan pages are bugs.
+
+## Knowledge Structure
 
 Types: Hub (navigation) | Canonical (authoritative, needs sources) | \
 Note (WIP) | Synthesis (analysis) | Journal (time-flow) | Archive (retired)
@@ -114,71 +96,48 @@ Every page ends with ## Related.
 PROMPT_TOOLS = """\
 ## Tools
 
-| Tool | When to use |
-|------|-------------|
+| Tool | Purpose |
+|------|---------|
 | `list_page_summaries(dir)` | Cheap scan (~30 tok/page). Good starting point. |
 | `read_page(path, max_chars?)` | max_chars=500 for quick check; omit for full. |
-| `find_existing_page(title)` | Check for duplicates BEFORE creating a page. |
-| `write_page(path, content)` | Create/overwrite full page. Use fine-grained tools when possible. |
+| `find_existing_page(title)` | Find existing pages by title/topic. |
+| `write_page(path, content)` | Create/overwrite full page. |
 | `append_section(path, heading, content)` | Add a new section to a page. |
-| `append_to_section(path, heading, content)` | Add content to an existing section. |
+| `append_to_section(path, heading, content)` | Add content to existing section. |
 | `update_frontmatter(path, fields)` | Update metadata without touching body. |
 | `add_related_link(path, title)` | Add a [[link]] to Related section. |
-| `search_vault(query)` | FTS5 keyword search — supplement, not main path. |
-| `promote_insight(title, content, ...)` | Promote journal insight to wiki. Auto-dedup. |
-| `save_source(path, content)` | Save to sources/ (immutable, create-only). |
-| `fetch_url(url)` | Fetch web page → markdown. Then save_source + wiki pages. |
-| `import_files(directory)` | Batch import .md files. Auto-classifies. |
-| `scan_imports()` | After import: scan imported files + vault context for planning. |
-| `apply_organize_plan(plan)` | Apply organization decisions as a single batch. |
-| `archive_page(path, reason)` | Move to wiki/archive/. Never delete. |
-| `vault_stats()` | Health metrics: orphan rate, hub coverage, etc. |
-| `get_backlinks(title)` | Find all pages that link to a given page. |
-| `read_transcript(filename)` | Read a saved conversation transcript (for digest). |
-| `append_log(type, title)` | Log what you did. After significant ops only. |
+| `search_vault(query)` | FTS5 keyword search. |
+| `promote_insight(title, content, ...)` | Promote journal insight to wiki page. |
+| `save_source(path, content)` | Save to sources/ (immutable). |
+| `fetch_url(url)` | Fetch web page → markdown. |
+| `import_files(directory)` | Batch import .md files. |
+| `scan_imports()` | Scan imported files + vault context for planning. |
+| `apply_organize_plan(plan)` | Batch organization for imported files. |
+| `archive_page(path, reason)` | Move to wiki/archive/. |
+| `vault_stats()` | Health metrics. |
+| `get_backlinks(title)` | Find pages that link to a title. |
+| `read_transcript(filename)` | Read a saved conversation transcript. |
+| `append_log(type, title)` | Log an operation. |
 
-## Retrieval Strategy: Navigate, Don't Just Search
+## Retrieval Strategy
 
-Follow this evidence-gathering sequence — do NOT skip steps:
+1. **Navigate the tree**: `list_page_summaries` or read a Hub to survey.
+2. **Shallow-read**: `read_page(path, max_chars=500)` to check relevance.
+3. **Deep-read**: `read_page(path)` only for confirmed relevant pages.
+4. **Search as supplement**: `search_vault` for what tree navigation missed.
+5. **Follow links**: expand via [[wiki-links]] in pages.
 
-1. **Session workset first**: check what's already known from previous turns \
-   and session memory (topics, active pages).
-2. **Navigate the tree**: `list_page_summaries` or read a Hub page to survey \
-   what exists on the topic. This is cheap (~30 tok/page) and gives structure.
-3. **Shallow-read candidates**: `read_page(path, max_chars=500)` on 2-3 \
-   promising pages to check relevance before committing to full reads.
-4. **Deep-read**: `read_page(path)` only pages confirmed relevant.
-5. **Search as supplement**: `search_vault` fills gaps — it finds pages the \
-   tree navigation missed. It is NOT the primary evidence path.
-6. **Expand via links**: if a page references other pages via [[wiki-links]], \
-   consider following those links for additional context.
+## Writing Guidelines
 
-**search_vault is a candidate layer, not the evidence backbone.** \
-Navigate first, search to fill gaps.
-
-## Rules
-
-- DON'T read index.md on every message. Only when you need to navigate the KB.
-- Update index.md and append_log only after Mode 2/3 operations, not after chat.
-- Create Hub when 3+ pages accumulate on a topic.
-- Respond in user's language. Be concise.
-- For detailed conventions: `read_page(".schema/schema.md")`
-- **Before creating a page**: call `find_existing_page` to check for duplicates. \
-  The system enforces this — write_page will be blocked if you skip it. \
-  Update existing pages (append_section) rather than creating new ones.
-- **Prefer fine-grained edits**: use `append_section`, `append_to_section`, \
-  `update_frontmatter`, `add_related_link` instead of full-page `write_page` \
-  when you only need to add or update part of a page.
-- **Default to read-only**: in Mode 1 (conversation), enhance your answers \
-  with knowledge base content, but do NOT write unless there's a real reason.
-- **Import + organize workflow**: when the user asks to import a folder AND \
-  organize it, use this 3-step pipeline: (1) `import_files(directory)` to \
-  bring files into the vault, (2) `scan_imports()` to get all file digests \
-  and vault context, (3) review the scan results and call \
-  `apply_organize_plan(plan)` with your decisions for ALL files at once. \
-  Do NOT process files one-by-one with individual tool calls. The plan step \
-  is where you add value — classify, tag, deduplicate, link, and assign \
-  hubs. The apply step executes your plan in bulk.
+When capturing knowledge:
+- Prefer updating existing pages over creating new ones.
+- Use `find_existing_page` to check before creating.
+- Keep every page reachable: link it from related pages or a Hub.
+- When creating a page, also update related pages' ## Related sections.
+- When 3+ pages share a topic, create or update a Hub for that topic.
+- Update index.md only when Hubs change.
+- Use the user's language for content.
+- Call `append_log` after significant operations.
 
 If vault is empty, welcome the user and suggest what they can do.
 """
@@ -873,14 +832,24 @@ class KnowledgeAgent:
     # Chat loop
     # ------------------------------------------------------------------
 
+    _READ_TOOLS = frozenset({
+        "read_page", "list_page_summaries", "search_vault",
+        "vault_stats", "get_backlinks", "find_existing_page",
+        "read_transcript", "fetch_url",
+    })
+
+    def _is_write_tool(self, name: str) -> bool:
+        return name not in self._READ_TOOLS
+
     def chat(self, user_message: str) -> Generator[str, None, None]:
         """Send a user message and yield agent responses.
 
-        - All writes within a single chat turn are batched into one git commit
-        - Transcript is append-only; compression only affects the query view
-        - Tool results are tiered: full → preview → placeholder
-        - API errors are retried at the provider layer (retry.py)
-        - Tool execution errors are captured and fed back to the model
+        Write tool calls are intercepted and collected into a pending
+        plan rather than executed immediately.  The caller (CLI, gateway)
+        is responsible for presenting the plan and executing it after
+        user approval via ``execute_organize_plan``.
+
+        Read tools execute normally so the LLM can gather context.
         """
         self._trace = TraceCollector()
         self._trace.set_session_meta(
@@ -904,6 +873,7 @@ class KnowledgeAgent:
         steps_taken = 0
         has_response = False
         hit_max = False
+        pending_writes: list[dict] = []
 
         try:
             max_steps = 25
@@ -922,6 +892,8 @@ class KnowledgeAgent:
                     if completion.content:
                         has_response = True
                         yield completion.content
+                    if pending_writes:
+                        self._save_pending_plan(pending_writes)
                     return
 
                 for tool_call in completion.tool_calls:
@@ -930,18 +902,36 @@ class KnowledgeAgent:
                     except json.JSONDecodeError:
                         fn_args = {}
 
-                    yield f"  ↳ {tool_call.name}({self._summarize_args(fn_args)})"
+                    if self._is_write_tool(tool_call.name):
+                        pending_writes.append({
+                            "name": tool_call.name,
+                            "arguments": fn_args,
+                        })
+                        yield f"  📋 {tool_call.name}({self._summarize_args(fn_args)})"
 
-                    verdict = check_pre_dispatch(
-                        tool_call.name, fn_args, self._policy_ctx,
-                    )
+                        self._trace.record_tool_call(
+                            name=tool_call.name,
+                            arguments=fn_args,
+                            policy_allowed=True,
+                            policy_warning="intercepted for plan",
+                            result_preview="[Planned]",
+                            duration_ms=0,
+                            error=None,
+                        )
 
-                    t0 = time.monotonic()
-                    error_msg: str | None = None
-
-                    if not verdict.allowed:
-                        result = verdict.warning or "Policy: action blocked."
+                        self.messages.append({
+                            "role": "tool",
+                            "tool_call_id": tool_call.id,
+                            "content": (
+                                f"[Planned] {tool_call.name} will be executed "
+                                "after user approval."
+                            ),
+                        })
                     else:
+                        yield f"  ↳ {tool_call.name}({self._summarize_args(fn_args)})"
+
+                        t0 = time.monotonic()
+                        error_msg: str | None = None
                         try:
                             result = dispatch_tool(
                                 self.vault, tool_call.name, fn_args
@@ -951,36 +941,34 @@ class KnowledgeAgent:
                             result = (
                                 f"Error executing {tool_call.name}: {error_msg}"
                             )
-                        if verdict.warning:
-                            result += f"\n\n⚠️ {verdict.warning}"
 
-                    duration_ms = (time.monotonic() - t0) * 1000
+                        duration_ms = (time.monotonic() - t0) * 1000
 
-                    self._trace.record_tool_call(
-                        name=tool_call.name,
-                        arguments=fn_args,
-                        policy_allowed=verdict.allowed,
-                        policy_warning=verdict.warning,
-                        result_preview=result,
-                        duration_ms=duration_ms,
-                        error=error_msg,
-                    )
-
-                    self._policy_ctx.record_tool_call(
-                        tool_call.name, fn_args,
-                    )
-
-                    if len(result) > self._TOOL_RESULT_MAX:
-                        result = (
-                            result[: self._TOOL_RESULT_MAX]
-                            + "\n\n... (truncated)"
+                        self._trace.record_tool_call(
+                            name=tool_call.name,
+                            arguments=fn_args,
+                            policy_allowed=True,
+                            policy_warning=None,
+                            result_preview=result,
+                            duration_ms=duration_ms,
+                            error=error_msg,
                         )
 
-                    self.messages.append({
-                        "role": "tool",
-                        "tool_call_id": tool_call.id,
-                        "content": result,
-                    })
+                        self._policy_ctx.record_tool_call(
+                            tool_call.name, fn_args,
+                        )
+
+                        if len(result) > self._TOOL_RESULT_MAX:
+                            result = (
+                                result[: self._TOOL_RESULT_MAX]
+                                + "\n\n... (truncated)"
+                            )
+
+                        self.messages.append({
+                            "role": "tool",
+                            "tool_call_id": tool_call.id,
+                            "content": result,
+                        })
 
             hit_max = True
             yield "(reached maximum steps)"
@@ -991,6 +979,8 @@ class KnowledgeAgent:
                 hit_max_steps=hit_max,
             )
             self._end_operation(short_msg)
+            if pending_writes:
+                self._save_pending_plan(pending_writes)
 
     # ------------------------------------------------------------------
     # Journal generation (LLM-assisted)
@@ -1236,6 +1226,8 @@ class KnowledgeAgent:
 
         If *plan* is not given, loads from ``.meta/pending-organize.json``.
         Dispatches tool calls through the standard ``dispatch_tool`` path.
+        After execution, runs ``_ensure_progressive_disclosure`` to
+        maintain the index → hub → page navigation chain.
         Returns a human-readable execution report.
         """
         if plan is None:
@@ -1244,7 +1236,7 @@ class KnowledgeAgent:
             return "没有待执行的整理计划。"
 
         results: list[str] = []
-        with self.vault.operation("Session organize"):
+        with self.vault.operation("Knowledge update"):
             for action in plan:
                 name = action.get("name", "")
                 args = action.get("arguments", {})
@@ -1255,6 +1247,10 @@ class KnowledgeAgent:
                 except Exception as e:
                     results.append(f"✗ {name}: {e}")
 
+            disclosure_report = self._ensure_progressive_disclosure(plan)
+            if disclosure_report:
+                results.extend(disclosure_report)
+
         self._clear_pending_plan()
         self._last_organize_boundary = len(self.messages)
 
@@ -1263,6 +1259,142 @@ class KnowledgeAgent:
             f"执行了 {len(results)} 项操作（{success} 成功）：\n"
             + "\n".join(results)
         )
+
+    def _ensure_progressive_disclosure(self, plan: list[dict]) -> list[str]:
+        """After executing a plan, ensure new/modified pages are reachable.
+
+        Checks that every written page is linked from at least one other
+        page (or a Hub).  If not, attempts to:
+        1. Add the page to an existing Hub for one of its tags.
+        2. If no Hub matches, check if a Hub should be created (3+ pages
+           share a tag).
+        3. Rebuild index.md to reflect any Hub changes.
+
+        Returns a list of report lines for actions taken.
+        """
+        from noteweaver.frontmatter import extract_frontmatter
+
+        written_paths = set()
+        for action in plan:
+            name = action.get("name", "")
+            args = action.get("arguments", {})
+            path = args.get("path", "")
+            if name in ("write_page", "append_section", "append_to_section") and path:
+                written_paths.add(path)
+            if name == "promote_insight":
+                title = args.get("title", "")
+                slug = title.lower().replace(" ", "-").replace("/", "-")
+                import re as _re
+                slug = _re.sub(r"[^a-z0-9-]", "", slug)[:60]
+                target_type = args.get("target_type", "note")
+                if target_type == "synthesis":
+                    written_paths.add(f"wiki/synthesis/{slug}.md")
+                else:
+                    written_paths.add(f"wiki/concepts/{slug}.md")
+
+        if not written_paths:
+            return []
+
+        report: list[str] = []
+        all_frontmatters = self.vault.read_frontmatters("wiki")
+        hubs = {p["title"]: p for p in all_frontmatters if p["type"] == "hub"}
+        tag_pages: dict[str, list[str]] = {}
+        for p in all_frontmatters:
+            for t in (p.get("tags") or []):
+                tag_pages.setdefault(t, []).append(p["path"])
+
+        for wpath in written_paths:
+            try:
+                content = self.vault.read_file(wpath)
+            except FileNotFoundError:
+                continue
+            fm = extract_frontmatter(content)
+            if not fm:
+                continue
+
+            title = fm.get("title", "")
+            ptype = fm.get("type", "")
+            tags = fm.get("tags") or []
+
+            if ptype in ("hub", "journal", "archive"):
+                continue
+            if not title:
+                continue
+
+            ref_count = self.vault.backlinks.reference_count(title)
+            if ref_count > 0:
+                continue
+
+            linked = False
+            for tag in tags:
+                for hub_title, hub_info in hubs.items():
+                    hub_tags = hub_info.get("tags") or []
+                    if tag in hub_tags:
+                        try:
+                            dispatch_tool(self.vault, "add_related_link", {
+                                "path": hub_info["path"],
+                                "title": title,
+                            })
+                            report.append(f"✓ 链接: {title} → hub「{hub_title}」")
+                            linked = True
+                        except Exception:
+                            pass
+                        break
+                if linked:
+                    break
+
+            if not linked:
+                for tag in tags:
+                    pages_with_tag = tag_pages.get(tag, [])
+                    hub_exists = any(
+                        tag in (h.get("tags") or [])
+                        for h in hubs.values()
+                    )
+                    if len(pages_with_tag) >= 3 and not hub_exists:
+                        hub_slug = tag.lower().replace(" ", "-")
+                        import re as _re
+                        hub_slug = _re.sub(r"[^a-z0-9-]", "", hub_slug)
+                        hub_slug = _re.sub(r"-{2,}", "-", hub_slug).strip("-")[:60]
+                        hub_path = f"wiki/concepts/{hub_slug}.md"
+
+                        from datetime import datetime, timezone
+                        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+                        page_titles = []
+                        for pp in all_frontmatters:
+                            if tag in (pp.get("tags") or []) and pp.get("title"):
+                                page_titles.append(pp["title"])
+                        if title not in page_titles:
+                            page_titles.append(title)
+
+                        links_block = "\n".join(f"- [[{pt}]]" for pt in page_titles[:10])
+                        hub_content = (
+                            f"---\ntitle: {tag.title()}\ntype: hub\n"
+                            f"summary: Hub for {tag} topics\n"
+                            f"tags: [{tag}]\n"
+                            f"created: {today}\nupdated: {today}\n---\n\n"
+                            f"# {tag.title()}\n\n"
+                            f"## Pages\n\n{links_block}\n\n"
+                            f"## Related\n"
+                        )
+                        try:
+                            self.vault.write_file(hub_path, hub_content)
+                            report.append(
+                                f"✓ 新建 hub「{tag.title()}」（{len(page_titles)} 页面）"
+                            )
+                            linked = True
+                        except Exception:
+                            pass
+                        break
+
+        needs_index_rebuild = any("hub" in r.lower() for r in report)
+        if needs_index_rebuild:
+            try:
+                self.vault.rebuild_index()
+                report.append("✓ 重建 index.md")
+            except Exception:
+                pass
+
+        return report
 
     def _save_pending_plan(self, plan: list[dict]) -> Path:
         path = self.vault.meta_dir / "pending-organize.json"

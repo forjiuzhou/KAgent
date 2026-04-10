@@ -76,31 +76,30 @@ class Gateway:
                 "No IM adapters configured. Set NW_TELEGRAM_TOKEN to enable Telegram."
             )
 
-    _ORGANIZE_APPROVE_KEYWORDS = frozenset({
+    _APPROVE_KEYWORDS = frozenset({
         "好", "好的", "可以", "执行", "yes", "y", "ok", "确认",
     })
 
     async def _handle_message(self, msg: IncomingMessage) -> str:
         """Route an incoming message to the Agent and return the reply.
 
-        Uses a lock to prevent concurrent agent operations on the same vault.
-        Periodically saves transcripts, session memory, and proposes
-        session organize plans when enough conversation accumulates.
+        All writes are intercepted by chat() and collected as a pending
+        plan.  If a plan is pending, it is presented to the user.
+        Approval keywords trigger execution; any other message cancels.
         """
         self._active_chat_ids.add(msg.chat_id)
         async with self._lock:
-            # Check if user is approving a pending organize plan
-            if self._pending_organize_plan and msg.text.strip().lower() in self._ORGANIZE_APPROVE_KEYWORDS:
+            # Check if user is approving a pending plan
+            if self._pending_organize_plan and msg.text.strip().lower() in self._APPROVE_KEYWORDS:
                 try:
                     result = self.agent.execute_organize_plan(self._pending_organize_plan)
                     self._pending_organize_plan = None
                     return f"✅ {result}"
                 except Exception as e:
                     self._pending_organize_plan = None
-                    log.error("Organize execution failed: %s", e)
-                    return f"整理执行失败: {e}"
+                    log.error("Plan execution failed: %s", e)
+                    return f"执行失败: {e}"
 
-            # Clear stale pending plan on any other message
             if self._pending_organize_plan:
                 self._pending_organize_plan = None
                 self.agent._clear_pending_plan()
@@ -109,13 +108,23 @@ class Gateway:
             tool_parts = []
             try:
                 for chunk in self.agent.chat(msg.text):
-                    if chunk.startswith("  ↳ "):
+                    if chunk.startswith("  📋 ") or chunk.startswith("  ↳ "):
                         tool_parts.append(chunk.strip())
                     else:
                         reply_parts.append(chunk)
             except Exception as e:
                 log.error("Agent error: %s", e)
                 return f"Error: {e}"
+
+            # Check if chat() produced a pending plan (intercepted writes)
+            pending = self.agent._load_pending_plan()
+            if pending:
+                self._pending_organize_plan = pending
+                summary = self.agent.format_organize_plan(pending)
+                reply_parts.append(
+                    f"\n\n---\n\n📋 *变更计划*\n\n{summary}\n\n"
+                    "回复「好的」执行，或发送其他消息跳过。"
+                )
 
             self._message_count += 1
             if self._message_count % self._SAVE_INTERVAL == 0:
@@ -124,21 +133,6 @@ class Gateway:
                     self.agent.save_session_memory()
                 except Exception as e:
                     log.warning("Failed to save transcript/memory: %s", e)
-
-                # Propose organize plan at save intervals
-                if self.agent.should_organize():
-                    try:
-                        plan = self.agent.generate_organize_plan()
-                        if plan:
-                            self._pending_organize_plan = plan
-                            summary = self.agent.format_organize_plan(plan)
-                            organize_msg = (
-                                f"💡 *整理建议*\n\n{summary}\n\n"
-                                "回复「好的」执行，或发送其他消息跳过。"
-                            )
-                            reply_parts.append(f"\n\n---\n\n{organize_msg}")
-                    except Exception as e:
-                        log.warning("Session organize plan failed: %s", e)
 
             reply = "\n\n".join(reply_parts) if reply_parts else "(no response)"
 

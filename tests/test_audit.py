@@ -496,6 +496,151 @@ class TestAuditInjection:
 
 
 # ======================================================================
+# Write interception in chat()
+# ======================================================================
+
+
+class TestWriteInterception:
+    def test_read_tools_execute_normally(self, vault: Vault) -> None:
+        from noteweaver.adapters.provider import CompletionResult, ToolCall
+        provider = MagicMock()
+        provider.chat_completion.side_effect = [
+            (CompletionResult(content=None, tool_calls=[
+                ToolCall(id="tc1", name="read_page",
+                         arguments=json.dumps({"path": "wiki/index.md"})),
+            ]), {"role": "assistant", "tool_calls": [
+                {"id": "tc1", "type": "function",
+                 "function": {"name": "read_page", "arguments": json.dumps({"path": "wiki/index.md"})}}
+            ]}),
+            (CompletionResult(content="The vault has an index."), {"role": "assistant", "content": "The vault has an index."}),
+        ]
+        agent = KnowledgeAgent(vault=vault, provider=provider)
+        responses = list(agent.chat("What's in the vault?"))
+        assert any("read_page" in r for r in responses)
+        assert any("index" in r.lower() for r in responses)
+        assert agent._load_pending_plan() is None
+
+    def test_write_tools_intercepted(self, vault: Vault) -> None:
+        from noteweaver.adapters.provider import CompletionResult, ToolCall
+        provider = MagicMock()
+        provider.chat_completion.side_effect = [
+            (CompletionResult(content=None, tool_calls=[
+                ToolCall(id="tc1", name="write_page",
+                         arguments=json.dumps({
+                             "path": "wiki/concepts/test.md",
+                             "content": "---\ntitle: Test\ntype: note\n---\n# Test",
+                         })),
+            ]), {"role": "assistant", "tool_calls": [
+                {"id": "tc1", "type": "function",
+                 "function": {"name": "write_page", "arguments": json.dumps({
+                     "path": "wiki/concepts/test.md",
+                     "content": "---\ntitle: Test\ntype: note\n---\n# Test",
+                 })}}
+            ]}),
+            (CompletionResult(content="I've proposed creating the page."),
+             {"role": "assistant", "content": "I've proposed creating the page."}),
+        ]
+        agent = KnowledgeAgent(vault=vault, provider=provider)
+        responses = list(agent.chat("Create a test page"))
+        assert any("📋" in r for r in responses)
+        assert not (vault.root / "wiki" / "concepts" / "test.md").exists()
+        plan = agent._load_pending_plan()
+        assert plan is not None
+        assert len(plan) == 1
+        assert plan[0]["name"] == "write_page"
+
+    def test_mixed_read_write_in_one_turn(self, vault: Vault) -> None:
+        from noteweaver.adapters.provider import CompletionResult, ToolCall
+        provider = MagicMock()
+        provider.chat_completion.side_effect = [
+            (CompletionResult(content=None, tool_calls=[
+                ToolCall(id="tc1", name="read_page",
+                         arguments=json.dumps({"path": "wiki/index.md"})),
+                ToolCall(id="tc2", name="append_log",
+                         arguments=json.dumps({"entry_type": "test", "title": "X"})),
+            ]), {"role": "assistant", "tool_calls": [
+                {"id": "tc1", "type": "function",
+                 "function": {"name": "read_page", "arguments": json.dumps({"path": "wiki/index.md"})}},
+                {"id": "tc2", "type": "function",
+                 "function": {"name": "append_log", "arguments": json.dumps({"entry_type": "test", "title": "X"})}},
+            ]}),
+            (CompletionResult(content="Done."), {"role": "assistant", "content": "Done."}),
+        ]
+        agent = KnowledgeAgent(vault=vault, provider=provider)
+        responses = list(agent.chat("Do something"))
+        assert any("↳" in r for r in responses)
+        assert any("📋" in r for r in responses)
+        plan = agent._load_pending_plan()
+        assert plan is not None
+        assert len(plan) == 1
+        assert plan[0]["name"] == "append_log"
+
+    def test_no_writes_no_plan(self, vault: Vault) -> None:
+        from noteweaver.adapters.provider import CompletionResult
+        provider = MagicMock()
+        provider.chat_completion.return_value = (
+            CompletionResult(content="Just a chat."),
+            {"role": "assistant", "content": "Just a chat."},
+        )
+        agent = KnowledgeAgent(vault=vault, provider=provider)
+        list(agent.chat("Hello"))
+        assert agent._load_pending_plan() is None
+
+
+class TestIsWriteTool:
+    def test_read_tools(self) -> None:
+        agent = KnowledgeAgent.__new__(KnowledgeAgent)
+        for tool in ["read_page", "list_page_summaries", "search_vault",
+                      "vault_stats", "get_backlinks", "find_existing_page",
+                      "read_transcript", "fetch_url"]:
+            assert not agent._is_write_tool(tool), f"{tool} should be read"
+
+    def test_write_tools(self) -> None:
+        agent = KnowledgeAgent.__new__(KnowledgeAgent)
+        for tool in ["write_page", "append_section", "append_to_section",
+                      "update_frontmatter", "add_related_link", "append_log",
+                      "save_source", "archive_page", "import_files",
+                      "promote_insight", "apply_organize_plan"]:
+            assert agent._is_write_tool(tool), f"{tool} should be write"
+
+
+# ======================================================================
+# Progressive disclosure enforcement
+# ======================================================================
+
+
+class TestProgressiveDisclosure:
+    def test_orphan_page_linked_to_hub(self, vault: Vault, agent: KnowledgeAgent) -> None:
+        """When a page is created with a tag matching a hub, it gets linked."""
+        vault.write_file(
+            "wiki/concepts/ml-hub.md",
+            _page("ML", ptype="hub", tags=["ml"], summary="ML overview"),
+        )
+        vault.write_file(
+            "wiki/concepts/new-page.md",
+            _page("New ML Page", tags=["ml"], summary="A new ML page"),
+        )
+        plan = [{"name": "write_page", "arguments": {
+            "path": "wiki/concepts/new-page.md",
+            "content": _page("New ML Page", tags=["ml"], summary="A new ML page"),
+        }}]
+        report = agent._ensure_progressive_disclosure(plan)
+        assert any("hub" in r.lower() or "链接" in r for r in report)
+
+    def test_already_linked_page_no_action(self, vault: Vault, agent: KnowledgeAgent) -> None:
+        """A page that already has inbound links needs no disclosure fix."""
+        vault.write_file("wiki/concepts/a.md", _page("A", related="- [[B]]"))
+        vault.write_file("wiki/concepts/b.md", _page("B", related="- [[A]]"))
+        plan = [{"name": "append_section", "arguments": {
+            "path": "wiki/concepts/a.md",
+            "heading": "New",
+            "content": "x",
+        }}]
+        report = agent._ensure_progressive_disclosure(plan)
+        assert len(report) == 0
+
+
+# ======================================================================
 # Stale import hint in list_page_summaries
 # ======================================================================
 
