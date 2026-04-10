@@ -50,10 +50,16 @@ content with [[wiki-links]]. Most interactions are just conversations.
 
 ### 2. Knowledge Capture
 When the user asks you to record, remember, organize, or import something, \
-or when you notice something worth capturing — use the write tools. \
-The system will collect your proposed changes and present them to the user \
-for approval before executing. You don't need to ask "should I capture this?" \
-— just call the tools. The user will see exactly what you propose and decide.
+or when you notice something worth capturing — call the write tools.
+
+**Write tools are plan proposals, not immediate executions.** When you call \
+write_page, append_section, update_frontmatter, etc., they are collected \
+into a plan that the user will review and approve before anything changes. \
+This means:
+- The file is NOT modified after you call a write tool
+- If you need to read a file you plan to modify, read it BEFORE the write call
+- Call all the write tools you need in sequence — they form your complete plan
+- The user sees exactly what you propose and decides what to keep
 
 **Think holistically**: when writing, consider the full vault structure. \
 If you create a page, also add [[links]] from related pages and tags. \
@@ -909,12 +915,18 @@ class KnowledgeAgent:
                         })
                         yield f"  📋 {tool_call.name}({self._summarize_args(fn_args)})"
 
+                        plan_msg = (
+                            f"Added to plan: {tool_call.name}. "
+                            "This will be executed after user approval. "
+                            "The file has NOT been modified yet."
+                        )
+
                         self._trace.record_tool_call(
                             name=tool_call.name,
                             arguments=fn_args,
                             policy_allowed=True,
-                            policy_warning="intercepted for plan",
-                            result_preview="[Planned]",
+                            policy_warning="added to plan",
+                            result_preview=plan_msg,
                             duration_ms=0,
                             error=None,
                         )
@@ -922,10 +934,7 @@ class KnowledgeAgent:
                         self.messages.append({
                             "role": "tool",
                             "tool_call_id": tool_call.id,
-                            "content": (
-                                f"[Planned] {tool_call.name} will be executed "
-                                "after user approval."
-                            ),
+                            "content": plan_msg,
                         })
                     else:
                         yield f"  ↳ {tool_call.name}({self._summarize_args(fn_args)})"
