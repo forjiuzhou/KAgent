@@ -484,8 +484,26 @@ class Vault:
         body = FRONTMATTER_PATTERN.sub("", content, count=1)
         return f"---\n{fm_str}\n---\n{body}"
 
+    def resolve_title(self, title: str) -> str | None:
+        """Resolve a page title to its path. Returns None if not found."""
+        title_lower = title.lower()
+        for rel_path in self.list_files("wiki"):
+            try:
+                content = self.read_file(rel_path)
+            except (FileNotFoundError, PermissionError):
+                continue
+            from noteweaver.frontmatter import extract_frontmatter
+            fm = extract_frontmatter(content)
+            if fm and fm.get("title", "").lower() == title_lower:
+                return rel_path
+        return None
+
     def write_file(self, rel_path: str, content: str) -> None:
-        """Write a file in the wiki area. Refuses to write into sources/."""
+        """Write a file in the wiki area. Refuses to write into sources/.
+
+        Enforces title uniqueness: if another wiki file already has the
+        same frontmatter title, the write is rejected.
+        """
         path = self._resolve(rel_path)
         if self._is_in_sources(path):
             raise PermissionError(
@@ -499,6 +517,7 @@ class Vault:
             content = self._touch_updated(content)
         if rel_path.startswith("wiki/"):
             content = self._normalize_tags_in_content(content)
+            self._check_title_unique(rel_path, content)
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(content, encoding="utf-8")
         self._index_file(rel_path, content)
@@ -507,6 +526,30 @@ class Vault:
             self._operation_dirty = True
         else:
             self._git_commit(f"Update {rel_path}")
+
+    _title_check_skip: set[str] = set()
+
+    def _check_title_unique(self, rel_path: str, content: str) -> None:
+        """Raise if another file already uses the same title.
+
+        Exempts archive paths, the file being overwritten, and paths
+        in ``_title_check_skip`` (used during file moves).
+        """
+        if "/archive/" in rel_path:
+            return
+        from noteweaver.frontmatter import extract_frontmatter
+        fm = extract_frontmatter(content)
+        if not fm or not fm.get("title"):
+            return
+        title = fm["title"]
+        existing = self.resolve_title(title)
+        if (existing and existing != rel_path
+                and "/archive/" not in existing
+                and existing not in self._title_check_skip):
+            raise PermissionError(
+                f"Title '{title}' already used by {existing}. "
+                f"Titles must be unique because [[wiki-links]] depend on them."
+            )
 
     def save_source(self, rel_path: str, content: str) -> None:
         """Write a file to sources/. Only creates new files, never overwrites."""
@@ -798,6 +841,7 @@ class Vault:
         missing_summaries: list[str] = []
         broken_links: list[dict] = []
         missing_connections: list[dict] = []
+        similar_tags: list[dict] = []
 
         # Pre-compute lookups
         titles_to_path: dict[str, str] = {}
@@ -909,6 +953,28 @@ class Vault:
                             "shared_tags": shared[:5],
                         })
 
+        # 7. Similar tags: potential duplicates
+        all_tags = sorted(tag_pages.keys())
+        checked_tag_pairs: set[tuple[str, str]] = set()
+        for i, ta in enumerate(all_tags):
+            for tb in all_tags[i + 1:]:
+                pair = (ta, tb)
+                if pair in checked_tag_pairs:
+                    continue
+                checked_tag_pairs.add(pair)
+                reason = None
+                if ta in tb or tb in ta:
+                    if len(ta) >= 2 and len(tb) >= 2:
+                        reason = "substring"
+                elif len(ta) > 3 and len(tb) > 3:
+                    dist = self._edit_distance(ta, tb)
+                    if dist <= 2:
+                        reason = f"edit distance {dist}"
+                if reason:
+                    similar_tags.append({
+                        "tag_a": ta, "tag_b": tb, "reason": reason,
+                    })
+
         # Build summary line
         counts = []
         if stale_imports:
@@ -923,10 +989,13 @@ class Vault:
             counts.append(f"{len(broken_links)} broken link(s)")
         if missing_connections:
             counts.append(f"{len(missing_connections)} missing connection(s)")
+        if similar_tags:
+            counts.append(f"{len(similar_tags)} similar tag pair(s)")
 
         total = sum([
             len(stale_imports), len(hub_candidates), len(orphan_pages),
             len(missing_summaries), len(broken_links), len(missing_connections),
+            len(similar_tags),
         ])
         summary = (
             f"{total} issue(s) found: {', '.join(counts)}"
@@ -940,8 +1009,28 @@ class Vault:
             "missing_summaries": missing_summaries,
             "broken_links": broken_links,
             "missing_connections": missing_connections,
+            "similar_tags": similar_tags,
             "summary": summary,
         }
+
+    @staticmethod
+    def _edit_distance(a: str, b: str) -> int:
+        """Levenshtein distance between two strings."""
+        if len(a) < len(b):
+            return Vault._edit_distance(b, a)
+        if not b:
+            return len(a)
+        prev = list(range(len(b) + 1))
+        for i, ca in enumerate(a):
+            curr = [i + 1]
+            for j, cb in enumerate(b):
+                curr.append(min(
+                    prev[j + 1] + 1,
+                    curr[j] + 1,
+                    prev[j] + (0 if ca == cb else 1),
+                ))
+            prev = curr
+        return prev[-1]
 
     def save_audit_report(self, report: dict) -> Path:
         """Persist an audit report to ``.meta/audit-report.json``."""
@@ -1269,13 +1358,16 @@ class Vault:
                 move_to = item.get("move_to")
                 if move_to and move_to != path:
                     try:
+                        self._title_check_skip.add(path)
                         self.write_file(move_to, content)
+                        self._title_check_skip.discard(path)
                         original = self._resolve(path)
                         if original.is_file():
                             original.unlink()
                         actual_path = move_to
                         moved += 1
                     except Exception as e:
+                        self._title_check_skip.discard(path)
                         results.append(f"  ⚠ move {path} → {move_to} failed: {e}")
 
                 # Add related links

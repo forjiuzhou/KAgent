@@ -55,6 +55,18 @@ class Gateway:
         self._notify_hour = int(os.environ.get("NW_NOTIFY_HOUR", "9"))
         self._pending_organize_plan: list[dict] | None = None
 
+    def _load_last_digest_date(self) -> str | None:
+        path = self.vault.meta_dir / "last-digest-date"
+        if path.is_file():
+            return path.read_text(encoding="utf-8").strip() or None
+        return None
+
+    def _save_last_digest_date(self) -> None:
+        from datetime import datetime
+        path = self.vault.meta_dir / "last-digest-date"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(datetime.now().strftime("%Y-%m-%d"), encoding="utf-8")
+
     def _setup_adapters(self) -> None:
         """Detect which platforms are configured and create adapters."""
         telegram_token = os.environ.get("NW_TELEGRAM_TOKEN")
@@ -182,27 +194,29 @@ class Gateway:
             # --- Digest ---
             if now - last_digest >= digest_interval:
                 log.info("Cron: running digest...")
-                digest_summary = ""
                 async with self._lock:
-                    self.agent.set_attended(False)
                     try:
+                        since = self._load_last_digest_date()
+                        since_hint = f" Only review journals after {since}." if since else ""
                         for chunk in self.agent.chat(
-                            "Review recent journals and extract any insights worth "
-                            "promoting. Write promotion candidates to today's journal "
-                            "only — do NOT create wiki pages directly. Be brief."
+                            "Review recent journal entries and promote any insights "
+                            "worth capturing as wiki pages. Use promote_insight or "
+                            "write_page for each finding. Add links and tags."
+                            + since_hint
                         ):
-                            if not chunk.startswith("  ↳"):
-                                digest_summary += chunk
+                            pass
+                        pending = self.agent._load_pending_plan()
+                        if pending:
+                            self._pending_organize_plan = pending
+                            summary = self.agent.format_organize_plan(pending)
+                            self._pending_notifications.append(
+                                f"📋 *Digest plan*\n\n{summary}\n\n"
+                                "回复「好的」执行。"
+                            )
+                        self._save_last_digest_date()
                     except Exception as e:
                         log.error("Cron digest failed: %s", e)
-                    finally:
-                        self.agent.set_attended(True)
                 last_digest = now
-
-                if digest_summary.strip():
-                    self._pending_notifications.append(
-                        f"📋 *Digest completed*\n\n{digest_summary.strip()}"
-                    )
 
             # --- Audit (pure code, no LLM, no lock needed) ---
             if now - last_lint >= lint_interval:

@@ -497,6 +497,7 @@ def cmd_lint(vault_path: Path) -> None:
         ("missing_summaries", "Missing summaries"),
         ("broken_links", "Broken links"),
         ("missing_connections", "Missing connections"),
+        ("similar_tags", "Similar tags (potential duplicates)"),
     ]:
         items = report.get(key, [])
         if not items:
@@ -573,6 +574,13 @@ def cmd_digest(vault_path: Path) -> None:
                 "when a journal entry mentions something worth deeper review."
             )
 
+    last_digest_path = vault.meta_dir / "last-digest-date"
+    since_hint = ""
+    if last_digest_path.is_file():
+        since = last_digest_path.read_text(encoding="utf-8").strip()
+        if since:
+            since_hint = f" Only review journals after {since}."
+
     prompt = (
         "Review the recent journal entries in wiki/journals/. Look for:\n"
         "1. Insights, conclusions, or decisions worth promoting to a wiki page\n"
@@ -580,7 +588,7 @@ def cmd_digest(vault_path: Path) -> None:
         "3. Connections between conversations that aren't yet linked\n\n"
         "For each finding, use promote_insight or write_page to create the "
         "appropriate wiki pages. Add links and tags. Log what you did."
-        + transcript_hint
+        + since_hint + transcript_hint
     )
     exchange: dict = {"user": "digest", "tools": [], "reply": ""}
     try:
@@ -596,6 +604,11 @@ def cmd_digest(vault_path: Path) -> None:
         pending = agent._load_pending_plan()
         if pending:
             _approve_and_execute(agent, pending)
+
+        from datetime import datetime as _dt
+        last_digest_path = vault.meta_dir / "last-digest-date"
+        last_digest_path.write_text(_dt.now().strftime("%Y-%m-%d"), encoding="utf-8")
+
         _finalize_session(vault, agent, [exchange], "digest")
     except Exception as e:
         console.print(f"[red]Error: {e}[/red]")

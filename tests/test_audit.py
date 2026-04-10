@@ -737,6 +737,159 @@ class TestTagNormalization:
 # ======================================================================
 
 
+# ======================================================================
+# read_page title resolution
+# ======================================================================
+
+
+class TestReadPageByTitle:
+    def test_read_by_path(self, vault: Vault) -> None:
+        from noteweaver.tools.definitions import dispatch_tool
+        result = dispatch_tool(vault, "read_page", {"path": "wiki/index.md"})
+        assert "Wiki Index" in result
+
+    def test_read_by_title(self, vault: Vault) -> None:
+        from noteweaver.tools.definitions import dispatch_tool
+        vault.write_file("wiki/concepts/test.md", _page("My Test Page", summary="A test"))
+        result = dispatch_tool(vault, "read_page", {"path": "My Test Page"})
+        assert "My Test Page" in result
+
+    def test_read_by_title_case_insensitive(self, vault: Vault) -> None:
+        from noteweaver.tools.definitions import dispatch_tool
+        vault.write_file("wiki/concepts/test.md", _page("Neural Networks", summary="NNs"))
+        result = dispatch_tool(vault, "read_page", {"path": "neural networks"})
+        assert "Neural Networks" in result
+
+    def test_read_by_title_not_found(self, vault: Vault) -> None:
+        from noteweaver.tools.definitions import dispatch_tool
+        result = dispatch_tool(vault, "read_page", {"path": "Nonexistent Page"})
+        assert "Error" in result
+        assert "find_existing_page" in result or "No page" in result
+
+    def test_path_takes_priority(self, vault: Vault) -> None:
+        from noteweaver.tools.definitions import dispatch_tool
+        vault.write_file("wiki/concepts/test.md", _page("Test", summary="Content"))
+        result = dispatch_tool(vault, "read_page", {"path": "wiki/concepts/test.md"})
+        assert "Test" in result
+
+
+# ======================================================================
+# Title uniqueness
+# ======================================================================
+
+
+class TestTitleUniqueness:
+    def test_duplicate_title_rejected(self, vault: Vault) -> None:
+        vault.write_file("wiki/concepts/a.md", _page("Unique Title"))
+        with pytest.raises(PermissionError, match="already used"):
+            vault.write_file("wiki/concepts/b.md", _page("Unique Title"))
+
+    def test_overwrite_same_file_ok(self, vault: Vault) -> None:
+        vault.write_file("wiki/concepts/a.md", _page("Title A"))
+        vault.write_file("wiki/concepts/a.md", _page("Title A", summary="updated"))
+
+    def test_different_titles_ok(self, vault: Vault) -> None:
+        vault.write_file("wiki/concepts/a.md", _page("Title A"))
+        vault.write_file("wiki/concepts/b.md", _page("Title B"))
+
+    def test_archive_exempt(self, vault: Vault) -> None:
+        vault.write_file("wiki/concepts/old.md", _page("Old Page"))
+        vault.write_file("wiki/archive/old.md", _page("Old Page"))
+
+    def test_resolve_title(self, vault: Vault) -> None:
+        vault.write_file("wiki/concepts/test.md", _page("Find Me"))
+        assert vault.resolve_title("Find Me") == "wiki/concepts/test.md"
+        assert vault.resolve_title("find me") == "wiki/concepts/test.md"
+        assert vault.resolve_title("Nonexistent") is None
+
+
+# ======================================================================
+# merge_tags tool
+# ======================================================================
+
+
+class TestMergeTags:
+    def test_basic_merge(self, vault: Vault) -> None:
+        from noteweaver.tools.definitions import dispatch_tool
+        vault.write_file("wiki/concepts/a.md", _page("A", tags=["ml"]))
+        vault.write_file("wiki/concepts/b.md", _page("B", tags=["ml", "dl"]))
+        vault.write_file("wiki/concepts/c.md", _page("C", tags=["dl"]))
+        result = dispatch_tool(vault, "merge_tags", {"old_tag": "ml", "new_tag": "machine-learning"})
+        assert "2 file(s)" in result
+        from noteweaver.frontmatter import extract_frontmatter
+        a = extract_frontmatter(vault.read_file("wiki/concepts/a.md"))
+        assert "machine-learning" in a["tags"]
+        assert "ml" not in a["tags"]
+        c = extract_frontmatter(vault.read_file("wiki/concepts/c.md"))
+        assert c["tags"] == ["dl"]
+
+    def test_merge_deduplicates(self, vault: Vault) -> None:
+        from noteweaver.tools.definitions import dispatch_tool
+        vault.write_file("wiki/concepts/a.md", _page("A", tags=["ml", "machine-learning"]))
+        result = dispatch_tool(vault, "merge_tags", {"old_tag": "ml", "new_tag": "machine-learning"})
+        assert "1 file(s)" in result
+        from noteweaver.frontmatter import extract_frontmatter
+        a = extract_frontmatter(vault.read_file("wiki/concepts/a.md"))
+        assert a["tags"] == ["machine-learning"]
+
+    def test_merge_nonexistent_tag(self, vault: Vault) -> None:
+        from noteweaver.tools.definitions import dispatch_tool
+        result = dispatch_tool(vault, "merge_tags", {"old_tag": "nope", "new_tag": "something"})
+        assert "No pages" in result
+
+    def test_merge_same_tag(self, vault: Vault) -> None:
+        from noteweaver.tools.definitions import dispatch_tool
+        result = dispatch_tool(vault, "merge_tags", {"old_tag": "ml", "new_tag": "ML"})
+        assert "already the same" in result
+
+
+# ======================================================================
+# Audit: similar tags detection
+# ======================================================================
+
+
+class TestAuditSimilarTags:
+    def test_substring_detected(self, vault: Vault) -> None:
+        vault.write_file("wiki/concepts/a.md", _page("A", tags=["react"]))
+        vault.write_file("wiki/concepts/b.md", _page("B", tags=["react-native"]))
+        report = vault.audit_vault()
+        assert any(
+            ("react" in st.get("tag_a", "") or "react" in st.get("tag_b", ""))
+            and "substring" in st.get("reason", "")
+            for st in report.get("similar_tags", [])
+        )
+
+    def test_edit_distance_detected(self, vault: Vault) -> None:
+        vault.write_file("wiki/concepts/a.md", _page("A", tags=["react"]))
+        vault.write_file("wiki/concepts/b.md", _page("B", tags=["reactjs"]))
+        report = vault.audit_vault()
+        assert any(
+            "react" in st.get("tag_a", "") and "reactjs" in st.get("tag_b", "")
+            or "reactjs" in st.get("tag_a", "") and "react" in st.get("tag_b", "")
+            for st in report.get("similar_tags", [])
+        )
+
+    def test_no_false_positives(self, vault: Vault) -> None:
+        vault.write_file("wiki/concepts/a.md", _page("A", tags=["python"]))
+        vault.write_file("wiki/concepts/b.md", _page("B", tags=["javascript"]))
+        report = vault.audit_vault()
+        assert len(report.get("similar_tags", [])) == 0
+
+
+class TestEditDistance:
+    def test_identical(self) -> None:
+        assert Vault._edit_distance("abc", "abc") == 0
+
+    def test_one_char_diff(self) -> None:
+        assert Vault._edit_distance("react", "reactx") == 1
+
+    def test_two_char_diff(self) -> None:
+        assert Vault._edit_distance("react", "reactjs") == 2
+
+    def test_completely_different(self) -> None:
+        assert Vault._edit_distance("abc", "xyz") == 3
+
+
 class TestStaleImportHint:
     def test_no_imported_no_hint(self, vault: Vault) -> None:
         from noteweaver.tools.definitions import dispatch_tool
