@@ -182,10 +182,9 @@ class TestDaysSince:
 class TestScanVaultContext:
     def test_empty_vault(self, vault: Vault) -> None:
         ctx = vault.scan_vault_context()
-        assert "Tags:" in ctx
-        assert "Total pages:" in ctx
+        assert "Total: 0 pages" in ctx
 
-    def test_with_pages(self, vault: Vault) -> None:
+    def test_with_hub_and_pages(self, vault: Vault) -> None:
         vault.write_file(
             "wiki/concepts/ml.md",
             _page("ML", ptype="hub", tags=["ml"]),
@@ -195,29 +194,38 @@ class TestScanVaultContext:
             _page("Deep Learning", tags=["ml", "dl"]),
         )
         ctx = vault.scan_vault_context()
+        assert "ML (1 pages)" in ctx
         assert "ml" in ctx
         assert "dl" in ctx
-        assert "ML" in ctx
-        assert "Deep Learning" in ctx
 
-    def test_hub_tree_structure(self, vault: Vault) -> None:
+    def test_hub_shows_page_count(self, vault: Vault) -> None:
         vault.write_file(
             "wiki/concepts/react-hub.md",
-            _page("React", ptype="hub", tags=["react"], summary="React overview"),
+            _page("React", ptype="hub", tags=["react"]),
         )
+        for i in range(5):
+            vault.write_file(
+                f"wiki/concepts/react-{i}.md",
+                _page(f"React Page {i}", tags=["react"]),
+            )
+        ctx = vault.scan_vault_context()
+        assert "React (5 pages)" in ctx
+        assert "Total: 6 pages" in ctx
+
+    def test_unorganized_count(self, vault: Vault) -> None:
         vault.write_file(
-            "wiki/concepts/hooks.md",
-            _page("React Hooks", tags=["react"], summary="Hook fundamentals"),
-        )
-        vault.write_file(
-            "wiki/concepts/state.md",
-            _page("State Management", tags=["react"], summary="Managing state"),
+            "wiki/concepts/orphan.md",
+            _page("Orphan", tags=["misc"]),
         )
         ctx = vault.scan_vault_context()
-        assert "Navigation Tree" in ctx
-        assert "React" in ctx
-        assert "React Hooks" in ctx
-        assert "State Management" in ctx
+        assert "Unorganized: 1 page(s)" in ctx
+
+    def test_context_is_compact(self, vault: Vault) -> None:
+        vault.write_file("wiki/concepts/hub.md", _page("Hub", ptype="hub", tags=["t"]))
+        for i in range(100):
+            vault.write_file(f"wiki/concepts/p{i}.md", _page(f"Page {i}", tags=["t"]))
+        ctx = vault.scan_vault_context()
+        assert len(ctx) < 500
 
     def test_vault_context_injected_into_prompt(self, vault: Vault, agent: KnowledgeAgent) -> None:
         vault.write_file(

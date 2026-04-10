@@ -937,77 +937,80 @@ class Vault:
     # ------------------------------------------------------------------
 
     def scan_vault_context(self) -> str:
-        """Build a compact vault context string for LLM consumption.
+        """Build a minimal vault overview for the LLM system prompt.
 
-        Returns a structured overview of the vault: hub→page tree, tags,
-        and page listing.  Designed to be injected into the system prompt
-        so the LLM knows the vault structure before making any tool calls.
+        Only shows the top level of the tree: hub names with page counts,
+        tags, and a count of unorganized pages.  This is O(number of hubs),
+        constant regardless of total vault size.
+
+        The LLM uses tools to drill deeper:
+        - ``read_page`` on a hub to see its child pages
+        - ``list_page_summaries`` to scan a directory
+        - ``search_vault`` or ``find_existing_page`` for targeted lookup
         """
         _SKIP_PATHS = {"wiki/index.md", "wiki/log.md"}
         all_summaries = self.read_frontmatters("wiki")
         existing_tags: set[str] = set()
-        existing_titles: list[str] = []
         hubs: list[dict] = []
-        non_hub_pages: list[dict] = []
+        non_hub_count = 0
+        unorganized_count = 0
+        total = 0
+
+        hub_tag_set: set[str] = set()
 
         for ps in all_summaries:
             if ps.get("path") in _SKIP_PATHS:
                 continue
+            if ps.get("type") in ("journal", "archive"):
+                continue
+            total += 1
             for t in (ps.get("tags") or []):
                 if t != "imported":
                     existing_tags.add(t)
-            if ps.get("title"):
-                existing_titles.append(ps["title"])
             if ps.get("type") == "hub":
                 hubs.append(ps)
-            elif ps.get("type") not in ("journal", "archive"):
-                non_hub_pages.append(ps)
+                for t in (ps.get("tags") or []):
+                    hub_tag_set.add(t)
+            else:
+                non_hub_count += 1
+
+        for ps in all_summaries:
+            if ps.get("path") in _SKIP_PATHS:
+                continue
+            if ps.get("type") in ("hub", "journal", "archive"):
+                continue
+            page_tags = set(ps.get("tags") or [])
+            if not (page_tags & hub_tag_set):
+                unorganized_count += 1
 
         lines: list[str] = []
 
-        _MAX_CHILDREN_PER_HUB = 6
-        _MAX_OTHER_PAGES = 10
-
         if hubs:
-            lines.append("### Navigation Tree")
+            hub_parts: list[str] = []
             for hub in hubs:
                 hub_tags = set(hub.get("tags") or [])
-                child_pages = [
-                    p for p in non_hub_pages
-                    if hub_tags & set(p.get("tags") or [])
-                ]
-                child_pages.sort(
-                    key=lambda p: self.backlinks.reference_count(p.get("title", "")),
-                    reverse=True,
+                child_count = sum(
+                    1 for ps in all_summaries
+                    if ps.get("path") not in _SKIP_PATHS
+                    and ps.get("type") not in ("hub", "journal", "archive")
+                    and (set(ps.get("tags") or []) & hub_tags)
                 )
-                desc = f" — {hub['summary']}" if hub.get("summary") else ""
-                lines.append(f"- **{hub['title']}** `{hub['path']}` (hub, {len(child_pages)} pages){desc}")
-                for cp in child_pages[:_MAX_CHILDREN_PER_HUB]:
-                    cp_desc = f" — {cp['summary']}" if cp.get("summary") else ""
-                    lines.append(f"  - [{cp['type']}] {cp['title']} `{cp['path']}`{cp_desc}")
-                if len(child_pages) > _MAX_CHILDREN_PER_HUB:
-                    lines.append(f"  - ... and {len(child_pages) - _MAX_CHILDREN_PER_HUB} more (use list_page_summaries to see all)")
-            lines.append("")
+                hub_parts.append(f"{hub['title']} ({child_count} pages)")
+            lines.append(f"Hubs: {', '.join(hub_parts)}")
 
-        unlinked = [
-            p for p in non_hub_pages
-            if not any(
-                set(p.get("tags") or []) & set(h.get("tags") or [])
-                for h in hubs
-            )
-        ] if hubs else non_hub_pages
+        if existing_tags:
+            sorted_tags = sorted(existing_tags)
+            if len(sorted_tags) > 20:
+                lines.append(f"Tags ({len(sorted_tags)}): {', '.join(sorted_tags[:20])}, ...")
+            else:
+                lines.append(f"Tags: {', '.join(sorted_tags)}")
 
-        if unlinked:
-            lines.append(f"### Other Pages ({len(unlinked)} not under any hub)")
-            for p in unlinked[:_MAX_OTHER_PAGES]:
-                desc = f" — {p['summary']}" if p.get("summary") else ""
-                lines.append(f"- [{p['type']}] {p['title']} `{p['path']}`{desc}")
-            if len(unlinked) > _MAX_OTHER_PAGES:
-                lines.append(f"- ... and {len(unlinked) - _MAX_OTHER_PAGES} more (use list_page_summaries to see all)")
-            lines.append("")
+        if unorganized_count:
+            lines.append(f"Unorganized: {unorganized_count} page(s) not under any hub")
 
-        lines.append(f"Tags: {', '.join(sorted(existing_tags)) or '(none)'}")
-        lines.append(f"Total pages: {len(existing_titles)}")
+        lines.append(f"Total: {total} pages")
+        lines.append("")
+        lines.append("Use read_page on a hub, list_page_summaries, or search_vault to explore.")
 
         return "\n".join(lines)
 
