@@ -182,8 +182,8 @@ class TestDaysSince:
 class TestScanVaultContext:
     def test_empty_vault(self, vault: Vault) -> None:
         ctx = vault.scan_vault_context()
-        assert "Existing tags:" in ctx
-        assert "Existing hubs:" in ctx
+        assert "Tags:" in ctx
+        assert "Total pages:" in ctx
 
     def test_with_pages(self, vault: Vault) -> None:
         vault.write_file(
@@ -199,6 +199,40 @@ class TestScanVaultContext:
         assert "dl" in ctx
         assert "ML" in ctx
         assert "Deep Learning" in ctx
+
+    def test_hub_tree_structure(self, vault: Vault) -> None:
+        vault.write_file(
+            "wiki/concepts/react-hub.md",
+            _page("React", ptype="hub", tags=["react"], summary="React overview"),
+        )
+        vault.write_file(
+            "wiki/concepts/hooks.md",
+            _page("React Hooks", tags=["react"], summary="Hook fundamentals"),
+        )
+        vault.write_file(
+            "wiki/concepts/state.md",
+            _page("State Management", tags=["react"], summary="Managing state"),
+        )
+        ctx = vault.scan_vault_context()
+        assert "Navigation Tree" in ctx
+        assert "React" in ctx
+        assert "React Hooks" in ctx
+        assert "State Management" in ctx
+
+    def test_vault_context_injected_into_prompt(self, vault: Vault, agent: KnowledgeAgent) -> None:
+        vault.write_file(
+            "wiki/concepts/ml.md",
+            _page("ML", ptype="hub", tags=["ml"], summary="Machine learning"),
+        )
+        query = agent._build_messages_for_query()
+        system = query[0]["content"]
+        assert "Current Vault Contents" in system
+        assert "ML" in system
+
+    def test_empty_vault_shows_welcome(self, vault: Vault, agent: KnowledgeAgent) -> None:
+        query = agent._build_messages_for_query()
+        system = query[0]["content"]
+        assert "vault is empty" in system.lower()
 
 
 # ======================================================================

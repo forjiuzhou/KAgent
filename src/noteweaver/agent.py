@@ -610,6 +610,23 @@ class KnowledgeAgent:
                 )
                 pending_proposals_injected = True
 
+        # Inject vault structure overview
+        try:
+            vault_ctx = self.vault.scan_vault_context()
+            if vault_ctx and "page titles (0)" not in vault_ctx:
+                system_content += (
+                    "\n\n## Current Vault Contents\n\n" + vault_ctx
+                )
+            else:
+                system_content += (
+                    "\n\n## Current Vault Contents\n\n"
+                    "The vault is empty — no pages yet. Welcome the user "
+                    "and suggest what they can do (import notes, start "
+                    "capturing knowledge from conversations, etc.)."
+                )
+        except Exception:
+            pass
+
         # Inject vault audit summary if available
         audit_path = self.vault.meta_dir / "audit-report.json"
         if audit_path.is_file():

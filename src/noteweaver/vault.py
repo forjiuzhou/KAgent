@@ -939,14 +939,16 @@ class Vault:
     def scan_vault_context(self) -> str:
         """Build a compact vault context string for LLM consumption.
 
-        Returns existing tags, hubs, and page titles — the same context
-        that ``scan_imports`` assembles inline, extracted as a reusable
-        method.
+        Returns a structured overview of the vault: hub→page tree, tags,
+        and page listing.  Designed to be injected into the system prompt
+        so the LLM knows the vault structure before making any tool calls.
         """
         all_summaries = self.read_frontmatters("wiki")
         existing_tags: set[str] = set()
         existing_titles: list[str] = []
-        existing_hubs: list[str] = []
+        hubs: list[dict] = []
+        non_hub_pages: list[dict] = []
+
         for ps in all_summaries:
             for t in (ps.get("tags") or []):
                 if t != "imported":
@@ -954,14 +956,49 @@ class Vault:
             if ps.get("title"):
                 existing_titles.append(ps["title"])
             if ps.get("type") == "hub":
-                existing_hubs.append(ps["title"])
+                hubs.append(ps)
+            elif ps.get("type") not in ("journal",):
+                non_hub_pages.append(ps)
 
-        lines = [
-            f"Existing tags: {', '.join(sorted(existing_tags)) or '(none)'}",
-            f"Existing hubs: {', '.join(existing_hubs) or '(none)'}",
-            f"Existing page titles ({len(existing_titles)}): "
-            + ", ".join(existing_titles[:40]),
-        ]
+        lines: list[str] = []
+
+        if hubs:
+            lines.append("### Navigation Tree")
+            for hub in hubs:
+                hub_tags = set(hub.get("tags") or [])
+                child_pages = [
+                    p for p in non_hub_pages
+                    if hub_tags & set(p.get("tags") or [])
+                ]
+                desc = f" — {hub['summary']}" if hub.get("summary") else ""
+                lines.append(f"- **{hub['title']}** (hub){desc}")
+                for cp in child_pages[:8]:
+                    cp_desc = f" — {cp['summary']}" if cp.get("summary") else ""
+                    lines.append(f"  - [{cp['type']}] {cp['title']}{cp_desc}")
+                if len(child_pages) > 8:
+                    lines.append(f"  - ... and {len(child_pages) - 8} more")
+            lines.append("")
+
+        unlinked = [
+            p for p in non_hub_pages
+            if not any(
+                set(p.get("tags") or []) & set(h.get("tags") or [])
+                for h in hubs
+            )
+        ] if hubs else non_hub_pages
+
+        if unlinked:
+            lines.append(f"### Other Pages ({len(unlinked)})")
+            for p in unlinked[:15]:
+                desc = f" — {p['summary']}" if p.get("summary") else ""
+                lines.append(f"- [{p['type']}] {p['title']}{desc}")
+            if len(unlinked) > 15:
+                lines.append(f"- ... and {len(unlinked) - 15} more")
+            lines.append("")
+
+        lines.append(f"Tags: {', '.join(sorted(existing_tags)) or '(none)'}")
+        lines.append(f"Total pages: {len(existing_titles)}")
+
         return "\n".join(lines)
 
     # ------------------------------------------------------------------
