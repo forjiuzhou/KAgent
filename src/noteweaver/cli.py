@@ -85,9 +85,9 @@ def _finalize_session(
     exchanges: list[dict],
     session_type: str = "chat",
 ) -> None:
-    """Save transcript, session memory, and (conditionally) journal.
+    """Save transcript, session memory, trace, and (conditionally) journal.
 
-    Transcript and session memory are always saved.
+    Transcript, trace, and session memory are always saved.
     Journal is only written when the session has substance: a write
     operation occurred, there were enough exchanges, or it's a
     system-initiated command (ingest/lint/digest).
@@ -98,6 +98,13 @@ def _finalize_session(
     except Exception as e:
         log.warning("Failed to save transcript: %s", e)
         transcript_path = None
+
+    try:
+        trace_path = agent.save_trace()
+        if trace_path:
+            log.debug("Trace saved to %s", trace_path)
+    except Exception as e:
+        log.warning("Failed to save trace: %s", e)
 
     try:
         agent.save_session_memory()
@@ -553,6 +560,54 @@ def cmd_status(vault_path: Path) -> None:
             console.print(f"[info]Transcripts:    {count} saved[/info]")
 
 
+def cmd_trace(vault_path: Path, args: list[str]) -> None:
+    """Show or list agent traces for debugging.
+
+    Usage:
+        nw trace              — list recent traces
+        nw trace <file>       — render a specific trace (human-readable)
+        nw trace --raw <file> — output raw JSONL for machine consumption
+    """
+    from noteweaver.trace import TraceCollector
+
+    trace_dir = vault_path / ".meta" / "traces"
+
+    raw_mode = "--raw" in args
+    remaining = [a for a in args if a != "--raw"]
+
+    if not remaining:
+        if not trace_dir.is_dir():
+            console.print("[info]No traces found.[/info]")
+            return
+        traces = sorted(trace_dir.glob("*.trace.jsonl"))
+        if not traces:
+            console.print("[info]No traces found.[/info]")
+            return
+        console.print(f"[bold]Traces[/bold] ({len(traces)} total)\n")
+        for t in traces[-20:]:
+            size = t.stat().st_size
+            console.print(f"  {t.name}  ({size:,} bytes)")
+        console.print(f"\n[info]Run `nw trace <filename>` to view a trace.[/info]")
+        return
+
+    target = remaining[0]
+    path = trace_dir / target if not Path(target).is_absolute() else Path(target)
+
+    if not path.exists():
+        if not path.suffix:
+            path = trace_dir / (target + ".trace.jsonl")
+        if not path.exists():
+            console.print(f"[red]Trace not found: {target}[/red]")
+            return
+
+    if raw_mode:
+        sys.stdout.write(path.read_text(encoding="utf-8"))
+    else:
+        events = TraceCollector.load(path)
+        report = TraceCollector.render_human(events)
+        console.print(report)
+
+
 def main() -> None:
     """Main CLI entry point."""
     args = sys.argv[1:]
@@ -587,6 +642,9 @@ def main() -> None:
     elif args[0] == "status":
         vault_path = resolve_vault_path()
         cmd_status(vault_path)
+    elif args[0] == "trace":
+        vault_path = resolve_vault_path()
+        cmd_trace(vault_path, args[1:])
     elif args[0] == "gateway":
         vault_path = resolve_vault_path()
         from noteweaver.gateway import run_gateway
@@ -604,6 +662,7 @@ def main() -> None:
                 "  [bold]nw digest[/bold]            Extract insights from recent journals\n"
                 "  [bold]nw rebuild-index[/bold]     Rebuild index.md and search index\n"
                 "  [bold]nw status[/bold]            Show vault status\n"
+                "  [bold]nw trace[/bold]             List/view agent run traces\n"
                 "  [bold]nw gateway[/bold]           Start IM gateway (Telegram/Feishu)\n"
                 "  [bold]nw help[/bold]              Show this help\n\n"
                 "Environment:\n"
