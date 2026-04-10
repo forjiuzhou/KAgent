@@ -300,6 +300,113 @@ class TestDedupWorkflow:
 # ======================================================================
 
 
+class TestAutoContinue:
+    """Tests for the auto-continue mechanism that detects mid-operation pauses."""
+
+    def test_looks_like_mid_operation_pause_english(self, vault: Vault) -> None:
+        agent = KnowledgeAgent(vault=vault, provider=MagicMock())
+        assert agent._looks_like_mid_operation_pause(
+            "I've processed 3 files. Should I continue with the rest?"
+        )
+        assert agent._looks_like_mid_operation_pause(
+            "Here are the first 5 results. Would you like me to continue?"
+        )
+        assert agent._looks_like_mid_operation_pause(
+            "Done with the first batch. Shall I proceed with the remaining files?"
+        )
+
+    def test_looks_like_mid_operation_pause_chinese(self, vault: Vault) -> None:
+        agent = KnowledgeAgent(vault=vault, provider=MagicMock())
+        assert agent._looks_like_mid_operation_pause(
+            "已经处理了3个文件，要继续吗？"
+        )
+        assert agent._looks_like_mid_operation_pause(
+            "前5个已整理完毕，需要我继续处理剩余的吗？"
+        )
+        assert agent._looks_like_mid_operation_pause(
+            "这是前几个结果。是否继续？"
+        )
+
+    def test_not_mid_operation_pause(self, vault: Vault) -> None:
+        agent = KnowledgeAgent(vault=vault, provider=MagicMock())
+        assert not agent._looks_like_mid_operation_pause(
+            "I've finished processing all 10 files. Here's a summary."
+        )
+        assert not agent._looks_like_mid_operation_pause(
+            "The vault currently has 42 pages and 3 hubs."
+        )
+        assert not agent._looks_like_mid_operation_pause(None)
+        assert not agent._looks_like_mid_operation_pause("")
+
+    def test_auto_continue_injects_continuation(self, vault: Vault) -> None:
+        """When the model pauses mid-operation, the agent auto-continues."""
+        provider = MagicMock()
+        provider.chat_completion.side_effect = [
+            # Step 1: tool call (model is working)
+            _make_completion(None, [{
+                "id": "tc1",
+                "name": "list_page_summaries",
+                "arguments": {"directory": "wiki"},
+            }]),
+            # Step 2: model pauses and asks user
+            _make_completion(
+                "I found 3 pages. Should I continue processing?"
+            ),
+            # Step 3: after auto-continue, model finishes
+            _make_completion("All done! Here's the full summary."),
+        ]
+        agent = KnowledgeAgent(vault=vault, provider=provider)
+        responses = list(agent.chat("Analyze my vault"))
+
+        assert provider.chat_completion.call_count == 3
+        assert any("All done" in r for r in responses)
+        # The auto-injected "Continue" message should be in the transcript
+        user_msgs = [
+            m for m in agent.messages
+            if isinstance(m, dict) and m.get("role") == "user"
+        ]
+        assert any("Continue" in m.get("content", "") for m in user_msgs)
+
+    def test_auto_continue_respects_max_limit(self, vault: Vault) -> None:
+        """Auto-continue doesn't loop forever — respects _MAX_AUTO_CONTINUES."""
+        provider = MagicMock()
+        side_effects = [
+            # Initial tool call
+            _make_completion(None, [{
+                "id": "tc1",
+                "name": "list_page_summaries",
+                "arguments": {"directory": "wiki"},
+            }]),
+        ]
+        # Model keeps asking "should I continue?" every time
+        for i in range(5):
+            side_effects.append(
+                _make_completion(f"Batch {i} done. Should I continue?")
+            )
+        provider.chat_completion.side_effect = side_effects
+        agent = KnowledgeAgent(vault=vault, provider=provider)
+
+        responses = list(agent.chat("Process everything"))
+
+        # 1 (tool call) + _MAX_AUTO_CONTINUES (pauses that trigger continue)
+        # + 1 (final pause where limit is hit → yield and return)
+        assert provider.chat_completion.call_count == (
+            1 + agent._MAX_AUTO_CONTINUES + 1
+        )
+
+    def test_no_auto_continue_without_prior_tools(self, vault: Vault) -> None:
+        """Auto-continue only triggers after tools have been used."""
+        provider = MagicMock()
+        provider.chat_completion.return_value = _make_completion(
+            "Interesting question. Should I continue exploring?"
+        )
+        agent = KnowledgeAgent(vault=vault, provider=provider)
+        responses = list(agent.chat("Tell me about AI"))
+
+        # No tools were used, so no auto-continue even with continuation cue
+        assert provider.chat_completion.call_count == 1
+
+
 class TestToolResultTieringIntegration:
     def test_tiering_in_multi_step_chat(self, vault: Vault) -> None:
         """Tool results from earlier turns are tiered in the query view."""

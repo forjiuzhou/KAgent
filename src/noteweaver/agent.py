@@ -167,6 +167,12 @@ Navigate first, search to fill gaps.
   when you only need to add or update part of a page.
 - **Default to read-only**: in Mode 1 (conversation), enhance your answers \
   with knowledge base content, but do NOT write unless there's a real reason.
+- **Complete batch operations in one go**: when doing multi-step operations \
+  (import, ingest, digest, lint, bulk updates), complete ALL steps before \
+  responding. Do NOT pause after a few items to ask "should I continue?", \
+  "what's next?", or "要继续吗?" — just keep going until every item is \
+  processed. The user asked for the full operation; deliver the full result. \
+  Only stop mid-operation if you hit an error that genuinely needs user input.
 
 If vault is empty, welcome the user and suggest what they can do.
 """
@@ -241,6 +247,10 @@ class KnowledgeAgent:
 
     # Long-term memory
     _MEMORY_FILE_MAX_CHARS = 3000
+
+    # Auto-continue: max times the agent can auto-inject "continue" when the
+    # model stops mid-operation to ask the user for permission/next steps.
+    _MAX_AUTO_CONTINUES = 3
 
     def __init__(
         self,
@@ -824,6 +834,8 @@ class KnowledgeAgent:
         - Tool results are tiered: full → preview → placeholder
         - API errors are retried at the provider layer (retry.py)
         - Tool execution errors are captured and fed back to the model
+        - Auto-continue: if the model stops mid-operation to ask "should I
+          continue?", we inject a continuation prompt and keep going.
         """
         self.messages.append({"role": "user", "content": user_message})
         self._update_session_summary()
@@ -835,6 +847,9 @@ class KnowledgeAgent:
 
         try:
             max_steps = 25
+            auto_continues_used = 0
+            did_use_tools = False
+
             for _ in range(max_steps):
                 query_messages = self._build_messages_for_query()
                 completion, raw_message = self.provider.chat_completion(
@@ -846,9 +861,28 @@ class KnowledgeAgent:
                 self.messages.append(raw_message)
 
                 if not completion.tool_calls:
+                    if (
+                        did_use_tools
+                        and auto_continues_used < self._MAX_AUTO_CONTINUES
+                        and self._looks_like_mid_operation_pause(
+                            completion.content
+                        )
+                    ):
+                        auto_continues_used += 1
+                        self.messages.append({
+                            "role": "user",
+                            "content": (
+                                "Continue. Complete all remaining items — "
+                                "do not stop to ask."
+                            ),
+                        })
+                        continue
+
                     if completion.content:
                         yield completion.content
                     return
+
+                did_use_tools = True
 
                 for tool_call in completion.tool_calls:
                     try:
@@ -987,6 +1021,48 @@ class KnowledgeAgent:
         if self.vault._operation_depth == 0 and self.vault._operation_dirty:
             self.vault._git_commit(message)
             self.vault._operation_dirty = False
+
+    @staticmethod
+    def _looks_like_mid_operation_pause(text: str | None) -> bool:
+        """Heuristic: does the assistant text look like a mid-operation pause?
+
+        Some models (especially GPT family) tend to stop after processing a
+        few items and ask the user whether to continue.  This detects those
+        patterns so the agent loop can auto-inject a "continue" prompt.
+        """
+        if not text:
+            return False
+
+        lower = text.lower()
+
+        continuation_cues = [
+            "should i continue",
+            "shall i continue",
+            "want me to continue",
+            "would you like me to continue",
+            "do you want me to",
+            "let me know if",
+            "ready for the next",
+            "proceed with",
+            "want me to proceed",
+            "shall i proceed",
+            "要继续吗",
+            "需要我继续",
+            "要我继续",
+            "接下来",
+            "是否继续",
+            "要不要继续",
+            "下一步",
+            "还有.*要处理",
+            "剩余.*要处理",
+        ]
+
+        import re
+        for cue in continuation_cues:
+            if re.search(cue, lower):
+                return True
+
+        return False
 
     @staticmethod
     def _summarize_args(args: dict) -> str:
