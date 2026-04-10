@@ -714,11 +714,11 @@ def handle_archive_page(vault: Vault, path: str, reason: str = "") -> str:
 
     vault.write_file(archive_path, new_content)
 
-    # Remove original file (the delete is captured by the next git commit,
-    # whether that's from an operation context or append_log below)
     original = vault._resolve(path)
     if original.is_file():
         original.unlink()
+    vault.search.remove(path)
+    vault.backlinks.remove_page(path)
 
     vault.append_log("archive", path, reason)
     return f"OK: archived {path} -> {archive_path}"

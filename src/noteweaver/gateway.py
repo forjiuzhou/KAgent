@@ -196,6 +196,7 @@ class Gateway:
                 log.info("Cron: running digest...")
                 async with self._lock:
                     try:
+                        self.agent.set_attended(False)
                         since = self._load_last_digest_date()
                         since_hint = f" Only review journals after {since}." if since else ""
                         for chunk in self.agent.chat(
@@ -216,6 +217,8 @@ class Gateway:
                         self._save_last_digest_date()
                     except Exception as e:
                         log.error("Cron digest failed: %s", e)
+                    finally:
+                        self.agent.set_attended(True)
                 last_digest = now
 
             # --- Audit (pure code, no LLM, no lock needed) ---
