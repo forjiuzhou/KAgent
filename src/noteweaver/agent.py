@@ -20,6 +20,7 @@ Context management architecture:
 from __future__ import annotations
 
 import json
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Generator
@@ -28,6 +29,7 @@ from noteweaver.adapters.provider import LLMProvider
 from noteweaver.vault import Vault
 from noteweaver.tools.definitions import TOOL_SCHEMAS, dispatch_tool
 from noteweaver.tools.policy import PolicyContext, check_pre_dispatch
+from noteweaver.trace import TraceCollector
 
 # ======================================================================
 # System prompt — split into static parts for cache efficiency
@@ -266,6 +268,8 @@ class KnowledgeAgent:
         self._session_summary: dict | None = None
         self._summary_boundary: int = 1  # messages[1:boundary] are summarised
         self._policy_ctx = PolicyContext()
+        self._trace = TraceCollector()
+        self._provider_name = provider_name if provider is None else type(provider).__name__
 
     def set_attended(self, attended: bool) -> None:
         """Mark whether the user is present for this session.
@@ -557,6 +561,18 @@ class KnowledgeAgent:
         )
         return path
 
+    def save_trace(self, directory: Path | None = None) -> Path | None:
+        """Save the current trace to a JSONL file.
+
+        Saves to ``.meta/traces/<timestamp>.trace.jsonl``.
+        Returns the path, or None if the trace is empty.
+        """
+        if not self._trace.events:
+            return None
+        if directory is None:
+            directory = self.vault.meta_dir / "traces"
+        return self._trace.save(directory)
+
     # ------------------------------------------------------------------
     # Query view builder  (C1 — the core architectural change)
     # ------------------------------------------------------------------
@@ -575,12 +591,15 @@ class KnowledgeAgent:
         # 1. System prompt — augment with session memory + pending proposals
         system_content = self.messages[0]["content"]
         session_memory = self._load_session_memory()
+        session_memory_injected = False
         if session_memory:
             system_content += (
                 "\n\n## Session Context (from previous session)\n\n"
                 + session_memory
             )
+            session_memory_injected = True
 
+        pending_proposals_injected = False
         if self._policy_ctx.attended:
             proposals = self._scan_pending_proposals()
             if proposals:
@@ -592,6 +611,7 @@ class KnowledgeAgent:
                     "sessions — want me to turn them into wiki pages?'\n\n"
                     + proposals
                 )
+                pending_proposals_injected = True
 
         result: list[dict] = [{"role": "system", "content": system_content}]
 
@@ -612,6 +632,19 @@ class KnowledgeAgent:
         # 3. Recent messages with tool-result tiers
         recent = self.messages[self._summary_boundary:]
         result.extend(self._apply_tool_result_tiers(recent))
+
+        # Record context assembly in trace
+        total_chars = sum(len(_msg_content(m)) for m in result)
+        self._trace.record_context_assembly(
+            system_prompt_chars=len(system_content),
+            session_memory_injected=session_memory_injected,
+            pending_proposals_injected=pending_proposals_injected,
+            summary_active=self._session_summary is not None,
+            summary_boundary=self._summary_boundary,
+            recent_message_count=len(recent),
+            total_query_messages=len(result),
+            estimated_tokens=total_chars // self._CHARS_PER_TOKEN,
+        )
 
         return result
 
@@ -825,6 +858,17 @@ class KnowledgeAgent:
         - API errors are retried at the provider layer (retry.py)
         - Tool execution errors are captured and fed back to the model
         """
+        self._trace = TraceCollector()
+        self._trace.set_session_meta(
+            model=self.model,
+            provider=self._provider_name,
+            attended=self._policy_ctx.attended,
+            vault_path=str(self.vault.root),
+            has_session_memory=(self.vault.meta_dir / "session-memory.md").is_file(),
+            has_long_term_memory=(self.vault.schema_dir / "memory.md").is_file(),
+            has_preferences=(self.vault.schema_dir / "preferences.md").is_file(),
+        )
+
         self.messages.append({"role": "user", "content": user_message})
         self._update_session_summary()
 
@@ -833,9 +877,14 @@ class KnowledgeAgent:
         )
         self.vault._operation_depth += 1
 
+        steps_taken = 0
+        has_response = False
+        hit_max = False
+
         try:
             max_steps = 25
             for _ in range(max_steps):
+                steps_taken += 1
                 query_messages = self._build_messages_for_query()
                 completion, raw_message = self.provider.chat_completion(
                     model=self.model,
@@ -847,6 +896,7 @@ class KnowledgeAgent:
 
                 if not completion.tool_calls:
                     if completion.content:
+                        has_response = True
                         yield completion.content
                     return
 
@@ -861,6 +911,10 @@ class KnowledgeAgent:
                     verdict = check_pre_dispatch(
                         tool_call.name, fn_args, self._policy_ctx,
                     )
+
+                    t0 = time.monotonic()
+                    error_msg: str | None = None
+
                     if not verdict.allowed:
                         result = verdict.warning or "Policy: action blocked."
                     else:
@@ -869,12 +923,25 @@ class KnowledgeAgent:
                                 self.vault, tool_call.name, fn_args
                             )
                         except Exception as exc:
+                            error_msg = f"{type(exc).__name__}: {exc}"
                             result = (
-                                f"Error executing {tool_call.name}: "
-                                f"{type(exc).__name__}: {exc}"
+                                f"Error executing {tool_call.name}: {error_msg}"
                             )
                         if verdict.warning:
                             result += f"\n\n⚠️ {verdict.warning}"
+
+                    duration_ms = (time.monotonic() - t0) * 1000
+
+                    self._trace.record_tool_call(
+                        name=tool_call.name,
+                        arguments=fn_args,
+                        policy_allowed=verdict.allowed,
+                        policy_warning=verdict.warning,
+                        result_preview=result,
+                        duration_ms=duration_ms,
+                        error=error_msg,
+                    )
+
                     self._policy_ctx.record_tool_call(
                         tool_call.name, fn_args,
                     )
@@ -891,8 +958,14 @@ class KnowledgeAgent:
                         "content": result,
                     })
 
+            hit_max = True
             yield "(reached maximum steps)"
         finally:
+            self._trace.record_turn_end(
+                steps_taken=steps_taken,
+                has_response=has_response,
+                hit_max_steps=hit_max,
+            )
             self._end_operation(short_msg)
 
     # ------------------------------------------------------------------
