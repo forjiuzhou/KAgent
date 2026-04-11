@@ -46,7 +46,7 @@ class TestPromptStructure:
         assert "Inverted pyramid" in PROMPT_IDENTITY
 
     def test_tools_has_all_tools(self) -> None:
-        from noteweaver.tools.definitions import TOOL_SCHEMAS
+        from noteweaver.tools.definitions import TOOL_SCHEMAS, CHAT_TOOL_SCHEMAS
 
         assert len(TOOL_SCHEMAS) == 11
         for tool in [
@@ -56,16 +56,14 @@ class TestPromptStructure:
             "get_backlinks",
             "list_pages",
             "fetch_url",
-            "capture",
-            "ingest",
-            "organize",
-            "restructure",
-            "write_page",
         ]:
             assert tool in PROMPT_TOOLS, f"Missing tool: {tool}"
+        assert "submit_plan" in PROMPT_TOOLS
+        chat_names = {s["function"]["name"] for s in CHAT_TOOL_SCHEMAS}
+        assert "submit_plan" in chat_names
 
     def test_tools_has_common_requests(self) -> None:
-        assert "ingest" in PROMPT_TOOLS
+        assert "submit_plan" in PROMPT_TOOLS
         assert "fetch_url" in PROMPT_TOOLS
         assert "survey_topic" in PROMPT_TOOLS
 

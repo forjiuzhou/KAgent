@@ -413,11 +413,13 @@ class TestGenerateOrganizePlan:
                 tool_calls=[
                     ToolCall(
                         id="tc1",
-                        name="capture",
+                        name="submit_plan",
                         arguments=json.dumps({
-                            "target": "wiki/concepts/react-hooks.md",
-                            "title": "useState",
-                            "content": "useState manages local component state.",
+                            "summary": "Capture useState info to react-hooks page",
+                            "targets": ["wiki/concepts/react-hooks.md"],
+                            "rationale": "User discussed React hooks",
+                            "intent": "append",
+                            "change_type": "incremental",
                         }),
                     ),
                 ],
@@ -427,9 +429,9 @@ class TestGenerateOrganizePlan:
 
         plan = agent.generate_organize_plan()
         assert plan is not None
-        assert len(plan) == 1
-        assert plan[0]["name"] == "capture"
-        assert "react-hooks" in plan[0]["arguments"]["target"]
+        from noteweaver.plan import Plan
+        assert isinstance(plan, Plan)
+        assert "react-hooks" in plan.targets[0]
 
     def test_plan_persisted_to_disk(self, agent: KnowledgeAgent) -> None:
         agent.messages.append({"role": "user", "content": "Important content"})
@@ -441,10 +443,12 @@ class TestGenerateOrganizePlan:
                 tool_calls=[
                     ToolCall(
                         id="tc1",
-                        name="capture",
+                        name="submit_plan",
                         arguments=json.dumps({
-                            "title": "X",
-                            "content": "Session note from test.",
+                            "summary": "Capture session note",
+                            "rationale": "Important content discussed",
+                            "intent": "create",
+                            "change_type": "structural",
                         }),
                     ),
                 ],
@@ -453,8 +457,9 @@ class TestGenerateOrganizePlan:
         )
         plan = agent.generate_organize_plan()
         assert plan is not None
-        loaded = agent._load_pending_plan()
-        assert loaded == plan
+        loaded = agent.plan_store.load(plan.id)
+        assert loaded is not None
+        assert loaded.id == plan.id
 
     def test_provider_error_returns_none(self, agent: KnowledgeAgent) -> None:
         agent.messages.append({"role": "user", "content": "test"})
@@ -466,13 +471,13 @@ class TestGenerateOrganizePlan:
 
 
 class TestFormatOrganizePlan:
-    def test_format_write_page(self, agent: KnowledgeAgent) -> None:
+    def test_format_legacy_write_page(self, agent: KnowledgeAgent) -> None:
         plan = [{"name": "write_page", "arguments": {"path": "wiki/concepts/test.md", "content": "..."}}]
         text = agent.format_organize_plan(plan)
-        assert "写入页面" in text
+        assert "write_page" in text
         assert "wiki/concepts/test.md" in text
 
-    def test_format_capture_append(self, agent: KnowledgeAgent) -> None:
+    def test_format_legacy_capture_append(self, agent: KnowledgeAgent) -> None:
         plan = [{
             "name": "capture",
             "arguments": {
@@ -482,9 +487,9 @@ class TestFormatOrganizePlan:
             },
         }]
         text = agent.format_organize_plan(plan)
-        assert "追加" in text
+        assert "capture" in text
 
-    def test_format_update_frontmatter(self, agent: KnowledgeAgent) -> None:
+    def test_format_legacy_update_frontmatter(self, agent: KnowledgeAgent) -> None:
         plan = [{
             "name": "organize",
             "arguments": {
@@ -494,10 +499,9 @@ class TestFormatOrganizePlan:
             },
         }]
         text = agent.format_organize_plan(plan)
-        assert "更新" in text
-        assert "tags" in text
+        assert "organize" in text
 
-    def test_format_add_related_link(self, agent: KnowledgeAgent) -> None:
+    def test_format_legacy_add_related_link(self, agent: KnowledgeAgent) -> None:
         plan = [{
             "name": "organize",
             "arguments": {
@@ -507,10 +511,27 @@ class TestFormatOrganizePlan:
             },
         }]
         text = agent.format_organize_plan(plan)
-        assert "添加链接" in text
+        assert "organize" in text
 
     def test_format_empty_plan(self, agent: KnowledgeAgent) -> None:
         assert agent.format_organize_plan([]) == ""
+
+    def test_format_plan_object(self, agent: KnowledgeAgent) -> None:
+        from noteweaver.plan import Plan, PlanStatus
+        plan = Plan(
+            id="plan-test",
+            status=PlanStatus.PENDING,
+            created_at="2026-01-01T00:00:00+00:00",
+            updated_at="2026-01-01T00:00:00+00:00",
+            summary="Add React hooks notes",
+            targets=["wiki/concepts/react.md"],
+            rationale="User discussed hooks",
+            intent="append",
+            change_type="incremental",
+        )
+        text = agent.format_plan(plan)
+        assert "追加内容" in text
+        assert "react.md" in text
 
 
 class TestExecuteOrganizePlan:
@@ -705,23 +726,29 @@ class TestWriteInterception:
         responses = list(agent.chat("What's in the vault?"))
         assert any("read_page" in r for r in responses)
         assert any("index" in r.lower() for r in responses)
-        assert agent._load_pending_plan() is None
+        assert len(agent.plan_store.list_pending()) == 0
 
-    def test_write_tools_intercepted(self, vault: Vault) -> None:
+    def test_submit_plan_creates_pending_plan(self, vault: Vault) -> None:
         from noteweaver.adapters.provider import CompletionResult, ToolCall
         provider = MagicMock()
         provider.chat_completion.side_effect = [
             (CompletionResult(content=None, tool_calls=[
-                ToolCall(id="tc1", name="write_page",
+                ToolCall(id="tc1", name="submit_plan",
                          arguments=json.dumps({
-                             "path": "wiki/concepts/test.md",
-                             "content": "---\ntitle: Test\ntype: note\n---\n# Test",
+                             "summary": "Create a test page at wiki/concepts/test.md",
+                             "targets": ["wiki/concepts/test.md"],
+                             "rationale": "User requested a test page",
+                             "intent": "create",
+                             "change_type": "structural",
                          })),
             ]), {"role": "assistant", "tool_calls": [
                 {"id": "tc1", "type": "function",
-                 "function": {"name": "write_page", "arguments": json.dumps({
-                     "path": "wiki/concepts/test.md",
-                     "content": "---\ntitle: Test\ntype: note\n---\n# Test",
+                 "function": {"name": "submit_plan", "arguments": json.dumps({
+                     "summary": "Create a test page",
+                     "targets": ["wiki/concepts/test.md"],
+                     "rationale": "User requested",
+                     "intent": "create",
+                     "change_type": "structural",
                  })}}
             ]}),
             (CompletionResult(content="I've proposed creating the page."),
@@ -731,31 +758,37 @@ class TestWriteInterception:
         responses = list(agent.chat("Create a test page"))
         assert any("📋" in r for r in responses)
         assert not (vault.root / "wiki" / "concepts" / "test.md").exists()
-        plan = agent._load_pending_plan()
-        assert plan is not None
-        assert len(plan) == 1
-        assert plan[0]["name"] == "write_page"
+        pending = agent.plan_store.list_pending()
+        assert len(pending) == 1
+        assert pending[0].intent == "create"
 
-    def test_mixed_read_write_in_one_turn(self, vault: Vault) -> None:
+    def test_mixed_read_and_plan_in_session(self, vault: Vault) -> None:
         from noteweaver.adapters.provider import CompletionResult, ToolCall
         provider = MagicMock()
         provider.chat_completion.side_effect = [
             (CompletionResult(content=None, tool_calls=[
                 ToolCall(id="tc1", name="read_page",
                          arguments=json.dumps({"path": "wiki/index.md"})),
-                ToolCall(
-                    id="tc2",
-                    name="capture",
-                    arguments=json.dumps({"title": "X", "content": "Quick capture."}),
-                ),
             ]), {"role": "assistant", "tool_calls": [
                 {"id": "tc1", "type": "function",
-                 "function": {"name": "read_page", "arguments": json.dumps({"path": "wiki/index.md"})}},
+                 "function": {"name": "read_page", "arguments": json.dumps({"path": "wiki/index.md"})}}
+            ]}),
+            (CompletionResult(content=None, tool_calls=[
+                ToolCall(id="tc2", name="submit_plan",
+                         arguments=json.dumps({
+                             "summary": "Quick capture",
+                             "rationale": "User wants to record this",
+                             "intent": "append",
+                             "change_type": "incremental",
+                         })),
+            ]), {"role": "assistant", "tool_calls": [
                 {"id": "tc2", "type": "function",
-                 "function": {
-                     "name": "capture",
-                     "arguments": json.dumps({"title": "X", "content": "Quick capture."}),
-                 }},
+                 "function": {"name": "submit_plan", "arguments": json.dumps({
+                     "summary": "Quick capture",
+                     "rationale": "User wants to record this",
+                     "intent": "append",
+                     "change_type": "incremental",
+                 })}}
             ]}),
             (CompletionResult(content="Done."), {"role": "assistant", "content": "Done."}),
         ]
@@ -763,10 +796,8 @@ class TestWriteInterception:
         responses = list(agent.chat("Do something"))
         assert any("↳" in r for r in responses)
         assert any("📋" in r for r in responses)
-        plan = agent._load_pending_plan()
-        assert plan is not None
-        assert len(plan) == 1
-        assert plan[0]["name"] == "capture"
+        pending = agent.plan_store.list_pending()
+        assert len(pending) == 1
 
     def test_no_writes_no_plan(self, vault: Vault) -> None:
         from noteweaver.adapters.provider import CompletionResult
@@ -777,22 +808,24 @@ class TestWriteInterception:
         )
         agent = KnowledgeAgent(vault=vault, provider=provider)
         list(agent.chat("Hello"))
-        assert agent._load_pending_plan() is None
+        assert len(agent.plan_store.list_pending()) == 0
 
 
-class TestIsWriteTool:
-    def test_read_tools(self) -> None:
-        agent = KnowledgeAgent.__new__(KnowledgeAgent)
-        for tool in [
-            "read_page", "list_pages", "search", "survey_topic",
-            "get_backlinks", "fetch_url",
-        ]:
-            assert not agent._is_write_tool(tool), f"{tool} should be read"
+class TestToolSchemas:
+    def test_chat_schemas_contain_only_read_and_plan(self) -> None:
+        from noteweaver.tools.definitions import CHAT_TOOL_SCHEMAS, _OBSERVATION_TOOL_NAMES
+        names = {s["function"]["name"] for s in CHAT_TOOL_SCHEMAS}
+        expected_obs = _OBSERVATION_TOOL_NAMES
+        assert expected_obs.issubset(names)
+        assert "submit_plan" in names
+        assert "write_page" not in names
+        assert "capture" not in names
 
-    def test_write_tools(self) -> None:
-        agent = KnowledgeAgent.__new__(KnowledgeAgent)
+    def test_full_schemas_contain_write_tools(self) -> None:
+        from noteweaver.tools.definitions import TOOL_SCHEMAS
+        names = {s["function"]["name"] for s in TOOL_SCHEMAS}
         for tool in ["write_page", "capture", "ingest", "organize", "restructure"]:
-            assert agent._is_write_tool(tool), f"{tool} should be write"
+            assert tool in names, f"{tool} should be in TOOL_SCHEMAS"
 
 
 # ======================================================================
@@ -1135,21 +1168,21 @@ class TestTitleUniquenessGuidance:
 
 
 class TestMergeTagsInterception:
-    def test_merge_tags_intercepted_as_plan(self, vault: Vault) -> None:
+    def test_merge_tags_submitted_as_plan(self, vault: Vault) -> None:
         from noteweaver.adapters.provider import CompletionResult, ToolCall
         provider = MagicMock()
-        merge_args = json.dumps({
-            "scope": "vault",
-            "action": "merge_tags",
-            "old_tag": "ml",
-            "new_tag": "machine-learning",
+        plan_args = json.dumps({
+            "summary": "Merge tag 'ml' into 'machine-learning' across all pages",
+            "rationale": "Standardize tag naming",
+            "intent": "restructure",
+            "change_type": "structural",
         })
         provider.chat_completion.side_effect = [
             (CompletionResult(content=None, tool_calls=[
-                ToolCall(id="tc1", name="restructure", arguments=merge_args),
+                ToolCall(id="tc1", name="submit_plan", arguments=plan_args),
             ]), {"role": "assistant", "tool_calls": [
                 {"id": "tc1", "type": "function",
-                 "function": {"name": "restructure", "arguments": merge_args}}
+                 "function": {"name": "submit_plan", "arguments": plan_args}}
             ]}),
             (CompletionResult(content="I'll merge the tags after your approval."),
              {"role": "assistant", "content": "I'll merge the tags after your approval."}),
@@ -1157,27 +1190,28 @@ class TestMergeTagsInterception:
         agent = KnowledgeAgent(vault=vault, provider=provider)
         responses = list(agent.chat("Merge ml into machine-learning"))
         assert any("📋" in r for r in responses)
-        assert any("restructure" in r for r in responses)
-        plan = agent._load_pending_plan()
-        assert plan is not None
-        assert len(plan) == 1
-        assert plan[0]["name"] == "restructure"
-        assert plan[0]["arguments"].get("action") == "merge_tags"
+        pending = agent.plan_store.list_pending()
+        assert len(pending) == 1
+        assert pending[0].intent == "restructure"
+        assert pending[0].change_type == "structural"
 
-    def test_format_merge_tags(self, vault: Vault) -> None:
+    def test_format_plan_for_restructure(self, vault: Vault) -> None:
+        from noteweaver.plan import Plan, PlanStatus
         provider = MagicMock()
         agent = KnowledgeAgent(vault=vault, provider=provider)
-        plan = [{
-            "name": "restructure",
-            "arguments": {
-                "scope": "vault",
-                "action": "merge_tags",
-                "old_tag": "ml",
-                "new_tag": "machine-learning",
-            },
-        }]
-        text = agent.format_organize_plan(plan)
-        assert "合并标签" in text
+        plan = Plan(
+            id="plan-test",
+            status=PlanStatus.PENDING,
+            created_at="2026-01-01T00:00:00+00:00",
+            updated_at="2026-01-01T00:00:00+00:00",
+            summary="Merge tag 'ml' into 'machine-learning'",
+            targets=[],
+            rationale="Standardize",
+            intent="restructure",
+            change_type="structural",
+        )
+        text = agent.format_plan(plan)
+        assert "重构" in text
         assert "ml" in text
         assert "machine-learning" in text
 
