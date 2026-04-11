@@ -495,8 +495,14 @@ class Vault:
         return f"---\n{fm_str}\n---\n{body}"
 
     def resolve_title(self, title: str) -> str | None:
-        """Resolve a page title to its path. Returns None if not found."""
+        """Resolve a page title to its path.
+
+        Tries in order: frontmatter title → first ``# heading`` → filename stem.
+        Returns None if no match is found.
+        """
         title_lower = str(title).lower()
+        heading_match = None
+        filename_match = None
         for rel_path in self.list_files("wiki"):
             try:
                 content = self.read_file(rel_path)
@@ -506,7 +512,16 @@ class Vault:
             fm = extract_frontmatter(content)
             if fm and str(fm.get("title", "")).lower() == title_lower:
                 return rel_path
-        return None
+            if heading_match is None:
+                for line in content.split("\n")[:10]:
+                    if line.startswith("# ") and line[2:].strip().lower() == title_lower:
+                        heading_match = rel_path
+                        break
+            if filename_match is None:
+                stem = Path(rel_path).stem.replace("-", " ").replace("_", " ").lower()
+                if stem == title_lower:
+                    filename_match = rel_path
+        return heading_match or filename_match
 
     def write_file(self, rel_path: str, content: str) -> None:
         """Write a file in the wiki area. Refuses to write into sources/.
@@ -655,7 +670,12 @@ class Vault:
             return f.read(max_chars)
 
     def read_frontmatters(self, rel_dir: str = "wiki") -> list[dict]:
-        """Read frontmatter from all .md files in a directory. No body text."""
+        """Read metadata from all .md files in a directory. No body text.
+
+        Files with YAML frontmatter get their declared metadata.
+        Files without frontmatter get path-derived metadata so they
+        are still visible — reads should never hide existing files.
+        """
         from noteweaver.frontmatter import page_summary_from_file
 
         results = []
@@ -670,6 +690,22 @@ class Vault:
                         "type": ps.type,
                         "summary": ps.summary,
                         "tags": ps.tags,
+                        "has_frontmatter": True,
+                    })
+                else:
+                    first_heading = ""
+                    for line in content.split("\n")[:10]:
+                        if line.startswith("# "):
+                            first_heading = line[2:].strip()
+                            break
+                    title = first_heading or Path(rel_path).stem.replace("-", " ").replace("_", " ")
+                    results.append({
+                        "path": rel_path,
+                        "title": title,
+                        "type": "",
+                        "summary": "",
+                        "tags": [],
+                        "has_frontmatter": False,
                     })
             except (FileNotFoundError, PermissionError):
                 continue
@@ -683,6 +719,7 @@ class Vault:
         today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
         hubs = []
         other_pages = []
+        unstructured = []
 
         for rel_path in self.list_files("wiki"):
             if rel_path in ("wiki/index.md", "wiki/log.md"):
@@ -693,6 +730,7 @@ class Vault:
                 content = self.read_file(rel_path)
                 ps = page_summary_from_file(rel_path, content)
                 if ps is None:
+                    unstructured.append(rel_path)
                     continue
                 fm = extract_frontmatter(content) or {}
                 entry = {
@@ -749,6 +787,12 @@ class Vault:
         else:
             lines.append("(no pages yet)")
 
+        if unstructured:
+            lines.append("")
+            lines.append(f"## Unstructured ({len(unstructured)} files)\n")
+            for p in unstructured:
+                lines.append(f"- `{p}`")
+
         content = "\n".join(lines) + "\n"
         self.write_file("wiki/index.md", content)
         return content
@@ -781,6 +825,7 @@ class Vault:
 
         all_pages = []
         all_content = {}
+        no_frontmatter_count = 0
         for rel_path in self.list_files("wiki"):
             if rel_path in ("wiki/index.md", "wiki/log.md"):
                 continue
@@ -791,6 +836,8 @@ class Vault:
                 ps = page_summary_from_file(rel_path, content)
                 all_pages.append({"path": rel_path, "ps": ps, "content": content})
                 all_content[rel_path] = content
+                if ps is None:
+                    no_frontmatter_count += 1
             except (FileNotFoundError, PermissionError):
                 continue
 
@@ -818,7 +865,7 @@ class Vault:
         no_summary = [p for p in all_pages if p["ps"] and not p["ps"].summary]
 
         link_stats = self.backlinks.stats()
-        return {
+        metrics = {
             "total_pages": total,
             "hubs": len(hubs),
             "canonicals": len(canonicals),
@@ -829,12 +876,19 @@ class Vault:
             "orphan_pages": len(orphans),
             "orphan_rate": f"{len(orphans)}/{total}" if total else "n/a",
             "pages_without_summary": len(no_summary),
+            "missing_frontmatter": no_frontmatter_count,
             "hub_coverage": (
                 f"{len(hubs)} hubs for {total - len(hubs)} content pages"
             ),
             "total_links": link_stats["total_links"],
             "avg_links_per_page": round(link_stats["total_links"] / total, 1) if total else 0,
         }
+
+        source_count = len(self.list_files("sources"))
+        if source_count:
+            metrics["source_files"] = source_count
+
+        return metrics
 
     # ------------------------------------------------------------------
     # Vault audit
@@ -850,6 +904,7 @@ class Vault:
         from noteweaver.frontmatter import extract_frontmatter
 
         all_pages: list[dict] = []
+        missing_frontmatter: list[str] = []
         for rel_path in self.list_files("wiki"):
             if rel_path in ("wiki/index.md", "wiki/log.md"):
                 continue
@@ -859,6 +914,7 @@ class Vault:
                 content = self.read_file(rel_path)
                 fm = extract_frontmatter(content)
                 if fm is None:
+                    missing_frontmatter.append(rel_path)
                     continue
                 all_pages.append({
                     "path": rel_path,
@@ -868,7 +924,7 @@ class Vault:
             except (FileNotFoundError, PermissionError):
                 continue
 
-        if not all_pages:
+        if not all_pages and not missing_frontmatter:
             return {"summary": "0 issues found (vault is empty)"}
 
         # Rebuild backlink index from current files to avoid stale data
@@ -1012,6 +1068,8 @@ class Vault:
 
         # Build summary line
         counts = []
+        if missing_frontmatter:
+            counts.append(f"{len(missing_frontmatter)} missing frontmatter")
         if stale_imports:
             counts.append(f"{len(stale_imports)} stale import(s)")
         if hub_candidates:
@@ -1028,9 +1086,9 @@ class Vault:
             counts.append(f"{len(similar_tags)} similar tag pair(s)")
 
         total = sum([
-            len(stale_imports), len(hub_candidates), len(orphan_pages),
-            len(missing_summaries), len(broken_links), len(missing_connections),
-            len(similar_tags),
+            len(missing_frontmatter), len(stale_imports), len(hub_candidates),
+            len(orphan_pages), len(missing_summaries), len(broken_links),
+            len(missing_connections), len(similar_tags),
         ])
         summary = (
             f"{total} issue(s) found: {', '.join(counts)}"
@@ -1038,6 +1096,7 @@ class Vault:
         )
 
         return {
+            "missing_frontmatter": missing_frontmatter,
             "stale_imports": stale_imports,
             "hub_candidates": hub_candidates,
             "orphan_pages": orphan_pages,
@@ -1239,12 +1298,12 @@ class Vault:
     _PER_FILE_MAX = 5_000
 
     def scan_imports(self) -> str:
-        """Scan recently imported files and vault context for LLM-driven organization.
+        """Scan files needing organization and vault context for LLM-driven planning.
 
-        Finds files tagged ``[imported]``, reads each within an adaptive
-        character budget (frontmatter + heading outline + opening text),
-        and assembles a structured summary the LLM can use to produce an
-        organization plan in a single response.
+        Finds both files tagged ``[imported]`` and files without any
+        frontmatter (which are even more in need of organization).
+        Reads each within an adaptive character budget and assembles
+        a structured summary for the LLM.
         """
         from noteweaver.frontmatter import extract_frontmatter, page_summary_from_file
 
@@ -1255,11 +1314,12 @@ class Vault:
             except (FileNotFoundError, PermissionError):
                 continue
             fm = extract_frontmatter(content)
-            if not fm:
-                continue
-            tags = fm.get("tags") or []
-            if "imported" not in tags:
-                continue
+            if fm:
+                tags = fm.get("tags") or []
+                if "imported" not in tags:
+                    continue
+            else:
+                fm = {}
             imported_pages.append({
                 "path": rel_path,
                 "content": content,
@@ -1267,7 +1327,7 @@ class Vault:
             })
 
         if not imported_pages:
-            return "No files with tag [imported] found. Nothing to organize."
+            return "No files needing organization found. Nothing to organize."
 
         n = len(imported_pages)
         per_file = max(

@@ -365,3 +365,119 @@ class TestListAllFiles:
         paths = [f["path"] for f in files]
         assert not any(p.startswith(".meta/") for p in paths)
         assert not any(p.startswith(".git/") for p in paths)
+
+
+class TestReadFrontmattersIncludesAll:
+    """read_frontmatters should return ALL files, not just those with YAML frontmatter."""
+
+    def test_includes_files_without_frontmatter(self, vault: Vault) -> None:
+        vault.write_file(
+            "wiki/concepts/good.md",
+            "---\ntitle: Good\ntype: note\n---\n# Good page",
+        )
+        raw = vault.root / "wiki" / "concepts" / "raw.md"
+        raw.write_text("# Just plain markdown")
+        results = vault.read_frontmatters("wiki")
+        paths = [r["path"] for r in results]
+        assert "wiki/concepts/good.md" in paths
+        assert "wiki/concepts/raw.md" in paths
+
+    def test_no_fm_file_has_derived_title(self, vault: Vault) -> None:
+        """File without FM derives title from first # heading."""
+        raw = vault.root / "wiki" / "concepts" / "my-topic.md"
+        raw.write_text("# My Custom Heading\n\nContent here.")
+        results = vault.read_frontmatters("wiki/concepts")
+        raw_entry = next(r for r in results if r["path"] == "wiki/concepts/my-topic.md")
+        assert raw_entry["title"] == "My Custom Heading"
+        assert raw_entry["has_frontmatter"] is False
+
+    def test_no_fm_no_heading_uses_filename(self, vault: Vault) -> None:
+        """File without FM or heading derives title from filename."""
+        raw = vault.root / "wiki" / "concepts" / "my-topic.md"
+        raw.write_text("Just some plain text without any heading.")
+        results = vault.read_frontmatters("wiki/concepts")
+        raw_entry = next(r for r in results if r["path"] == "wiki/concepts/my-topic.md")
+        assert "my topic" in raw_entry["title"].lower()
+
+    def test_has_frontmatter_flag(self, vault: Vault) -> None:
+        vault.write_file(
+            "wiki/concepts/structured.md",
+            "---\ntitle: Structured\ntype: note\n---\n# S",
+        )
+        raw = vault.root / "wiki" / "concepts" / "unstructured.md"
+        raw.write_text("# Unstructured")
+        results = vault.read_frontmatters("wiki/concepts")
+        structured = next(r for r in results if "structured.md" in r["path"])
+        unstructured = next(r for r in results if "unstructured.md" in r["path"])
+        assert structured["has_frontmatter"] is True
+        assert unstructured["has_frontmatter"] is False
+
+
+class TestAuditFindsNoFrontmatter:
+    def test_audit_reports_missing_frontmatter(self, vault: Vault) -> None:
+        """audit_vault reports files without frontmatter as a finding."""
+        raw = vault.root / "wiki" / "concepts" / "raw-note.md"
+        raw.write_text("# Plain note without frontmatter")
+        report = vault.audit_vault()
+        assert "missing_frontmatter" in report
+        assert len(report["missing_frontmatter"]) >= 1
+        assert "wiki/concepts/raw-note.md" in report["missing_frontmatter"]
+        assert "missing frontmatter" in report["summary"]
+
+
+class TestHealthMetricsNoFrontmatter:
+    def test_reports_missing_frontmatter_count(self, vault: Vault) -> None:
+        vault.write_file(
+            "wiki/concepts/good.md",
+            "---\ntitle: Good\ntype: note\n---\n# Good",
+        )
+        raw = vault.root / "wiki" / "concepts" / "raw.md"
+        raw.write_text("# No frontmatter")
+        metrics = vault.health_metrics()
+        assert metrics["missing_frontmatter"] == 1
+        assert metrics["total_pages"] == 2
+
+
+class TestRebuildIndexUnstructured:
+    def test_index_includes_unstructured_section(self, vault: Vault) -> None:
+        raw = vault.root / "wiki" / "concepts" / "raw.md"
+        raw.write_text("# Unstructured note")
+        content = vault.rebuild_index()
+        assert "Unstructured" in content
+        assert "raw.md" in content
+
+
+class TestScanImportsNoFrontmatter:
+    def test_scan_includes_no_fm_files(self, vault: Vault) -> None:
+        """scan_imports picks up files without frontmatter."""
+        raw = vault.root / "wiki" / "concepts" / "bare.md"
+        raw.write_text("# A bare file with no frontmatter at all")
+        result = vault.scan_imports()
+        assert "bare.md" in result or "1" in result
+
+
+class TestResolveTitleFallback:
+    def test_resolve_by_heading(self, vault: Vault) -> None:
+        """resolve_title finds a file by its first # heading."""
+        raw = vault.root / "wiki" / "concepts" / "topic.md"
+        raw.write_text("# My Special Topic\n\nContent.")
+        result = vault.resolve_title("My Special Topic")
+        assert result == "wiki/concepts/topic.md"
+
+    def test_resolve_by_filename(self, vault: Vault) -> None:
+        """resolve_title falls back to filename match."""
+        raw = vault.root / "wiki" / "concepts" / "my-topic.md"
+        raw.write_text("No heading, just text.")
+        result = vault.resolve_title("my topic")
+        assert result == "wiki/concepts/my-topic.md"
+
+    def test_frontmatter_title_takes_precedence(self, vault: Vault) -> None:
+        """Frontmatter title is checked first (exact match returned immediately)."""
+        vault.write_file(
+            "wiki/concepts/different-name.md",
+            "---\ntitle: The Real Title\ntype: note\n---\n# Heading",
+        )
+        result = vault.resolve_title("The Real Title")
+        assert result == "wiki/concepts/different-name.md"
+        # Filename fallback also works — files are findable by multiple names
+        assert vault.resolve_title("different name") == "wiki/concepts/different-name.md"

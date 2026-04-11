@@ -645,37 +645,33 @@ def handle_read_page(vault: Vault, path: str, max_chars: int = 0) -> str:
 
 
 def handle_list_page_summaries(vault: Vault, directory: str = "wiki") -> str:
-    from noteweaver.frontmatter import extract_frontmatter
-
-    all_md_files = vault.list_files(directory)
     results = vault.read_frontmatters(directory)
-    fm_paths = {r["path"] for r in results}
-
-    no_fm_files = [f for f in all_md_files if f not in fm_paths]
-
-    if not results and not no_fm_files:
+    if not results:
         return f"No files found in {directory}/"
+
+    structured = [r for r in results if r.get("has_frontmatter", True)]
+    unstructured = [r for r in results if not r.get("has_frontmatter", True)]
 
     lines = []
     imported_count = 0
 
-    if results:
-        for r in results:
-            tags_str = f"  tags: {', '.join(r['tags'])}" if r['tags'] else ""
-            summary_str = f"\n    {r['summary']}" if r['summary'] else ""
-            lines.append(f"- [{r['type']}] **{r['title']}** ({r['path']}){tags_str}{summary_str}")
-            if "imported" in (r.get("tags") or []):
-                imported_count += 1
+    for r in structured:
+        tags_str = f"  tags: {', '.join(r['tags'])}" if r['tags'] else ""
+        summary_str = f"\n    {r['summary']}" if r['summary'] else ""
+        lines.append(f"- [{r['type']}] **{r['title']}** ({r['path']}){tags_str}{summary_str}")
+        if "imported" in (r.get("tags") or []):
+            imported_count += 1
 
-    if no_fm_files:
+    if unstructured:
         lines.append("")
-        lines.append(f"Also found {len(no_fm_files)} file(s) without frontmatter:")
-        for f in no_fm_files:
-            lines.append(f"  - {f}")
+        lines.append(f"Also found {len(unstructured)} file(s) without frontmatter:")
+        for r in unstructured:
+            lines.append(f"  - **{r['title']}** ({r['path']})")
         lines.append("")
         lines.append(
-            "These files are not structured wiki pages. "
-            "Use read_page(path) to read them, or list_directory to see all files including non-markdown."
+            "These files lack structured metadata. "
+            "Use read_page(path) to read them, import_files to organize, "
+            "or list_directory to see all files including non-markdown."
         )
 
     result = "\n".join(lines)
