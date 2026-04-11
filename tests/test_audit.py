@@ -208,13 +208,16 @@ class TestScanVaultContext:
         )
         vault.write_file(
             "wiki/concepts/dl.md",
-            _page("Deep Learning", tags=["ml", "dl"]),
+            _page("Deep Learning", tags=["ml", "dl"], summary="DL overview"),
         )
         ctx = vault.scan_vault_context()
         assert "ML (1 pages)" in ctx
         assert "wiki/concepts/ml.md" in ctx
         assert "ml" in ctx
         assert "dl" in ctx
+        # Small vault → full tier shows child pages with summaries
+        assert "Deep Learning" in ctx
+        assert "DL overview" in ctx
 
     def test_hub_shows_page_count(self, vault: Vault) -> None:
         vault.write_file(
@@ -230,21 +233,63 @@ class TestScanVaultContext:
         assert "React (5 pages)" in ctx
         assert "wiki/concepts/react-hub.md" in ctx
         assert "Total: 6 pages" in ctx
+        # Hub children listed
+        assert "React Page 0" in ctx
 
-    def test_unorganized_count(self, vault: Vault) -> None:
+    def test_unorganized_listed(self, vault: Vault) -> None:
         vault.write_file(
             "wiki/concepts/orphan.md",
             _page("Orphan", tags=["misc"]),
         )
         ctx = vault.scan_vault_context()
-        assert "Unorganized: 1 page(s)" in ctx
+        assert "Unorganized" in ctx
+        assert "1 page(s)" in ctx
+        assert "Orphan" in ctx
 
-    def test_context_is_compact(self, vault: Vault) -> None:
+    def test_compact_tier_no_summaries(self, vault: Vault) -> None:
+        """Medium vault (40-150 pages) uses compact tier: titles but no summaries."""
         vault.write_file("wiki/concepts/hub.md", _page("Hub", ptype="hub", tags=["t"]))
-        for i in range(100):
+        for i in range(45):
+            vault.write_file(
+                f"wiki/concepts/p{i}.md",
+                _page(f"Page {i}", tags=["t"], summary=f"Summary {i}"),
+            )
+        ctx = vault.scan_vault_context()
+        assert "Page 0" in ctx
+        assert "Summary 0" not in ctx
+        # Paths shown in compact mode
+        assert "wiki/concepts/p0.md" in ctx
+
+    def test_large_tier_truncated(self, vault: Vault) -> None:
+        """Large vault (150+) truncates hub member lists."""
+        vault.write_file("wiki/concepts/hub.md", _page("Hub", ptype="hub", tags=["t"]))
+        for i in range(160):
             vault.write_file(f"wiki/concepts/p{i}.md", _page(f"Page {i}", tags=["t"]))
         ctx = vault.scan_vault_context()
-        assert len(ctx) < 500
+        assert "… and " in ctx
+        assert " more" in ctx
+
+    def test_journal_range_shown(self, vault: Vault) -> None:
+        """Journal entries produce a date range in the output."""
+        vault.write_file(
+            "wiki/journals/2025-03-01.md",
+            _page("2025-03-01", ptype="journal"),
+        )
+        vault.write_file(
+            "wiki/journals/2025-04-10.md",
+            _page("2025-04-10", ptype="journal"),
+        )
+        ctx = vault.scan_vault_context()
+        assert "Journals: 2 entries" in ctx
+        assert "2025-03-01" in ctx
+        assert "2025-04-10" in ctx
+
+    def test_journals_excluded_from_total(self, vault: Vault) -> None:
+        """Journal pages are not counted in the 'Total: N pages' line."""
+        vault.write_file("wiki/concepts/a.md", _page("A"))
+        vault.write_file("wiki/journals/2025-01-01.md", _page("J", ptype="journal"))
+        ctx = vault.scan_vault_context()
+        assert "Total: 1 pages" in ctx
 
     def test_vault_context_injected_into_prompt(self, vault: Vault, agent: KnowledgeAgent) -> None:
         vault.write_file(
@@ -260,6 +305,17 @@ class TestScanVaultContext:
         query = agent._build_messages_for_query()
         system = query[0]["content"]
         assert "vault is empty" in system.lower()
+
+    def test_footer_mentions_current_tools(self, vault: Vault) -> None:
+        """The footer hint references tools that actually exist."""
+        ctx = vault.scan_vault_context()
+        assert "survey_topic" in ctx
+        assert "list_pages" in ctx
+        assert "search" in ctx
+        # Old stale tool names must NOT appear
+        assert "list_page_summaries" not in ctx
+        assert "search_vault" not in ctx
+        assert "find_existing_page" not in ctx
 
 
 # ======================================================================

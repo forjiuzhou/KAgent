@@ -596,10 +596,10 @@ class KnowledgeAgent:
                 )
                 pending_proposals_injected = True
 
-        # Inject vault structure overview
+        # Inject vault structure overview (vault map)
         try:
             vault_ctx = self.vault.scan_vault_context()
-            if vault_ctx and "page titles (0)" not in vault_ctx:
+            if vault_ctx and "Total: 0 pages" not in vault_ctx:
                 system_content += (
                     "\n\n## Current Vault Contents\n\n" + vault_ctx
                 )
