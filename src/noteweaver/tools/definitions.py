@@ -5,12 +5,19 @@ Redesigned around user-level knowledge operations rather than file-level edits.
 Observation tools (read-only, execute immediately):
   read_page, search, survey_topic, get_backlinks, list_pages, fetch_url
 
-Action tools (trigger plan mode, require user approval):
+Planning tool (used during chat to submit change proposals):
+  submit_plan — submit a natural-language change proposal for user approval
+
+Action tools (used during plan execution after user approval):
   capture, ingest, organize, restructure, write_page
 
 Automated (no longer tools — system handles internally):
   append_log → auto after plan execution
   add_related_link → auto via _ensure_progressive_disclosure
+
+Tool sets:
+  TOOL_SCHEMAS       — all tools (used during plan execution)
+  CHAT_TOOL_SCHEMAS  — observation + submit_plan (used during chat)
 """
 
 from __future__ import annotations
@@ -375,6 +382,93 @@ TOOL_SCHEMAS: list[dict] = [
         },
     },
 ]
+
+# ------------------------------------------------------------------
+# Planning tool (chat phase only)
+# ------------------------------------------------------------------
+
+SUBMIT_PLAN_SCHEMA: dict = {
+    "type": "function",
+    "function": {
+        "name": "submit_plan",
+        "description": (
+            "Submit a knowledge base change proposal for user review. "
+            "Call this after surveying the topic and forming a plan. "
+            "Describe WHAT should change and WHY — the system handles "
+            "precise implementation after user approval.\n\n"
+            "change_type:\n"
+            "- 'incremental': appending to existing pages, adding links, "
+            "updating metadata — executes immediately, user is notified\n"
+            "- 'structural': creating new pages, new hubs, archiving, "
+            "restructuring — requires explicit user approval"
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "summary": {
+                    "type": "string",
+                    "description": (
+                        "Human-readable description of the proposed changes. "
+                        "Be specific about what content goes where."
+                    ),
+                },
+                "targets": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": (
+                        "File paths that will be affected "
+                        "(e.g. 'wiki/concepts/react.md')"
+                    ),
+                },
+                "rationale": {
+                    "type": "string",
+                    "description": (
+                        "Why this change is appropriate — what context "
+                        "supports this decision"
+                    ),
+                },
+                "intent": {
+                    "type": "string",
+                    "enum": ["append", "create", "organize", "restructure"],
+                    "description": (
+                        "High-level intent: append (add to existing page), "
+                        "create (new page), organize (metadata/links/archive), "
+                        "restructure (vault-wide structural change)"
+                    ),
+                },
+                "change_type": {
+                    "type": "string",
+                    "enum": ["incremental", "structural"],
+                    "description": (
+                        "incremental = low-risk changes to existing content "
+                        "(auto-approved). structural = new pages, hubs, "
+                        "restructuring (requires user approval)."
+                    ),
+                },
+                "open_questions": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": (
+                        "Uncertainties that the user might want to weigh in on"
+                    ),
+                },
+            },
+            "required": ["summary", "rationale", "intent", "change_type"],
+        },
+    },
+}
+
+_OBSERVATION_TOOL_NAMES = frozenset({
+    "read_page", "search", "survey_topic",
+    "get_backlinks", "list_pages", "fetch_url",
+})
+
+OBSERVATION_SCHEMAS: list[dict] = [
+    s for s in TOOL_SCHEMAS
+    if s["function"]["name"] in _OBSERVATION_TOOL_NAMES
+]
+
+CHAT_TOOL_SCHEMAS: list[dict] = OBSERVATION_SCHEMAS + [SUBMIT_PLAN_SCHEMA]
 
 
 # ======================================================================

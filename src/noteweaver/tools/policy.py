@@ -23,6 +23,10 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 from enum import Enum
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from noteweaver.vault import Vault
 
 
 # ======================================================================
@@ -313,3 +317,46 @@ def _strip_frontmatter(content: str) -> str:
     if m:
         return content[m.end():]
     return content
+
+
+# ======================================================================
+# Change type classification (system review of model suggestion)
+# ======================================================================
+
+_STRUCTURAL_INTENTS = frozenset({"create", "restructure"})
+
+
+def classify_change_type(
+    intent: str,
+    targets: list[str],
+    model_suggestion: str,
+    vault: "Vault | None" = None,
+) -> str:
+    """Verify and possibly override the model's change_type suggestion.
+
+    Rules:
+    - create / restructure intent → always structural
+    - append to non-existent target → structural (it would create a page)
+    - organize with archive → structural
+    - 3+ targets → structural
+    - Otherwise trust the model suggestion
+    """
+    if intent in _STRUCTURAL_INTENTS:
+        return "structural"
+
+    if len(targets) >= 3:
+        return "structural"
+
+    if intent == "append" and vault is not None:
+        for t in targets:
+            try:
+                resolved = vault._resolve(t)
+                if not resolved.is_file():
+                    return "structural"
+            except (ValueError, OSError):
+                return "structural"
+
+    if model_suggestion in ("incremental", "structural"):
+        return model_suggestion
+
+    return "structural"

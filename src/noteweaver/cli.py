@@ -17,6 +17,7 @@ from prompt_toolkit.history import FileHistory
 from noteweaver.vault import Vault
 from noteweaver.agent import KnowledgeAgent
 from noteweaver.config import Config
+from noteweaver.plan import Plan, PlanStatus
 
 log = logging.getLogger(__name__)
 
@@ -94,9 +95,9 @@ def _finalize_session(
     # Session organize: propose knowledge extraction on exit
     if session_type == "chat" and _session_has_substance(agent, exchanges):
         try:
-            plan = agent.generate_organize_plan()
-            if plan:
-                _approve_and_execute(agent, plan)
+            plan_obj = agent.generate_organize_plan()
+            if plan_obj:
+                _approve_and_execute(agent, plan_obj)
         except Exception as e:
             log.warning("Session organize failed: %s", e)
 
@@ -129,55 +130,93 @@ def _finalize_session(
         )
 
 
-def _approve_and_execute(agent: KnowledgeAgent, plan: list[dict] | None = None) -> None:
+def _approve_and_execute(
+    agent: KnowledgeAgent,
+    plan: "Plan | list[dict] | None" = None,
+) -> None:
     """Present a pending plan to the user and execute on approval.
 
-    This is the unified approval flow used by chat, lint, digest, ingest,
-    and organize — all writes go through here.
+    Supports both Plan objects (new) and legacy list[dict] (backward compat).
     """
     if plan is None:
-        plan = agent._load_pending_plan()
+        pending = agent.plan_store.list_pending()
+        if pending:
+            plan = pending[0]
+        else:
+            legacy = agent._load_pending_plan()
+            if legacy:
+                plan = legacy
     if not plan:
         return
 
-    summary = agent.format_organize_plan(plan)
-    console.print(
-        Panel(
-            f"[bold]📋 变更计划[/bold]\n\n{summary}",
-            border_style="yellow",
+    if isinstance(plan, Plan):
+        summary = agent.format_plan(plan)
+        console.print(
+            Panel(
+                f"[bold]📋 变更提案[/bold] [{plan.id}]\n\n{summary}",
+                border_style="yellow",
+            )
         )
-    )
 
-    try:
-        answer = input("执行？(y/n/部分编号，如 '1,3') ").strip().lower()
-    except (EOFError, KeyboardInterrupt):
-        console.print("[info]跳过。[/info]")
+        try:
+            answer = input("执行？(y/n) ").strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            console.print("[info]跳过。[/info]")
+            agent.plan_store.update_status(plan.id, PlanStatus.REJECTED)
+            return
+
+        if not answer or answer in ("n", "no", "否"):
+            agent.plan_store.update_status(plan.id, PlanStatus.REJECTED)
+            console.print("[info]已跳过。[/info]")
+            return
+
+        if answer in ("y", "yes", "是", "好", "好的"):
+            agent.plan_store.update_status(plan.id, PlanStatus.APPROVED)
+            result = agent.execute_plan(plan.id)
+            console.print(f"\n[dim]{result}[/dim]")
+            return
+
+        agent.plan_store.update_status(plan.id, PlanStatus.REJECTED)
+        console.print("[info]未识别的输入，跳过。[/info]")
+    else:
+        summary = agent.format_organize_plan(plan)
+        console.print(
+            Panel(
+                f"[bold]📋 变更计划[/bold]\n\n{summary}",
+                border_style="yellow",
+            )
+        )
+
+        try:
+            answer = input("执行？(y/n/部分编号，如 '1,3') ").strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            console.print("[info]跳过。[/info]")
+            agent._clear_pending_plan()
+            return
+
+        if not answer or answer in ("n", "no", "否"):
+            agent._clear_pending_plan()
+            console.print("[info]已跳过。[/info]")
+            return
+
+        if answer in ("y", "yes", "是", "好", "好的"):
+            result = agent.execute_organize_plan(plan)
+            console.print(f"\n[dim]{result}[/dim]")
+            return
+
+        try:
+            indices = {int(x.strip()) for x in answer.split(",") if x.strip().isdigit()}
+            if indices:
+                selected = [plan[i - 1] for i in sorted(indices) if 1 <= i <= len(plan)]
+                if selected:
+                    result = agent.execute_organize_plan(selected)
+                    console.print(f"\n[dim]{result}[/dim]")
+                    return
+        except (ValueError, IndexError):
+            pass
+
         agent._clear_pending_plan()
-        return
-
-    if not answer or answer in ("n", "no", "否"):
-        agent._clear_pending_plan()
-        console.print("[info]已跳过。[/info]")
-        return
-
-    if answer in ("y", "yes", "是", "好", "好的"):
-        result = agent.execute_organize_plan(plan)
-        console.print(f"\n[dim]{result}[/dim]")
-        return
-
-    try:
-        indices = {int(x.strip()) for x in answer.split(",") if x.strip().isdigit()}
-        if indices:
-            selected = [plan[i - 1] for i in sorted(indices) if 1 <= i <= len(plan)]
-            if selected:
-                result = agent.execute_organize_plan(selected)
-                console.print(f"\n[dim]{result}[/dim]")
-                return
-    except (ValueError, IndexError):
-        pass
-
-    agent._clear_pending_plan()
-    console.print("[info]未识别的输入，跳过。[/info]")
+        console.print("[info]未识别的输入，跳过。[/info]")
 
 
 def cmd_chat(vault_path: Path) -> None:
@@ -215,9 +254,9 @@ def cmd_chat(vault_path: Path) -> None:
             break
         if user_input.strip() == "/organize":
             try:
-                plan = agent.generate_organize_plan()
-                if plan:
-                    _approve_and_execute(agent, plan)
+                plan_obj = agent.generate_organize_plan()
+                if plan_obj:
+                    _approve_and_execute(agent, plan_obj)
                 else:
                     console.print("[info]没有需要整理的内容。[/info]")
             except Exception as e:
@@ -242,10 +281,22 @@ def cmd_chat(vault_path: Path) -> None:
             exchange["reply"] = f"(error: {e})"
         exchanges.append(exchange)
 
-        # If the LLM proposed any writes, present for approval
-        pending = agent._load_pending_plan()
-        if pending:
-            _approve_and_execute(agent, pending)
+        # Check for pending structural plans that need approval
+        pending_plans = agent.plan_store.list_pending()
+        structural = [
+            p for p in pending_plans if p.change_type == "structural"
+        ]
+        for plan_obj in structural:
+            _approve_and_execute(agent, plan_obj)
+
+        # Auto-execute incremental plans
+        incremental = [
+            p for p in pending_plans if p.change_type == "incremental"
+        ]
+        for plan_obj in incremental:
+            agent.plan_store.update_status(plan_obj.id, PlanStatus.APPROVED)
+            result = agent.execute_plan(plan_obj.id)
+            console.print(f"\n[dim]{result}[/dim]")
 
     _finalize_session(vault, agent, exchanges, "chat")
 
@@ -459,9 +510,8 @@ def cmd_ingest(vault_path: Path, url: str) -> None:
                 console.print()
                 console.print(Markdown(chunk))
 
-        pending = agent._load_pending_plan()
-        if pending:
-            _approve_and_execute(agent, pending)
+        for plan_obj in agent.plan_store.list_pending():
+            _approve_and_execute(agent, plan_obj)
         _finalize_session(vault, agent, [exchange], "ingest")
     except Exception as e:
         console.print(f"[red]Error: {e}[/red]")
@@ -534,10 +584,9 @@ def cmd_lint(vault_path: Path) -> None:
                     console.print()
                     console.print(Markdown(chunk))
 
-            pending = agent._load_pending_plan()
-            if pending:
-                _approve_and_execute(agent, pending)
-            elif exchange["reply"]:
+            for plan_obj in agent.plan_store.list_pending():
+                _approve_and_execute(agent, plan_obj)
+            if not agent.plan_store.list_all(limit=1) and exchange["reply"]:
                 vault.append_log("lint", "Health check completed", exchange["reply"][:500])
             _finalize_session(vault, agent, [exchange], "lint")
         except Exception as e:
@@ -598,9 +647,8 @@ def cmd_digest(vault_path: Path) -> None:
                 console.print()
                 console.print(Markdown(chunk))
 
-        pending = agent._load_pending_plan()
-        if pending:
-            _approve_and_execute(agent, pending)
+        for plan_obj in agent.plan_store.list_pending():
+            _approve_and_execute(agent, plan_obj)
 
         from datetime import datetime as _dt
         last_digest_path = vault.meta_dir / "last-digest-date"
@@ -622,16 +670,16 @@ def cmd_organize(vault_path: Path) -> None:
     console.print("[bold]Generating organization plan from recent sessions...[/bold]\n")
 
     try:
-        plan = agent.generate_organize_plan()
+        plan_obj = agent.generate_organize_plan()
     except Exception as e:
         console.print(f"[red]Plan generation failed: {e}[/red]")
         sys.exit(1)
 
-    if not plan:
+    if not plan_obj:
         console.print("[info]No knowledge worth capturing found in recent conversations.[/info]")
         return
 
-    _approve_and_execute(agent, plan)
+    _approve_and_execute(agent, plan_obj)
 
 
 def cmd_import(vault_path: Path, source_path: str) -> None:

@@ -27,8 +27,15 @@ from typing import Generator
 
 from noteweaver.adapters.provider import LLMProvider
 from noteweaver.vault import Vault
-from noteweaver.tools.definitions import TOOL_SCHEMAS, dispatch_tool
-from noteweaver.tools.policy import PolicyContext, check_pre_dispatch
+from noteweaver.tools.definitions import (
+    TOOL_SCHEMAS, CHAT_TOOL_SCHEMAS, dispatch_tool,
+)
+from noteweaver.tools.policy import (
+    PolicyContext, check_pre_dispatch, classify_change_type,
+)
+from noteweaver.plan import (
+    Plan, PlanStatus, PlanStore, generate_plan_id,
+)
 from noteweaver.trace import TraceCollector
 
 # ======================================================================
@@ -48,23 +55,31 @@ Respond naturally — discuss, reason, debate, suggest. Draw on the \
 knowledge base when relevant (search or read pages). Reference existing \
 content with [[wiki-links]]. Most interactions are just conversations.
 
-### 2. Knowledge Capture (Plan Mode)
+### 2. Knowledge Capture
 When the user asks you to record, remember, organize, or import something, \
 or when you notice something worth capturing — you become a **planner**.
 
-Before making any changes, **always survey first** using survey_topic or \
-search to understand what already exists. Then express your plan using \
-the action tools. Each action tool call is a **proposal** — nothing is \
-modified when you call it. All proposals are collected and shown to the \
-user as a plan. The user reviews and approves before anything executes.
+Your job is to **explore, understand, then propose** — not to execute \
+changes directly. The system handles precise implementation after your \
+proposal is approved.
 
-**Before expressing your plan, briefly explain:**
-- What kind of change this is (recording new knowledge / adding to \
-existing / importing material / structural maintenance)
-- What the scope is (one page / a few pages / vault-wide)
+**Workflow:**
+1. **Survey first** — use observation tools to understand what exists. \
+Call survey_topic, search, or read_page before forming any plan.
+2. **Think about knowledge architecture** — where should this go? \
+Does a relevant page already exist? What connections need to be made? \
+What hubs are involved?
+3. **Submit a plan** — call submit_plan() with a clear description of \
+your proposed changes. Focus on WHAT and WHY, not implementation details.
 
-The system automatically handles: related links, operation logging, \
-hub linking, and index updates. Focus on the knowledge content.
+**In your plan, consider:**
+- Would this be better as an addition to an existing page, or a new page?
+- What connections (related links, hub references) need updating?
+- Is this a small incremental change, or a structural one?
+- Are there any uncertainties the user should weigh in on?
+
+The system automatically handles: frontmatter, related links, \
+operation logging, hub linking, and index updates.
 
 Maintain the tree — every page must be reachable:
 
@@ -116,14 +131,20 @@ PROMPT_TOOLS = """\
 | `list_pages(directory?, include_raw?)` | List pages with metadata. |
 | `fetch_url(url)` | Preview a URL's content (doesn't save). |
 
-### Action (proposals — collected into plan for user approval)
+### Planning
 | Tool | Purpose |
 |------|---------|
-| `capture(content, title, tags?, target?, type?)` | Record knowledge. Appends to target or creates new page. |
-| `ingest(source, source_type, save_raw?, organize?)` | Import URL/file/directory into the vault. |
-| `organize(target, action, ...)` | Organize pages: classify, update_metadata, archive, link. |
-| `restructure(scope, action, ...)` | Vault-wide: merge_tags, deduplicate, rebuild_hubs, audit. |
-| `write_page(path, content)` | Precise control: full page create/overwrite. Read first! |
+| `submit_plan(summary, targets?, rationale, intent, change_type, open_questions?)` | \
+Submit a change proposal after surveying. |
+
+**intent**: append (add to existing page) / create (new page) / \
+organize (metadata, links, archive) / restructure (vault-wide)
+
+**change_type**:
+- `incremental` — low-risk changes to existing content (adding a section, \
+updating links). Executes immediately, user is notified.
+- `structural` — new pages, new hubs, archiving, vault-wide restructuring. \
+Requires explicit user approval before execution.
 
 ## Retrieval Strategy
 
@@ -137,20 +158,25 @@ PROMPT_TOOLS = """\
 
 When the user wants to capture knowledge:
 
-**Before writing (survey)**:
+**Before proposing (survey)**:
 - `survey_topic(topic)` — what already exists? where should this go?
 - Or `search(query)` + `read_page` if you need specific details.
 
-**Express your plan**:
-- Use `capture` for most knowledge recording (new pages or appending).
-- Use `ingest` for importing URLs, files, or directories.
-- Use `organize` for page-level metadata/structure changes.
-- Use `restructure` for vault-wide changes (merge tags, rebuild hubs).
-- Use `write_page` only when you need precise control over full page content.
+**In your text response, explain your thinking:**
+- What kind of change this is
+- Why this approach (append vs create, which target page, etc.)
+- What connections will be established
 
-**Quality**:
+**Then call submit_plan():**
+- summary: clear description of what will change
+- intent: append / create / organize / restructure
+- change_type: incremental (for appending to existing) / structural (for new pages, etc.)
+- open_questions: any uncertainties for the user to resolve
+
+**Quality principles**:
 - Prefer updating existing pages over creating new ones.
 - Use the user's language for content.
+- Every change should strengthen the knowledge graph — no orphan pages.
 - First 1-2 sentences of any page = self-contained summary.
 
 If vault is empty, welcome the user and suggest what they can do.
@@ -158,6 +184,37 @@ If vault is empty, welcome the user and suggest what they can do.
 
 # Combined static prompt
 SYSTEM_PROMPT = PROMPT_IDENTITY + "\n" + PROMPT_TOOLS
+
+# Execution prompt — used when executing an approved plan
+EXECUTE_PLAN_PROMPT = """\
+You are NoteWeaver's execution engine. An approved change plan is provided below. \
+Your job is to implement it precisely using the available tools.
+
+## Rules
+
+1. **Implement the approved plan faithfully.** Do not re-evaluate whether \
+the plan is a good idea — it has already been approved by the user.
+2. **Read before writing.** Always read_page() a target before modifying it.
+3. **Minimal changes.** Make the smallest changes that fulfill the plan.
+4. **If the plan conflicts with current vault state** (e.g. target page \
+was deleted, content already exists), STOP and report the conflict — \
+do not silently modify the plan.
+5. **Maintain knowledge structure.** Every new page must be reachable. \
+Add related links. Use proper frontmatter.
+6. Use the user's language for content.
+
+## Approved Plan
+
+{plan_summary}
+
+## Rationale
+
+{plan_rationale}
+
+## Intent
+
+{plan_intent}
+"""
 
 
 # ======================================================================
@@ -253,6 +310,7 @@ class KnowledgeAgent:
         self._policy_ctx = PolicyContext()
         self._trace = TraceCollector()
         self._provider_name = provider_name if provider is None else type(provider).__name__
+        self.plan_store = PlanStore(vault.meta_dir)
 
     def set_attended(self, attended: bool) -> None:
         """Mark whether the user is present for this session.
@@ -863,23 +921,16 @@ class KnowledgeAgent:
     # Chat loop
     # ------------------------------------------------------------------
 
-    _READ_TOOLS = frozenset({
-        "read_page", "search", "survey_topic",
-        "get_backlinks", "list_pages", "fetch_url",
-    })
-
-    def _is_write_tool(self, name: str) -> bool:
-        return name not in self._READ_TOOLS
-
     def chat(self, user_message: str) -> Generator[str, None, None]:
         """Send a user message and yield agent responses.
 
-        Write tool calls are intercepted and collected into a pending
-        plan rather than executed immediately.  The caller (CLI, gateway)
-        is responsible for presenting the plan and executing it after
-        user approval via ``execute_organize_plan``.
+        During chat, the model can only use observation tools (read_page,
+        search, etc.) and the submit_plan tool.  Write tools are not
+        available — they are used only during plan execution.
 
-        Read tools execute normally so the LLM can gather context.
+        When the model calls submit_plan, the system creates a Plan object.
+        Incremental plans are auto-approved and executed immediately.
+        Structural plans are saved as pending for user review.
         """
         self._trace = TraceCollector()
         self._trace.set_session_meta(
@@ -903,7 +954,6 @@ class KnowledgeAgent:
         steps_taken = 0
         has_response = False
         hit_max = False
-        pending_writes: list[dict] = []
 
         try:
             max_steps = 25
@@ -913,7 +963,7 @@ class KnowledgeAgent:
                 completion, raw_message = self.provider.chat_completion(
                     model=self.model,
                     messages=query_messages,
-                    tools=TOOL_SCHEMAS,
+                    tools=CHAT_TOOL_SCHEMAS,
                 )
 
                 self.messages.append(raw_message)
@@ -922,8 +972,6 @@ class KnowledgeAgent:
                     if completion.content:
                         has_response = True
                         yield completion.content
-                    if pending_writes:
-                        self._save_pending_plan(pending_writes)
                     return
 
                 for tool_call in completion.tool_calls:
@@ -932,25 +980,18 @@ class KnowledgeAgent:
                     except json.JSONDecodeError:
                         fn_args = {}
 
-                    if self._is_write_tool(tool_call.name):
-                        pending_writes.append({
-                            "name": tool_call.name,
-                            "arguments": fn_args,
-                        })
-                        yield f"  📋 {tool_call.name}({self._summarize_args(fn_args)})"
+                    if tool_call.name == "submit_plan":
+                        plan = self._handle_submit_plan(fn_args)
+                        yield f"  📋 Plan {plan.id}: {fn_args.get('summary', '')[:80]}"
 
-                        plan_msg = (
-                            f"Added to plan: {tool_call.name}. "
-                            "This will be executed after user approval. "
-                            "The file has NOT been modified yet."
-                        )
+                        result = self._format_plan_submission_result(plan)
 
                         self._trace.record_tool_call(
-                            name=tool_call.name,
+                            name="submit_plan",
                             arguments=fn_args,
                             policy_allowed=True,
-                            policy_warning="added to plan",
-                            result_preview=plan_msg,
+                            policy_warning=None,
+                            result_preview=result,
                             duration_ms=0,
                             error=None,
                         )
@@ -958,7 +999,7 @@ class KnowledgeAgent:
                         self.messages.append({
                             "role": "tool",
                             "tool_call_id": tool_call.id,
-                            "content": plan_msg,
+                            "content": result,
                         })
                     else:
                         yield f"  ↳ {tool_call.name}({self._summarize_args(fn_args)})"
@@ -1019,8 +1060,63 @@ class KnowledgeAgent:
                 hit_max_steps=hit_max,
             )
             self._end_operation(short_msg)
-            if pending_writes:
-                self._save_pending_plan(pending_writes)
+
+    def _handle_submit_plan(self, args: dict) -> Plan:
+        """Create a Plan from submit_plan tool arguments.
+
+        The system reviews the model's change_type classification and
+        may override it based on intent and targets.
+        """
+        from datetime import datetime, timezone
+
+        targets = args.get("targets") or []
+        target_mtimes: dict[str, float] = {}
+        for t in targets:
+            resolved = self.vault._resolve(t)
+            if resolved.is_file():
+                target_mtimes[str(resolved)] = resolved.stat().st_mtime
+
+        model_change_type = args.get("change_type", "structural")
+        intent = args.get("intent", "create")
+        verified_change_type = classify_change_type(
+            intent=intent,
+            targets=targets,
+            model_suggestion=model_change_type,
+            vault=self.vault,
+        )
+
+        plan = Plan(
+            id=generate_plan_id(),
+            status=PlanStatus.PENDING,
+            created_at=datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            updated_at=datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            summary=args.get("summary", ""),
+            targets=targets,
+            rationale=args.get("rationale", ""),
+            intent=intent,
+            change_type=verified_change_type,
+            open_questions=args.get("open_questions") or [],
+            target_mtimes=target_mtimes,
+        )
+
+        self.plan_store.save(plan)
+        return plan
+
+    def _format_plan_submission_result(self, plan: Plan) -> str:
+        status_msg = {
+            "incremental": (
+                f"Proposal {plan.id} created (incremental — will execute "
+                "immediately after this response). "
+            ),
+            "structural": (
+                f"Proposal {plan.id} created (structural — awaiting user "
+                "approval before execution). "
+            ),
+        }
+        base = status_msg.get(plan.change_type, f"Proposal {plan.id} created. ")
+        if plan.open_questions:
+            base += "Open questions: " + "; ".join(plan.open_questions)
+        return base
 
     # ------------------------------------------------------------------
     # Journal generation (LLM-assisted)
@@ -1097,6 +1193,177 @@ class KnowledgeAgent:
         return sections
 
     # ------------------------------------------------------------------
+    # Plan execution
+    # ------------------------------------------------------------------
+
+    def execute_plan(self, plan_id: str) -> str:
+        """Execute an approved plan via a new LLM call.
+
+        The execution LLM has access to write tools and is instructed
+        to implement the plan faithfully without re-evaluating it.
+        Returns a human-readable execution report.
+        """
+        plan = self.plan_store.load(plan_id)
+        if plan is None:
+            return f"Plan {plan_id} not found."
+        if plan.status not in (PlanStatus.APPROVED, PlanStatus.PENDING):
+            return f"Plan {plan_id} is {plan.status.value}, cannot execute."
+
+        stale = self.plan_store.check_staleness(plan)
+        if stale:
+            stale_paths = ", ".join(stale)
+            return (
+                f"⚠ Plan {plan_id} targets have changed since creation: "
+                f"{stale_paths}. Consider regenerating the plan."
+            )
+
+        vault_ctx = self.vault.scan_vault_context()
+        exec_prompt = EXECUTE_PLAN_PROMPT.format(
+            plan_summary=plan.summary,
+            plan_rationale=plan.rationale,
+            plan_intent=plan.intent,
+        )
+        if plan.open_questions:
+            exec_prompt += (
+                "\n\n## Open Questions (already resolved by user approval)\n\n"
+                + "\n".join(f"- {q}" for q in plan.open_questions)
+            )
+        exec_prompt += f"\n\n## Current Vault Structure\n\n{vault_ctx}"
+
+        messages = [
+            {"role": "system", "content": exec_prompt},
+            {"role": "user", "content": "Execute this approved plan now."},
+        ]
+
+        results: list[str] = []
+        with self.vault.operation("Execute plan"):
+            max_steps = 25
+            for _ in range(max_steps):
+                try:
+                    completion, _ = self.provider.chat_completion(
+                        model=self.model,
+                        messages=messages,
+                        tools=TOOL_SCHEMAS,
+                    )
+                except Exception as exc:
+                    results.append(f"✗ LLM call failed: {exc}")
+                    break
+
+                if not completion.tool_calls:
+                    if completion.content:
+                        results.append(f"Agent: {completion.content[:200]}")
+                    break
+
+                for tc in completion.tool_calls:
+                    try:
+                        fn_args = json.loads(tc.arguments)
+                    except json.JSONDecodeError:
+                        fn_args = {}
+
+                    verdict = check_pre_dispatch(
+                        tc.name, fn_args, self._policy_ctx,
+                    )
+                    if not verdict.allowed:
+                        tool_result = f"Policy blocked: {verdict.warning}"
+                        results.append(f"✗ {tc.name}: blocked — {verdict.warning}")
+                    else:
+                        try:
+                            tool_result = dispatch_tool(
+                                self.vault, tc.name, fn_args,
+                            )
+                            self._policy_ctx.record_tool_call(tc.name, fn_args)
+                            is_error = tool_result.startswith("Error")
+                            results.append(
+                                f"{'✗' if is_error else '✓'} {tc.name}: "
+                                f"{tool_result[:120]}"
+                            )
+                        except Exception as exc:
+                            tool_result = f"Error: {exc}"
+                            results.append(f"✗ {tc.name}: {exc}")
+
+                    messages.append({
+                        "role": "assistant",
+                        "content": None,
+                        "tool_calls": [{
+                            "id": tc.id,
+                            "type": "function",
+                            "function": {
+                                "name": tc.name,
+                                "arguments": tc.arguments,
+                            },
+                        }],
+                    })
+                    messages.append({
+                        "role": "tool",
+                        "tool_call_id": tc.id,
+                        "content": tool_result,
+                    })
+
+            disclosure_report = self._ensure_progressive_disclosure_from_results(
+                results,
+            )
+            if disclosure_report:
+                results.extend(disclosure_report)
+
+        success = sum(1 for r in results if r.startswith("✓"))
+        try:
+            self.vault.append_log(
+                "plan",
+                f"Executed plan {plan.id} ({success}/{len(results)} succeeded)",
+                "\n".join(results[:10]),
+            )
+        except Exception:
+            pass
+
+        report = (
+            f"执行了 {len(results)} 项操作（{success} 成功）：\n"
+            + "\n".join(results)
+        )
+        self.plan_store.update_status(
+            plan_id, PlanStatus.EXECUTED, execution_report=report,
+        )
+
+        return report
+
+    def _ensure_progressive_disclosure_from_results(
+        self, results: list[str],
+    ) -> list[str]:
+        """After plan execution, ensure new pages are reachable.
+
+        Extracts written paths from execution results and delegates
+        to _ensure_progressive_disclosure with a compatible format.
+        """
+        pseudo_plan: list[dict] = []
+        for r in results:
+            if not r.startswith("✓"):
+                continue
+            parts = r.split(":", 1)
+            if len(parts) < 2:
+                continue
+            tool_part = parts[0].replace("✓", "").strip()
+            if tool_part in ("write_page", "capture"):
+                rest = parts[1].strip()
+                if "written to " in rest:
+                    path = rest.split("written to ", 1)[1].split(" ")[0].strip()
+                    pseudo_plan.append({
+                        "name": tool_part, "arguments": {"path": path},
+                    })
+                elif "created " in rest and " page at " in rest:
+                    path = rest.split(" page at ", 1)[1].split(" ")[0].strip()
+                    pseudo_plan.append({
+                        "name": tool_part, "arguments": {"path": path},
+                    })
+                elif "appended " in rest and " to " in rest:
+                    path = rest.split(" to ", 1)[1].strip()
+                    pseudo_plan.append({
+                        "name": tool_part, "arguments": {"target": path},
+                    })
+
+        if not pseudo_plan:
+            return []
+        return self._ensure_progressive_disclosure(pseudo_plan)
+
+    # ------------------------------------------------------------------
     # Session organize: plan → approve → execute
     # ------------------------------------------------------------------
 
@@ -1106,18 +1373,18 @@ class KnowledgeAgent:
 
     ORGANIZE_SESSION_PROMPT = (
         "You are a knowledge management assistant. Given a conversation digest "
-        "and the current vault structure, decide what knowledge should be captured "
+        "and the current vault structure, propose what knowledge should be captured "
         "or updated in the vault.\n\n"
-        "Use the available tools to make changes. Each tool call is one action.\n\n"
+        "Use submit_plan to describe your proposed changes. Focus on WHAT and WHY.\n\n"
         "Guidelines:\n"
         "- Only capture insights, decisions, conclusions, and new knowledge — "
         "not every conversational exchange.\n"
-        "- Use capture(target=...) to add to existing pages, or capture() to "
-        "create new note pages.\n"
-        "- Use the user's language for content.\n"
+        "- Describe whether content should be appended to an existing page "
+        "or captured as a new note.\n"
+        "- Use the user's language for content descriptions.\n"
         "- If nothing is worth capturing, respond with a text message saying so "
-        "(do not call any tools).\n"
-        "- Keep captured content concise and well-structured."
+        "(do not call submit_plan).\n"
+        "- Keep descriptions concise and well-structured."
     )
 
     def _build_conversation_digest(self, since_boundary: int | None = None) -> str:
@@ -1185,19 +1452,19 @@ class KnowledgeAgent:
         )
         return recent_chars >= self._ORGANIZE_CHAR_THRESHOLD
 
-    def generate_organize_plan(self) -> list[dict] | None:
-        """Use one LLM call with tool calling to generate an organize plan.
+    def generate_organize_plan(self) -> Plan | None:
+        """Use one LLM call to generate an organize plan as a Plan object.
 
-        Returns a list of ``{name, arguments}`` dicts representing tool
-        calls the LLM wants to make, or ``None`` if there is nothing
-        worth capturing.  The plan is persisted to
-        ``.meta/pending-organize.json``.
+        Returns a Plan if there's something worth capturing, else None.
+        The plan is persisted via PlanStore.
         """
         if len(self.messages) <= 2:
             return None
 
         digest = self._build_conversation_digest()
         vault_ctx = self.vault.scan_vault_context()
+
+        from noteweaver.tools.definitions import SUBMIT_PLAN_SCHEMA
 
         messages = [
             {"role": "system", "content": self.ORGANIZE_SESSION_PROMPT},
@@ -1211,7 +1478,7 @@ class KnowledgeAgent:
             completion, _ = self.provider.chat_completion(
                 model=self.model,
                 messages=messages,
-                tools=TOOL_SCHEMAS,
+                tools=[SUBMIT_PLAN_SCHEMA],
             )
         except Exception:
             return None
@@ -1219,89 +1486,106 @@ class KnowledgeAgent:
         if not completion.tool_calls:
             return None
 
-        plan = []
         for tc in completion.tool_calls:
-            try:
-                args = json.loads(tc.arguments)
-            except (json.JSONDecodeError, TypeError):
-                args = {}
-            plan.append({"name": tc.name, "arguments": args})
+            if tc.name == "submit_plan":
+                try:
+                    args = json.loads(tc.arguments)
+                except (json.JSONDecodeError, TypeError):
+                    args = {}
+                return self._handle_submit_plan(args)
 
-        self._save_pending_plan(plan)
-        return plan
+        return None
 
-    def format_organize_plan(self, plan: list[dict]) -> str:
-        """Format a plan as a human-readable summary."""
-        if not plan:
-            return ""
-        lines: list[str] = []
-        for i, action in enumerate(plan, 1):
-            name = action["name"]
-            args = action.get("arguments", {})
-            if name == "capture":
-                target = args.get("target", "")
-                title = args.get("title", "?")
-                if target:
-                    lines.append(f"{i}. 记录「{title}」→ 追加到 {target}")
-                else:
-                    ptype = args.get("type", "note")
-                    lines.append(f"{i}. 记录「{title}」→ 新建 {ptype} 页面")
-            elif name == "ingest":
-                src = args.get("source", "?")
-                stype = args.get("source_type", "?")
-                lines.append(f"{i}. 导入 [{stype}] {src}")
-            elif name == "organize":
-                target = args.get("target", "?")
-                act = args.get("action", "?")
-                if act == "archive":
-                    reason = args.get("reason", "")
-                    lines.append(f"{i}. 归档「{target}」{f'（{reason}）' if reason else ''}")
-                elif act == "update_metadata":
-                    fields = list((args.get("metadata") or {}).keys())
-                    lines.append(f"{i}. 更新「{target}」的 {', '.join(fields) or 'metadata'}")
-                elif act == "link":
-                    lines.append(f"{i}. 给「{target}」添加链接 → {args.get('link_to', '?')}")
-                elif act == "classify":
-                    lines.append(f"{i}. 分类整理「{target}」")
-                else:
-                    lines.append(f"{i}. 整理「{target}」({act})")
-            elif name == "restructure":
-                act = args.get("action", "?")
-                scope = args.get("scope", "?")
-                if act == "merge_tags":
-                    lines.append(f"{i}. 合并标签「{args.get('old_tag', '?')}」→「{args.get('new_tag', '?')}」")
-                elif act == "deduplicate":
-                    lines.append(f"{i}. 去重检查（{scope}）")
-                elif act == "rebuild_hubs":
-                    lines.append(f"{i}. 重建 Hub 结构（{scope}）")
-                elif act == "audit":
-                    lines.append(f"{i}. 全库审计")
-                else:
-                    lines.append(f"{i}. 重构（{act}，{scope}）")
-            elif name == "write_page":
-                lines.append(f"{i}. 写入页面 {args.get('path', '?')}")
-            else:
-                summary_parts = [f"{k}={str(v)[:40]}" for k, v in args.items()]
-                lines.append(f"{i}. {name}({', '.join(summary_parts[:3])})")
+    def format_plan(self, plan: Plan) -> str:
+        """Format a Plan as a human-readable summary for display."""
+        intent_labels = {
+            "append": "追加内容",
+            "create": "新建页面",
+            "organize": "整理",
+            "restructure": "重构",
+        }
+        type_labels = {
+            "incremental": "增量变更（自动执行）",
+            "structural": "结构性变更（需审批）",
+        }
+        lines = [
+            f"**{intent_labels.get(plan.intent, plan.intent)}** "
+            f"[{type_labels.get(plan.change_type, plan.change_type)}]",
+            "",
+            plan.summary,
+        ]
+        if plan.targets:
+            lines.append("")
+            lines.append("涉及页面:")
+            for t in plan.targets:
+                lines.append(f"  - {t}")
+        if plan.rationale:
+            lines.append("")
+            lines.append(f"理由: {plan.rationale}")
+        if plan.open_questions:
+            lines.append("")
+            lines.append("待确认:")
+            for q in plan.open_questions:
+                lines.append(f"  - {q}")
         return "\n".join(lines)
 
-    def execute_organize_plan(self, plan: list[dict] | None = None) -> str:
-        """Execute a previously generated organize plan.
+    def format_organize_plan(self, plan_or_actions: "Plan | list[dict]") -> str:
+        """Format a plan for display. Accepts Plan or legacy list[dict]."""
+        if isinstance(plan_or_actions, Plan):
+            return self.format_plan(plan_or_actions)
+        if isinstance(plan_or_actions, list):
+            parts = []
+            for i, action in enumerate(plan_or_actions, 1):
+                name = action.get("name", "?")
+                args = action.get("arguments", {})
+                summary_parts = [f"{k}={str(v)[:40]}" for k, v in args.items()]
+                parts.append(f"{i}. {name}({', '.join(summary_parts[:3])})")
+            return "\n".join(parts)
+        return str(plan_or_actions)
 
-        If *plan* is not given, loads from ``.meta/pending-organize.json``.
-        Dispatches tool calls through the standard ``dispatch_tool`` path.
-        After execution, runs ``_ensure_progressive_disclosure`` to
-        maintain the index → hub → page navigation chain.
-        Returns a human-readable execution report.
+    def execute_organize_plan(
+        self, plan_or_actions: "Plan | list[dict] | None" = None,
+    ) -> str:
+        """Execute a plan — supports both Plan objects and legacy list[dict].
+
+        For Plan objects, delegates to execute_plan().
+        For legacy list[dict], executes directly (backward compatibility).
         """
-        if plan is None:
-            plan = self._load_pending_plan()
-        if not plan:
+        if plan_or_actions is None:
+            # Try new plan store first, then legacy
+            pending = self.plan_store.list_pending()
+            if pending:
+                plan_obj = pending[0]
+                self.plan_store.update_status(plan_obj.id, PlanStatus.APPROVED)
+                return self.execute_plan(plan_obj.id)
+            legacy = self._load_pending_plan()
+            if legacy:
+                return self._execute_legacy_plan(legacy)
+            return "没有待执行的整理计划。"
+
+        if isinstance(plan_or_actions, Plan):
+            if plan_or_actions.status == PlanStatus.PENDING:
+                self.plan_store.update_status(
+                    plan_or_actions.id, PlanStatus.APPROVED,
+                )
+            return self.execute_plan(plan_or_actions.id)
+
+        if isinstance(plan_or_actions, list):
+            return self._execute_legacy_plan(plan_or_actions)
+
+        return "没有待执行的整理计划。"
+
+    def _execute_legacy_plan(self, actions: list[dict]) -> str:
+        """Execute a legacy-format plan (list of {name, arguments} dicts).
+
+        Kept for backward compatibility with old pending-organize.json files.
+        """
+        if not actions:
             return "没有待执行的整理计划。"
 
         results: list[str] = []
         with self.vault.operation("Knowledge update"):
-            for action in plan:
+            for action in actions:
                 name = action.get("name", "")
                 args = action.get("arguments", {})
 
@@ -1320,11 +1604,10 @@ class KnowledgeAgent:
                 except Exception as e:
                     results.append(f"✗ {name}: {e}")
 
-            disclosure_report = self._ensure_progressive_disclosure(plan)
+            disclosure_report = self._ensure_progressive_disclosure(actions)
             if disclosure_report:
                 results.extend(disclosure_report)
 
-        # Auto-log the operation
         success = sum(1 for r in results if r.startswith("✓"))
         try:
             self.vault.append_log(

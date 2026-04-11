@@ -19,6 +19,7 @@ from pathlib import Path
 from noteweaver.adapters.base import BaseAdapter, IncomingMessage, OutgoingMessage
 from noteweaver.agent import KnowledgeAgent
 from noteweaver.config import Config
+from noteweaver.plan import PlanStatus
 from noteweaver.vault import Vault
 
 log = logging.getLogger(__name__)
@@ -53,7 +54,7 @@ class Gateway:
         self._active_chat_ids: set[str] = set()
         self._pending_notifications: list[str] = []
         self._notify_hour = int(os.environ.get("NW_NOTIFY_HOUR", "9"))
-        self._pending_organize_plan: list[dict] | None = None
+        self._pending_plan_id: str | None = None
 
     def _load_last_digest_date(self) -> str | None:
         path = self.vault.meta_dir / "last-digest-date"
@@ -95,26 +96,35 @@ class Gateway:
     async def _handle_message(self, msg: IncomingMessage) -> str:
         """Route an incoming message to the Agent and return the reply.
 
-        All writes are intercepted by chat() and collected as a pending
-        plan.  If a plan is pending, it is presented to the user.
-        Approval keywords trigger execution; any other message cancels.
+        Plans are persisted to disk. Structural plans require user approval.
+        Incremental plans are auto-executed.
         """
         self._active_chat_ids.add(msg.chat_id)
         async with self._lock:
-            # Check if user is approving a pending plan
-            if self._pending_organize_plan and msg.text.strip().lower() in self._APPROVE_KEYWORDS:
+            if self._pending_plan_id and msg.text.strip().lower() in self._APPROVE_KEYWORDS:
                 try:
-                    result = self.agent.execute_organize_plan(self._pending_organize_plan)
-                    self._pending_organize_plan = None
-                    return f"✅ {result}"
+                    plan = self.agent.plan_store.load(self._pending_plan_id)
+                    if plan and plan.status == PlanStatus.PENDING:
+                        self.agent.plan_store.update_status(
+                            plan.id, PlanStatus.APPROVED,
+                        )
+                        result = self.agent.execute_plan(plan.id)
+                        self._pending_plan_id = None
+                        return f"✅ {result}"
+                    self._pending_plan_id = None
+                    return "该提案已不存在或已处理。"
                 except Exception as e:
-                    self._pending_organize_plan = None
+                    self._pending_plan_id = None
                     log.error("Plan execution failed: %s", e)
                     return f"执行失败: {e}"
 
-            if self._pending_organize_plan:
-                self._pending_organize_plan = None
-                self.agent._clear_pending_plan()
+            if self._pending_plan_id:
+                plan = self.agent.plan_store.load(self._pending_plan_id)
+                if plan and plan.status == PlanStatus.PENDING:
+                    self.agent.plan_store.update_status(
+                        plan.id, PlanStatus.REJECTED,
+                    )
+                self._pending_plan_id = None
 
             reply_parts = []
             tool_parts = []
@@ -128,15 +138,25 @@ class Gateway:
                 log.error("Agent error: %s", e)
                 return f"Error: {e}"
 
-            # Check if chat() produced a pending plan (intercepted writes)
-            pending = self.agent._load_pending_plan()
-            if pending:
-                self._pending_organize_plan = pending
-                summary = self.agent.format_organize_plan(pending)
-                reply_parts.append(
-                    f"\n\n---\n\n📋 *变更计划*\n\n{summary}\n\n"
-                    "回复「好的」执行，或发送其他消息跳过。"
-                )
+            # Handle plans created during chat
+            pending_plans = self.agent.plan_store.list_pending()
+            for plan in pending_plans:
+                if plan.change_type == "incremental":
+                    self.agent.plan_store.update_status(
+                        plan.id, PlanStatus.APPROVED,
+                    )
+                    try:
+                        result = self.agent.execute_plan(plan.id)
+                        reply_parts.append(f"\n\n✅ {result}")
+                    except Exception as e:
+                        log.error("Incremental plan execution failed: %s", e)
+                else:
+                    self._pending_plan_id = plan.id
+                    summary = self.agent.format_plan(plan)
+                    reply_parts.append(
+                        f"\n\n---\n\n📋 *变更提案* [{plan.id}]\n\n{summary}\n\n"
+                        "回复「好的」执行，或发送其他消息跳过。"
+                    )
 
             self._message_count += 1
             if self._message_count % self._SAVE_INTERVAL == 0:
@@ -206,12 +226,12 @@ class Gateway:
                             + since_hint
                         ):
                             pass
-                        pending = self.agent._load_pending_plan()
-                        if pending:
-                            self._pending_organize_plan = pending
-                            summary = self.agent.format_organize_plan(pending)
+                        pending_plans = self.agent.plan_store.list_pending()
+                        for plan in pending_plans:
+                            self._pending_plan_id = plan.id
+                            summary = self.agent.format_plan(plan)
                             self._pending_notifications.append(
-                                f"📋 *Digest plan*\n\n{summary}\n\n"
+                                f"📋 *Digest plan* [{plan.id}]\n\n{summary}\n\n"
                                 "回复「好的」执行。"
                             )
                         self._save_last_digest_date()
