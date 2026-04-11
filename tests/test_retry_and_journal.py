@@ -141,38 +141,45 @@ class TestChatErrorRecovery:
         provider.chat_completion.side_effect = [
             (
                 CompletionResult(content=None, tool_calls=[
-                    ToolCall(id="tc1", name="vault_stats", arguments="{}"),
+                    ToolCall(
+                        id="tc1",
+                        name="survey_topic",
+                        arguments='{"topic": "stats"}',
+                    ),
                 ]),
                 {
                     "role": "assistant", "content": None,
                     "tool_calls": [{"id": "tc1", "type": "function",
-                                    "function": {"name": "vault_stats", "arguments": "{}"}}],
+                                    "function": {
+                                        "name": "survey_topic",
+                                        "arguments": '{"topic": "stats"}',
+                                    }}],
                 },
             ),
             (
-                CompletionResult(content="There was an issue checking stats."),
-                {"role": "assistant", "content": "There was an issue checking stats."},
+                CompletionResult(content="There was an issue surveying the topic."),
+                {"role": "assistant", "content": "There was an issue surveying the topic."},
             ),
         ]
 
         agent = KnowledgeAgent(vault=vault, provider=provider)
 
-        # Monkey-patch vault.health_metrics to crash
-        original = vault.health_metrics
-        vault.health_metrics = MagicMock(side_effect=RuntimeError("db corruption"))
+        # Monkey-patch vault.read_frontmatters to crash (used by survey_topic)
+        original = vault.read_frontmatters
+        vault.read_frontmatters = MagicMock(side_effect=RuntimeError("db corruption"))
 
         try:
-            responses = list(agent.chat("Check vault stats"))
+            responses = list(agent.chat("Survey the vault"))
             text_responses = [r for r in responses if "↳" not in r]
             assert len(text_responses) == 1
 
             # The error should be recorded in transcript as a tool result
             tool_msgs = [m for m in agent.messages if isinstance(m, dict) and m.get("role") == "tool"]
             assert len(tool_msgs) == 1
-            assert "Error executing vault_stats" in tool_msgs[0]["content"]
+            assert "Error executing survey_topic" in tool_msgs[0]["content"]
             assert "RuntimeError" in tool_msgs[0]["content"]
         finally:
-            vault.health_metrics = original
+            vault.read_frontmatters = original
 
 
 # ======================================================================

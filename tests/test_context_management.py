@@ -1,7 +1,7 @@
 """Tests for the full context management pipeline.
 
 Covers transcript persistence, session memory, improved journal generation,
-and the read_transcript tool.
+and reading saved transcripts via read_page on .meta paths.
 """
 
 from __future__ import annotations
@@ -61,7 +61,7 @@ class TestTranscript:
             "role": "assistant",
             "content": None,
             "tool_calls": [{"id": "t1", "function": {
-                "name": "search_vault", "arguments": '{"query": "attention"}'
+                "name": "search", "arguments": '{"query": "attention"}'
             }}],
         })
         agent.messages.append({
@@ -161,29 +161,28 @@ class TestSessionMemory:
 
 
 # ======================================================================
-# read_transcript tool
+# read_page for .meta transcripts
 # ======================================================================
 
 
 class TestReadTranscriptTool:
-    def test_schema_exists(self) -> None:
+    def test_no_read_transcript_tool(self) -> None:
         names = [s["function"]["name"] for s in TOOL_SCHEMAS]
-        assert "read_transcript" in names
-
-    def test_handler_exists(self) -> None:
-        assert "read_transcript" in TOOL_HANDLERS
+        assert "read_transcript" not in names
+        assert "read_transcript" not in TOOL_HANDLERS
 
     def test_read_saved_transcript(self, vault: Vault, agent: KnowledgeAgent) -> None:
         agent.messages.append({"role": "user", "content": "hello world"})
         agent.messages.append({"role": "assistant", "content": "hi there!"})
         path = agent.save_transcript()
 
-        result = dispatch_tool(vault, "read_transcript", {"filename": path.name})
+        rel = str(path.relative_to(vault.root))
+        result = dispatch_tool(vault, "read_page", {"path": rel})
         assert "hello world" in result
         assert "hi there!" in result
 
     def test_read_nonexistent_transcript(self, vault: Vault) -> None:
-        result = dispatch_tool(vault, "read_transcript", {"filename": "nope.json"})
+        result = dispatch_tool(vault, "read_page", {"path": ".meta/transcripts/nope.json"})
         assert "Error" in result
 
     def test_read_transcript_with_max_chars(self, vault: Vault, agent: KnowledgeAgent) -> None:
@@ -191,24 +190,27 @@ class TestReadTranscriptTool:
         agent.messages.append({"role": "assistant", "content": "B" * 5000})
         path = agent.save_transcript()
 
-        result = dispatch_tool(vault, "read_transcript", {
-            "filename": path.name, "max_chars": 100
+        rel = str(path.relative_to(vault.root))
+        result = dispatch_tool(vault, "read_page", {
+            "path": rel, "max_chars": 100
         })
         assert len(result) < 200
         assert "truncated" in result
 
     def test_path_traversal_blocked(self, vault: Vault) -> None:
-        result = dispatch_tool(vault, "read_transcript", {
-            "filename": "../../etc/passwd"
-        })
+        result = dispatch_tool(vault, "read_page", {"path": "../../etc/passwd"})
         assert "Error" in result
 
-    def test_transcript_skips_system_messages(self, vault: Vault, agent: KnowledgeAgent) -> None:
+    def test_transcript_includes_full_json_via_read_page(
+        self, vault: Vault, agent: KnowledgeAgent
+    ) -> None:
         agent.messages.append({"role": "user", "content": "test"})
         path = agent.save_transcript()
 
-        result = dispatch_tool(vault, "read_transcript", {"filename": path.name})
-        assert "NoteWeaver" not in result  # system prompt not shown
+        rel = str(path.relative_to(vault.root))
+        result = dispatch_tool(vault, "read_page", {"path": rel})
+        # Transcript files are raw JSON; read_page returns the file as stored.
+        assert '"role": "system"' in result
         assert "test" in result
 
 
