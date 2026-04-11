@@ -97,7 +97,7 @@ class TestChatFlow:
         assert provider.chat_completion.call_count == 2
 
     def test_write_page_flow(self, vault: Vault) -> None:
-        """Agent checks for duplicates, then proposes a new page.
+        """Agent surveys the topic, then proposes a new page.
 
         Writes are intercepted and collected as a pending plan.
         The page is NOT created until execute_organize_plan is called.
@@ -118,8 +118,8 @@ class TestChatFlow:
         provider.chat_completion.side_effect = [
             _make_completion(None, [{
                 "id": "tc1",
-                "name": "find_existing_page",
-                "arguments": {"title": "Test Note"},
+                "name": "survey_topic",
+                "arguments": {"topic": "Test Note"},
             }]),
             _make_completion(None, [{
                 "id": "tc2",
@@ -134,7 +134,7 @@ class TestChatFlow:
         agent = KnowledgeAgent(vault=vault, provider=provider)
 
         responses = list(agent.chat("Create a note about tests"))
-        assert any("find_existing_page" in r for r in responses)
+        assert any("survey_topic" in r for r in responses)
         assert any("write_page" in r for r in responses)
 
         # Write is intercepted — page NOT created yet
@@ -151,7 +151,7 @@ class TestChatFlow:
         assert "Test Note" in content
 
     def test_append_section_flow(self, vault: Vault) -> None:
-        """Agent reads page, then proposes append. Write is intercepted."""
+        """Agent reads page, then proposes capture(target=...). Write is intercepted."""
         page = (
             "---\ntitle: ML Basics\ntype: note\n"
             "summary: Machine learning basics\ntags: [ml]\n"
@@ -170,10 +170,10 @@ class TestChatFlow:
             }]),
             _make_completion(None, [{
                 "id": "tc2",
-                "name": "append_section",
+                "name": "capture",
                 "arguments": {
-                    "path": "wiki/concepts/ml-basics.md",
-                    "heading": "Unsupervised Learning",
+                    "target": "wiki/concepts/ml-basics.md",
+                    "title": "Unsupervised Learning",
                     "content": "Learn patterns without labels.",
                 },
             }]),
@@ -182,6 +182,7 @@ class TestChatFlow:
         agent = KnowledgeAgent(vault=vault, provider=provider)
 
         responses = list(agent.chat("Add info about unsupervised learning to ML basics"))
+        assert any("capture" in r for r in responses)
 
         # Write intercepted — not applied yet
         content = vault.read_file("wiki/concepts/ml-basics.md")
@@ -256,29 +257,27 @@ class TestSessionLifecycle:
         system = query[0]["content"]
         assert "Session Context" in system or "Last Session" in system
 
-    def test_transcript_available_for_digest(self, vault: Vault) -> None:
-        """Saved transcripts can be read by the read_transcript tool."""
-        from noteweaver.tools.definitions import dispatch_tool
-
+    def test_transcript_readable_from_disk(self, vault: Vault) -> None:
+        """Saved transcripts are JSON files under .meta/transcripts/."""
         provider = MagicMock()
         provider.chat_completion.return_value = _make_completion("Hello!")
         agent = KnowledgeAgent(vault=vault, provider=provider)
         list(agent.chat("Test message for transcript"))
         path = agent.save_transcript()
 
-        result = dispatch_tool(vault, "read_transcript", {"filename": path.name})
-        assert "Test message for transcript" in result
-        assert "Hello!" in result
+        raw = path.read_text(encoding="utf-8")
+        assert "Test message for transcript" in raw
+        assert "Hello!" in raw
 
 
 # ======================================================================
-# Integration: dedup workflow
+# Integration: topic survey / title resolution
 # ======================================================================
 
 
-class TestDedupWorkflow:
-    def test_find_existing_prevents_duplicate(self, vault: Vault) -> None:
-        """find_existing_page finds an existing page so the agent can update it."""
+class TestSurveyTopicWorkflow:
+    def test_survey_finds_existing_page_by_title(self, vault: Vault) -> None:
+        """survey_topic surfaces an existing page so the agent can capture(target=...)."""
         from noteweaver.tools.definitions import dispatch_tool
 
         page = (
@@ -290,21 +289,16 @@ class TestDedupWorkflow:
             "## Related\n"
         )
         vault.write_file("wiki/concepts/neural-networks.md", page)
+        vault.rebuild_search_index()
 
-        # Searching for "Neural Networks" should find the existing page
-        result = dispatch_tool(vault, "find_existing_page", {
-            "title": "Neural Networks",
-        })
+        result = dispatch_tool(vault, "survey_topic", {"topic": "Neural Networks"})
         assert "wiki/concepts/neural-networks.md" in result
-        assert "append_section" in result or "updating" in result.lower()
 
-    def test_safe_to_create_when_no_match(self, vault: Vault) -> None:
+    def test_survey_reports_empty_topic(self, vault: Vault) -> None:
         from noteweaver.tools.definitions import dispatch_tool
 
-        result = dispatch_tool(vault, "find_existing_page", {
-            "title": "Quantum Entanglement",
-        })
-        assert "Safe to create" in result
+        result = dispatch_tool(vault, "survey_topic", {"topic": "Quantum Entanglement"})
+        assert "new topic" in result.lower() or "none found" in result.lower()
 
 
 # ======================================================================
@@ -315,8 +309,6 @@ class TestDedupWorkflow:
 class TestToolResultTieringIntegration:
     def test_tiering_in_multi_step_chat(self, vault: Vault) -> None:
         """Tool results from earlier turns are tiered in the query view."""
-        big_content = "X" * 2000
-
         step_responses = []
         for i in range(4):
             step_responses.append(_make_completion(None, [{
