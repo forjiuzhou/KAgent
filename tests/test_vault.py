@@ -308,3 +308,60 @@ class TestUpdatedTimestamp:
         content = vault.read_file("wiki/concepts/linked.md")
         fm = extract_frontmatter(content)
         assert fm["updated"] != "2020-01-01"
+
+
+class TestImportFromVaultRelativePath:
+    def test_import_from_sources_subdir(self, vault: Vault) -> None:
+        """import_directory accepts vault-relative paths like 'sources/typora'."""
+        src = vault.root / "sources" / "typora"
+        src.mkdir(parents=True)
+        (src / "note1.md").write_text("# Plain markdown without frontmatter")
+        (src / "note2.md").write_text("# Another plain note")
+        result = vault.import_directory("sources/typora")
+        assert "Imported 2" in result
+        assert vault.list_files("wiki/concepts")
+
+    def test_import_from_sources_absolute_still_works(self, vault: Vault, tmp_path: Path) -> None:
+        """Absolute paths still work for backward compatibility."""
+        ext = tmp_path / "external"
+        ext.mkdir()
+        (ext / "ext.md").write_text("# External note")
+        result = vault.import_directory(str(ext))
+        assert "Imported 1" in result
+
+
+class TestScanVaultContextSources:
+    def test_context_includes_sources(self, vault: Vault) -> None:
+        """scan_vault_context reports sources/ overview."""
+        vault.save_source("sources/articles/a.md", "# Article A")
+        vault.save_source("sources/articles/b.md", "# Article B")
+        vault.save_source("sources/typora/c.md", "# Note C")
+        ctx = vault.scan_vault_context()
+        assert "Sources:" in ctx
+        assert "3 file(s)" in ctx
+        assert "articles" in ctx
+        assert "typora" in ctx
+
+    def test_context_no_sources(self, vault: Vault) -> None:
+        """scan_vault_context omits sources section when empty."""
+        ctx = vault.scan_vault_context()
+        assert "Sources:" not in ctx
+
+
+class TestListAllFiles:
+    def test_lists_non_markdown_files(self, vault: Vault) -> None:
+        """list_all_files returns all file types."""
+        (vault.root / "sources" / "images").mkdir(parents=True)
+        (vault.root / "sources" / "images" / "photo.png").write_bytes(b"\x89PNG")
+        (vault.root / "sources" / "images" / "notes.txt").write_text("text")
+        files = vault.list_all_files("sources")
+        paths = [f["path"] for f in files]
+        assert "sources/images/photo.png" in paths
+        assert "sources/images/notes.txt" in paths
+
+    def test_excludes_meta_and_git(self, vault: Vault) -> None:
+        """list_all_files excludes .meta/ and .git/."""
+        files = vault.list_all_files(".")
+        paths = [f["path"] for f in files]
+        assert not any(p.startswith(".meta/") for p in paths)
+        assert not any(p.startswith(".git/") for p in paths)

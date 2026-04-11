@@ -208,19 +208,25 @@ TOOL_SCHEMAS: list[dict] = [
         "function": {
             "name": "import_files",
             "description": (
-                "Import markdown files from a local directory into the vault. "
+                "Import markdown files from a directory into the vault. "
+                "Accepts both absolute paths (/home/user/notes) and "
+                "vault-relative paths (sources/typora). "
                 "Scans the directory for .md files, auto-classifies them by "
                 "frontmatter, adds frontmatter to files that lack it, and "
                 "rebuilds the index. Use when the user wants to import existing "
-                "notes or documents. After importing, call scan_imports to "
-                "prepare for organization."
+                "notes or documents — including raw files already in sources/. "
+                "After importing, call scan_imports to prepare for organization."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
                     "directory": {
                         "type": "string",
-                        "description": "Absolute path to the directory to import from, e.g. '/home/user/notes'",
+                        "description": (
+                            "Path to the directory to import from. "
+                            "Absolute (e.g. '/home/user/notes') or "
+                            "vault-relative (e.g. 'sources/typora')"
+                        ),
                     },
                 },
                 "required": ["directory"],

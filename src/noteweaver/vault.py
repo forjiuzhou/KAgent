@@ -412,24 +412,34 @@ class Vault:
         )
 
     def rebuild_search_index(self) -> int:
-        """Rebuild the entire search index from vault files."""
+        """Rebuild the entire search index from vault files.
+
+        Indexes both wiki/ and sources/ so that search_vault can find
+        content everywhere in the vault.  Sources files without frontmatter
+        are indexed with path-derived metadata.
+        """
         from noteweaver.frontmatter import extract_frontmatter
+
         pages = []
-        for rel_path in self.list_files("wiki"):
-            try:
-                content = self.read_file(rel_path)
-                fm = extract_frontmatter(content) or {}
-                tags = fm.get("tags", [])
-                pages.append({
-                    "path": rel_path,
-                    "title": str(fm.get("title", "")),
-                    "type": str(fm.get("type", "")),
-                    "summary": str(fm.get("summary", "")),
-                    "tags": ", ".join(str(t) for t in tags) if isinstance(tags, list) else str(tags),
-                    "body": content,
-                })
-            except (FileNotFoundError, PermissionError):
-                continue
+        for rel_dir in ("wiki", "sources"):
+            for rel_path in self.list_files(rel_dir):
+                try:
+                    content = self.read_file(rel_path)
+                    fm = extract_frontmatter(content) or {}
+                    tags = fm.get("tags", [])
+                    title = str(fm.get("title", ""))
+                    if not title and not fm:
+                        title = Path(rel_path).stem.replace("-", " ").replace("_", " ")
+                    pages.append({
+                        "path": rel_path,
+                        "title": title,
+                        "type": str(fm.get("type", "") or ("source" if rel_path.startswith("sources/") else "")),
+                        "summary": str(fm.get("summary", "")),
+                        "tags": ", ".join(str(t) for t in tags) if isinstance(tags, list) else str(tags),
+                        "body": content,
+                    })
+                except (FileNotFoundError, PermissionError):
+                    continue
         self.search.rebuild(pages)
         return len(pages)
 
@@ -563,6 +573,7 @@ class Vault:
             raise PermissionError(f"Source already exists and is immutable: {rel_path}")
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(content, encoding="utf-8")
+        self._index_file(rel_path, content)
         if self._operation_depth > 0:
             self._operation_dirty = True
         else:
@@ -1199,8 +1210,23 @@ class Vault:
             lines.append(f"Unorganized: {unorganized_count} page(s) not under any hub")
 
         lines.append(f"Total: {total} pages")
+
+        source_files = self.list_files("sources")
+        if source_files:
+            by_subdir: dict[str, int] = {}
+            for sf in source_files:
+                parts = sf.split("/")
+                subdir = parts[1] if len(parts) > 2 else "(root)"
+                by_subdir[subdir] = by_subdir.get(subdir, 0) + 1
+            lines.append(f"\nSources: {len(source_files)} file(s)")
+            for sd, cnt in sorted(by_subdir.items()):
+                lines.append(f"  sources/{sd}: {cnt} file(s)" if sd != "(root)" else f"  sources/: {cnt} file(s)")
+
         lines.append("")
-        lines.append("Use read_page on a hub, list_page_summaries, or search_vault to explore.")
+        lines.append(
+            "Use read_page on a hub, list_page_summaries, search_vault, "
+            "or list_directory to explore."
+        )
 
         return "\n".join(lines)
 
@@ -1532,11 +1558,16 @@ class Vault:
     def import_directory(self, source_dir: str) -> str:
         """Import .md files from an external directory into the vault.
 
-        Uses an operation context so all writes produce a single git commit.
+        Accepts both absolute paths (/home/user/notes) and vault-relative
+        paths (sources/typora).  Uses an operation context so all writes
+        produce a single git commit.
         """
         from noteweaver.frontmatter import extract_frontmatter
 
-        src = Path(source_dir).resolve()
+        candidate = Path(source_dir)
+        if not candidate.is_absolute():
+            candidate = self.root / source_dir
+        src = candidate.resolve()
         if not src.is_dir():
             return f"Error: not a directory: {source_dir}"
 
