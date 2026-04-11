@@ -103,7 +103,7 @@ class TestVaultSearchIntegration:
         assert len(vault.search.search("beta")) >= 1
 
     def test_rebuild_search_index_includes_sources(self, vault: Vault) -> None:
-        """Sources files are indexed so search_vault can find them."""
+        """Sources files are indexed so search (FTS) can find them."""
         vault.save_source("sources/articles/raw.md", "# quantum computing breakthroughs")
         count = vault.rebuild_search_index()
         results = vault.search.search("quantum computing")

@@ -1,4 +1,4 @@
-"""Tests for the organize-imports pipeline: scan_imports + apply_organize_plan."""
+"""Tests for the organize-imports pipeline and new organize/ingest tools."""
 
 from __future__ import annotations
 
@@ -39,27 +39,33 @@ def _write_imported_page(vault: Vault, name: str, content: str) -> str:
 
 
 # ======================================================================
-# Tool registration
+# Tool registration (new tool system)
 # ======================================================================
 
 class TestToolRegistration:
-    def test_scan_imports_in_schemas(self) -> None:
+    def test_organize_in_schemas(self) -> None:
         names = {s["function"]["name"] for s in TOOL_SCHEMAS}
-        assert "scan_imports" in names
+        assert "organize" in names
+        assert len(names) == 11
 
-    def test_apply_organize_plan_in_schemas(self) -> None:
+    def test_ingest_in_schemas(self) -> None:
         names = {s["function"]["name"] for s in TOOL_SCHEMAS}
-        assert "apply_organize_plan" in names
+        assert "ingest" in names
 
-    def test_scan_imports_in_handlers(self) -> None:
-        assert "scan_imports" in TOOL_HANDLERS
+    def test_organize_in_handlers(self) -> None:
+        assert "organize" in TOOL_HANDLERS
 
-    def test_apply_organize_plan_in_handlers(self) -> None:
-        assert "apply_organize_plan" in TOOL_HANDLERS
+    def test_ingest_in_handlers(self) -> None:
+        assert "ingest" in TOOL_HANDLERS
+
+    def test_legacy_import_tools_removed(self) -> None:
+        names = {s["function"]["name"] for s in TOOL_SCHEMAS}
+        assert "scan_imports" not in names
+        assert "apply_organize_plan" not in names
 
 
 # ======================================================================
-# scan_imports
+# organize(target='imported', action='classify') → vault.scan_imports()
 # ======================================================================
 
 class TestScanImports:
@@ -77,7 +83,6 @@ class TestScanImports:
         assert "Imported files to organize: 2" in result
 
     def test_includes_vault_context(self, vault: Vault) -> None:
-        # Pre-existing page with tags
         today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
         vault.write_file(
             "wiki/concepts/existing.md",
@@ -119,9 +124,12 @@ class TestScanImports:
         assert '"confidence"' in result
         assert "JSON array" in result
 
-    def test_dispatch_scan_imports(self, vault: Vault) -> None:
+    def test_dispatch_organize_classify_imported(self, vault: Vault) -> None:
         _write_imported_page(vault, "test.md", "# Test")
-        result = dispatch_tool(vault, "scan_imports", {})
+        result = dispatch_tool(vault, "organize", {
+            "target": "imported",
+            "action": "classify",
+        })
         assert "test.md" in result
 
     def test_adaptive_budget(self, vault: Vault) -> None:
@@ -134,7 +142,7 @@ class TestScanImports:
 
 
 # ======================================================================
-# apply_organize_plan
+# apply_organize_plan (vault only)
 # ======================================================================
 
 class TestApplyOrganizePlan:
@@ -324,7 +332,7 @@ class TestApplyOrganizePlan:
         result = vault.apply_organize_plan(plan)
         assert "not found" in result
 
-    def test_dispatch_apply_organize_plan(self, vault: Vault) -> None:
+    def test_apply_plan_via_vault_only(self, vault: Vault) -> None:
         path = _write_imported_page(vault, "test.md", "# Test")
         plan = json.dumps([{
             "path": path,
@@ -338,7 +346,7 @@ class TestApplyOrganizePlan:
             "duplicate_of": None,
             "confidence": "high",
         }])
-        result = dispatch_tool(vault, "apply_organize_plan", {"plan": plan})
+        result = vault.apply_organize_plan(plan)
         assert "1 processed" in result
 
     def test_multiple_files_batch(self, vault: Vault) -> None:
@@ -365,6 +373,22 @@ class TestApplyOrganizePlan:
         result = vault.apply_organize_plan(plan)
         assert "5 processed" in result
         assert "Batch Processing" in result
+
+
+# ======================================================================
+# ingest(source_type='directory')
+# ======================================================================
+
+class TestIngestDirectory:
+    def test_import_directory_via_ingest(self, vault: Vault, tmp_path: Path) -> None:
+        source_dir = tmp_path / "notes"
+        source_dir.mkdir()
+        (source_dir / "a.md").write_text("# A\n\nBody.", encoding="utf-8")
+        result = dispatch_tool(vault, "ingest", {
+            "source": str(source_dir),
+            "source_type": "directory",
+        })
+        assert "Imported" in result or "import" in result.lower()
 
 
 # ======================================================================
@@ -396,6 +420,12 @@ class TestEndToEnd:
         assert "Machine Learning" in scan_result or "machine-learning" in scan_result
         assert "Deep Learning" in scan_result or "deep-learning" in scan_result
         assert "daily-log" in scan_result
+
+        tool_scan = dispatch_tool(vault, "organize", {
+            "target": "imported",
+            "action": "classify",
+        })
+        assert "machine-learning" in tool_scan or "Machine Learning" in tool_scan
 
         plan = json.dumps([
             {
@@ -440,7 +470,6 @@ class TestEndToEnd:
         assert "1 moved" in apply_result
         assert "AI & ML" in apply_result or "ai-ml" in apply_result
 
-        # Verify final state
         from noteweaver.frontmatter import extract_frontmatter
 
         ml_content = vault.read_file("wiki/concepts/machine-learning.md")

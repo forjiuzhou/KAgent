@@ -46,20 +46,28 @@ class TestPromptStructure:
         assert "Inverted pyramid" in PROMPT_IDENTITY
 
     def test_tools_has_all_tools(self) -> None:
-        for tool in ["list_page_summaries", "read_page", "write_page",
-                      "search_vault", "save_source", "fetch_url",
-                      "import_files", "archive_page", "vault_stats",
-                      "read_transcript", "append_log",
-                      "find_existing_page", "append_section",
-                      "append_to_section", "update_frontmatter",
-                      "add_related_link", "scan_imports",
-                      "apply_organize_plan"]:
+        from noteweaver.tools.definitions import TOOL_SCHEMAS
+
+        assert len(TOOL_SCHEMAS) == 11
+        for tool in [
+            "read_page",
+            "search",
+            "survey_topic",
+            "get_backlinks",
+            "list_pages",
+            "fetch_url",
+            "capture",
+            "ingest",
+            "organize",
+            "restructure",
+            "write_page",
+        ]:
             assert tool in PROMPT_TOOLS, f"Missing tool: {tool}"
 
     def test_tools_has_common_requests(self) -> None:
-        assert "import_files" in PROMPT_TOOLS
+        assert "ingest" in PROMPT_TOOLS
         assert "fetch_url" in PROMPT_TOOLS
-        assert "vault_stats" in PROMPT_TOOLS
+        assert "survey_topic" in PROMPT_TOOLS
 
     def test_schema_not_in_system_prompt(self, agent: KnowledgeAgent) -> None:
         system_msg = agent.messages[0]["content"]

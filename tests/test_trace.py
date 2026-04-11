@@ -160,7 +160,7 @@ class TestTracePersistence:
             has_preferences=False,
         )
         tc.record_tool_call(
-            name="search_vault",
+            name="search",
             arguments={"query": "test"},
             policy_allowed=True,
             policy_warning=None,
@@ -180,7 +180,7 @@ class TestTracePersistence:
 
         tool = json.loads(lines[1])
         assert tool["kind"] == "tool_call"
-        assert tool["name"] == "search_vault"
+        assert tool["name"] == "search"
 
     def test_save_empty_trace_still_writes_meta(self, tmp_path: Path) -> None:
         tc = TraceCollector()
@@ -220,7 +220,7 @@ class TestTracePersistence:
             estimated_tokens=750,
         )
         tc.record_tool_call(
-            name="list_page_summaries",
+            name="list_pages",
             arguments={"directory": "wiki/concepts"},
             policy_allowed=True,
             policy_warning=None,

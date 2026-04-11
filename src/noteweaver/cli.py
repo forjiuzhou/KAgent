@@ -52,9 +52,7 @@ def cmd_init(vault_path: Path) -> None:
 
 
 _WRITE_TOOLS = frozenset({
-    "write_page", "append_section", "append_to_section",
-    "update_frontmatter", "add_related_link", "save_source",
-    "archive_page", "import_files",
+    "write_page", "capture", "ingest", "organize", "restructure",
 })
 
 _MIN_EXCHANGES_FOR_JOURNAL = 3
@@ -302,10 +300,10 @@ def _save_session_journal(
                     tools_used.append(name)
                 try:
                     args = _json.loads(fn.get("arguments", "{}"))
-                    path = args.get("path", "")
+                    path = args.get("path", "") or args.get("target", "")
                     if path:
-                        if name in ("write_page", "append_section", "append_to_section",
-                                    "update_frontmatter", "add_related_link"):
+                        if name in ("write_page", "capture", "organize",
+                                    "restructure", "ingest"):
                             if path not in pages_updated:
                                 pages_updated.append(path)
                         elif name == "read_page":
@@ -447,9 +445,9 @@ def cmd_ingest(vault_path: Path, url: str) -> None:
     console.print(f"[bold]Ingesting:[/bold] {url}")
     prompt = (
         f"Ingest this URL into the knowledge base: {url}\n"
-        "Fetch the content, save the source, create appropriate wiki pages, "
-        "add links and tags. Log what you did."
-    )
+        "Use ingest(source='{url}', source_type='url') to fetch and save it, "
+        "then use capture() to record key information as wiki pages."
+    ).format(url=url)
     exchange: dict = {"user": f"ingest {url}", "tools": [], "reply": ""}
     try:
         for chunk in agent.chat(prompt):
@@ -521,11 +519,9 @@ def cmd_lint(vault_path: Path) -> None:
         prompt = (
             f"Vault audit found these issues:\n\n"
             f"{_json.dumps(report, indent=2, ensure_ascii=False)}\n\n"
-            "Fix these issues. For orphan pages, add links from related pages "
-            "or hubs. For missing summaries, generate appropriate summaries. "
-            "For hub candidates, create hubs. For broken links, create stub "
-            "pages or remove the links. For missing connections, add related "
-            "links between the pages. Log what you did."
+            "Fix these issues. Use organize() for page-level fixes (metadata, "
+            "links, archive). Use restructure() for vault-wide fixes (rebuild "
+            "hubs, merge tags). Use capture() to create missing pages."
         )
         exchange: dict = {"user": "lint", "tools": [], "reply": ""}
         try:
@@ -570,8 +566,9 @@ def cmd_digest(vault_path: Path) -> None:
             transcript_hint = (
                 "\n\nRecent conversation transcripts are available at "
                 f".meta/transcripts/. Recent files: {', '.join(recent)}. "
-                "Use read_transcript(path) to access the full conversation "
-                "when a journal entry mentions something worth deeper review."
+                "Use read_page('.meta/transcripts/filename') to access "
+                "the full conversation when a journal entry mentions "
+                "something worth deeper review."
             )
 
     last_digest_path = vault.meta_dir / "last-digest-date"
@@ -586,8 +583,8 @@ def cmd_digest(vault_path: Path) -> None:
         "1. Insights, conclusions, or decisions worth promoting to a wiki page\n"
         "2. Topics mentioned repeatedly that deserve their own page\n"
         "3. Connections between conversations that aren't yet linked\n\n"
-        "For each finding, use promote_insight or write_page to create the "
-        "appropriate wiki pages. Add links and tags. Log what you did."
+        "For each finding, use capture() to create wiki pages with the "
+        "key information. Use survey_topic() first to check what exists."
         + since_hint + transcript_hint
     )
     exchange: dict = {"user": "digest", "tools": [], "reply": ""}

@@ -1,4 +1,4 @@
-"""Tests for fine-grained editing tools, dedup, and enhanced search."""
+"""Tests for capture/organize flows that replace fine-grained editing tools."""
 
 from __future__ import annotations
 
@@ -48,21 +48,20 @@ def vault_with_page(vault: Vault) -> Vault:
 
 
 # ======================================================================
-# append_section
+# capture — new section (replaces append_section)
 # ======================================================================
 
 
-class TestAppendSection:
+class TestCaptureAppendSection:
     def test_appends_before_related(self, vault_with_page: Vault) -> None:
-        result = dispatch_tool(vault_with_page, "append_section", {
-            "path": "wiki/concepts/attention.md",
-            "heading": "Multi-Head Attention",
+        result = dispatch_tool(vault_with_page, "capture", {
+            "target": "wiki/concepts/attention.md",
+            "title": "Multi-Head Attention",
             "content": "Instead of one attention, use h parallel heads.",
         })
         assert "OK" in result
         content = vault_with_page.read_file("wiki/concepts/attention.md")
         assert "## Multi-Head Attention" in content
-        # Must appear BEFORE Related
         mha_pos = content.index("## Multi-Head Attention")
         related_pos = content.index("## Related")
         assert mha_pos < related_pos
@@ -70,9 +69,9 @@ class TestAppendSection:
     def test_appends_at_end_if_no_related(self, vault: Vault) -> None:
         page = "---\ntitle: T\ntype: note\ntags: []\n---\n\n# Test\n\nSome content.\n"
         vault.write_file("wiki/concepts/test.md", page)
-        result = dispatch_tool(vault, "append_section", {
-            "path": "wiki/concepts/test.md",
-            "heading": "New Section",
+        result = dispatch_tool(vault, "capture", {
+            "target": "wiki/concepts/test.md",
+            "title": "New Section",
             "content": "New content here.",
         })
         assert "OK" in result
@@ -81,49 +80,47 @@ class TestAppendSection:
         assert "New content here." in content
 
     def test_rejects_non_wiki_path(self, vault: Vault) -> None:
-        result = dispatch_tool(vault, "append_section", {
-            "path": "sources/test.md",
-            "heading": "H",
+        result = dispatch_tool(vault, "capture", {
+            "target": "sources/test.md",
+            "title": "H",
             "content": "C",
         })
         assert "Error" in result
 
     def test_rejects_missing_file(self, vault: Vault) -> None:
-        result = dispatch_tool(vault, "append_section", {
-            "path": "wiki/concepts/nope.md",
-            "heading": "H",
+        result = dispatch_tool(vault, "capture", {
+            "target": "wiki/concepts/nope.md",
+            "title": "H",
             "content": "C",
         })
         assert "Error" in result
 
 
 # ======================================================================
-# append_to_section
+# capture — append to page (replaces append_to_section)
 # ======================================================================
 
 
-class TestAppendToSection:
-    def test_appends_to_existing_section(self, vault_with_page: Vault) -> None:
-        result = dispatch_tool(vault_with_page, "append_to_section", {
-            "path": "wiki/concepts/attention.md",
-            "heading": "Scaled Dot-Product",
+class TestCaptureAppendToSection:
+    def test_appends_new_section_with_content(self, vault_with_page: Vault) -> None:
+        result = dispatch_tool(vault_with_page, "capture", {
+            "target": "wiki/concepts/attention.md",
+            "title": "Scaled Dot-Product — notes",
             "content": "- Also known as: self-attention when Q=K=V.",
         })
         assert "OK" in result
         content = vault_with_page.read_file("wiki/concepts/attention.md")
         assert "Also known as: self-attention" in content
 
-    def test_error_on_missing_section(self, vault_with_page: Vault) -> None:
-        result = dispatch_tool(vault_with_page, "append_to_section", {
-            "path": "wiki/concepts/attention.md",
-            "heading": "Nonexistent Section",
+    def test_error_on_missing_target(self, vault_with_page: Vault) -> None:
+        result = dispatch_tool(vault_with_page, "capture", {
+            "target": "wiki/concepts/missing.md",
+            "title": "Section",
             "content": "won't work",
         })
         assert "Error" in result
-        assert "not found" in result
 
     def test_page_with_numeric_title_and_tags(self, vault: Vault) -> None:
-        """Pages whose YAML title/tags parse as int should not crash."""
         page = (
             "---\ntitle: 2026\ntype: note\n"
             "summary: Year\ntags: [2026, review]\n"
@@ -131,9 +128,9 @@ class TestAppendToSection:
             "# 2026\n\n## Highlights\n\nSome highlights.\n"
         )
         vault.write_file("wiki/concepts/year-2026.md", page)
-        result = dispatch_tool(vault, "append_to_section", {
-            "path": "wiki/concepts/year-2026.md",
-            "heading": "Highlights",
+        result = dispatch_tool(vault, "capture", {
+            "target": "wiki/concepts/year-2026.md",
+            "title": "Highlights follow-up",
             "content": "- New highlight added.",
         })
         assert "OK" in result
@@ -142,61 +139,67 @@ class TestAppendToSection:
 
 
 # ======================================================================
-# update_frontmatter
+# organize update_metadata (replaces update_frontmatter)
 # ======================================================================
 
 
-class TestUpdateFrontmatter:
+class TestOrganizeUpdateMetadata:
     def test_updates_tags(self, vault_with_page: Vault) -> None:
-        result = dispatch_tool(vault_with_page, "update_frontmatter", {
-            "path": "wiki/concepts/attention.md",
-            "fields": {"tags": ["ai", "nlp", "transformers", "deep-learning"]},
+        result = dispatch_tool(vault_with_page, "organize", {
+            "target": "wiki/concepts/attention.md",
+            "action": "update_metadata",
+            "metadata": {"tags": ["ai", "nlp", "transformers", "deep-learning"]},
         })
         assert "OK" in result
         content = vault_with_page.read_file("wiki/concepts/attention.md")
         assert "deep-learning" in content
 
     def test_updates_summary(self, vault_with_page: Vault) -> None:
-        result = dispatch_tool(vault_with_page, "update_frontmatter", {
-            "path": "wiki/concepts/attention.md",
-            "fields": {"summary": "Updated summary for attention"},
+        result = dispatch_tool(vault_with_page, "organize", {
+            "target": "wiki/concepts/attention.md",
+            "action": "update_metadata",
+            "metadata": {"summary": "Updated summary for attention"},
         })
         assert "OK" in result
 
     def test_preserves_body(self, vault_with_page: Vault) -> None:
-        dispatch_tool(vault_with_page, "update_frontmatter", {
-            "path": "wiki/concepts/attention.md",
-            "fields": {"tags": ["updated"]},
+        dispatch_tool(vault_with_page, "organize", {
+            "target": "wiki/concepts/attention.md",
+            "action": "update_metadata",
+            "metadata": {"tags": ["updated"]},
         })
         content = vault_with_page.read_file("wiki/concepts/attention.md")
         assert "Attention allows a model" in content
         assert "Scaled Dot-Product" in content
 
     def test_rejects_invalid_update(self, vault_with_page: Vault) -> None:
-        result = dispatch_tool(vault_with_page, "update_frontmatter", {
-            "path": "wiki/concepts/attention.md",
-            "fields": {"type": "invalid_type"},
+        result = dispatch_tool(vault_with_page, "organize", {
+            "target": "wiki/concepts/attention.md",
+            "action": "update_metadata",
+            "metadata": {"type": "invalid_type"},
         })
         assert "Error" in result
 
     def test_rejects_missing_file(self, vault: Vault) -> None:
-        result = dispatch_tool(vault, "update_frontmatter", {
-            "path": "wiki/concepts/nope.md",
-            "fields": {"tags": ["test"]},
+        result = dispatch_tool(vault, "organize", {
+            "target": "wiki/concepts/nope.md",
+            "action": "update_metadata",
+            "metadata": {"tags": ["test"]},
         })
         assert "Error" in result
 
 
 # ======================================================================
-# add_related_link
+# organize link (replaces add_related_link)
 # ======================================================================
 
 
-class TestAddRelatedLink:
+class TestOrganizeLink:
     def test_adds_to_existing_related(self, vault_with_page: Vault) -> None:
-        result = dispatch_tool(vault_with_page, "add_related_link", {
-            "path": "wiki/concepts/attention.md",
-            "title": "Multi-Head Attention",
+        result = dispatch_tool(vault_with_page, "organize", {
+            "target": "wiki/concepts/attention.md",
+            "action": "link",
+            "link_to": "Multi-Head Attention",
         })
         assert "OK" in result
         content = vault_with_page.read_file("wiki/concepts/attention.md")
@@ -205,9 +208,10 @@ class TestAddRelatedLink:
     def test_creates_related_if_absent(self, vault: Vault) -> None:
         page = "---\ntitle: T\ntype: note\ntags: []\n---\n\n# Test\n\nContent.\n"
         vault.write_file("wiki/concepts/test.md", page)
-        result = dispatch_tool(vault, "add_related_link", {
-            "path": "wiki/concepts/test.md",
-            "title": "Other Page",
+        result = dispatch_tool(vault, "organize", {
+            "target": "wiki/concepts/test.md",
+            "action": "link",
+            "link_to": "Other Page",
         })
         assert "OK" in result
         content = vault.read_file("wiki/concepts/test.md")
@@ -215,47 +219,40 @@ class TestAddRelatedLink:
         assert "[[Other Page]]" in content
 
     def test_skips_duplicate_link(self, vault_with_page: Vault) -> None:
-        result = dispatch_tool(vault_with_page, "add_related_link", {
-            "path": "wiki/concepts/attention.md",
-            "title": "Transformer Architecture",
+        result = dispatch_tool(vault_with_page, "organize", {
+            "target": "wiki/concepts/attention.md",
+            "action": "link",
+            "link_to": "Transformer Architecture",
         })
         assert "already exists" in result
 
 
 # ======================================================================
-# find_existing_page
+# survey_topic / search (replaces find_existing_page / search_vault)
 # ======================================================================
 
 
-class TestFindExistingPage:
-    def test_finds_by_title(self, vault_with_page: Vault) -> None:
-        result = dispatch_tool(vault_with_page, "find_existing_page", {
-            "title": "Attention Mechanism",
+class TestSurveyTopicAndSearch:
+    def test_survey_finds_by_title(self, vault_with_page: Vault) -> None:
+        result = dispatch_tool(vault_with_page, "survey_topic", {
+            "topic": "Attention Mechanism",
         })
         assert "attention" in result.lower()
         assert "wiki/concepts/attention.md" in result
 
-    def test_finds_by_partial_title(self, vault_with_page: Vault) -> None:
-        result = dispatch_tool(vault_with_page, "find_existing_page", {
-            "title": "Attention",
+    def test_search_finds_by_query(self, vault_with_page: Vault) -> None:
+        result = dispatch_tool(vault_with_page, "search", {
+            "query": "attention",
         })
         assert "wiki/concepts/attention.md" in result
 
-    def test_no_match(self, vault: Vault) -> None:
-        result = dispatch_tool(vault, "find_existing_page", {
-            "title": "Quantum Computing",
+    def test_survey_suggests_new_topic_when_empty(self, vault: Vault) -> None:
+        result = dispatch_tool(vault, "survey_topic", {
+            "topic": "Quantum Computing",
         })
-        assert "No existing pages" in result
-        assert "Safe to create" in result
+        assert "new" in result.lower() or "None" in result
 
-    def test_suggests_update(self, vault_with_page: Vault) -> None:
-        result = dispatch_tool(vault_with_page, "find_existing_page", {
-            "title": "Attention",
-        })
-        assert "append_section" in result or "updating" in result.lower()
-
-    def test_numeric_title_page(self, vault: Vault) -> None:
-        """Pages with numeric YAML titles should not crash find_existing_page."""
+    def test_numeric_title_page_in_survey(self, vault: Vault) -> None:
         page = (
             "---\ntitle: 2026\ntype: note\n"
             "summary: Year\ntags: [2026]\n"
@@ -263,22 +260,14 @@ class TestFindExistingPage:
             "# 2026\n\nContent.\n"
         )
         vault.write_file("wiki/concepts/year-2026.md", page)
-        result = dispatch_tool(vault, "find_existing_page", {
-            "title": "2026",
-        })
+        result = dispatch_tool(vault, "survey_topic", {"topic": "2026"})
         assert "Error" not in result
 
 
-# ======================================================================
-# Enhanced search
-# ======================================================================
-
-
-class TestEnhancedSearch:
+class TestSearchMetadata:
     def test_search_returns_metadata(self, vault_with_page: Vault) -> None:
-        result = dispatch_tool(vault_with_page, "search_vault", {
+        result = dispatch_tool(vault_with_page, "search", {
             "query": "attention",
         })
         assert "canonical" in result.lower() or "Attention Mechanism" in result
-        # Should include summary or tags
         assert "Tags:" in result or "Summary:" in result

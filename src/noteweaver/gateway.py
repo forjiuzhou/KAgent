@@ -201,8 +201,8 @@ class Gateway:
                         since_hint = f" Only review journals after {since}." if since else ""
                         for chunk in self.agent.chat(
                             "Review recent journal entries and promote any insights "
-                            "worth capturing as wiki pages. Use promote_insight or "
-                            "write_page for each finding. Add links and tags."
+                            "worth capturing as wiki pages. Use capture() for each "
+                            "finding worth recording."
                             + since_hint
                         ):
                             pass

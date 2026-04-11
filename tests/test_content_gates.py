@@ -1,8 +1,8 @@
 """Tests for content-layer write gates.
 
 Covers:
-- Read-before-write for all content-targeting tools
-- Minimum body length for note pages
+- write_page: navigation before new page, read-before-overwrite
+- organize(update_metadata|link): read-before-write
 - Minimum [[wiki-link]] count for synthesis pages
 - Preferences.md special gate
 """
@@ -22,88 +22,148 @@ from noteweaver.tools.policy import (
 
 
 # ======================================================================
-# Read-before-write for content targets
+# write_page — navigation for new pages, read before overwrite
 # ======================================================================
 
-class TestReadBeforeWrite:
-    """All content-targeting tools (except write_page, which has its own
-    heavier gate) must have the target page read first."""
-
-    def test_append_section_blocked_without_read(self) -> None:
+class TestWritePageNavigation:
+    def test_new_content_page_blocked_without_navigation(self) -> None:
         ctx = PolicyContext(attended=True)
         v = check_pre_dispatch(
-            "append_section",
-            {"path": "wiki/concepts/attention.md", "heading": "New", "content": "..."},
+            "write_page",
+            {"path": "wiki/concepts/new-topic.md", "content": "..."},
+            ctx,
+        )
+        assert not v.allowed
+        assert "survey" in (v.warning or "").lower() or "search" in (v.warning or "").lower()
+
+    def test_new_content_page_allowed_after_survey_topic(self) -> None:
+        ctx = PolicyContext(attended=True)
+        ctx.record_tool_call("survey_topic", {"topic": "New Topic"})
+        v = check_pre_dispatch(
+            "write_page",
+            {"path": "wiki/concepts/new-topic.md", "content": "..."},
+            ctx,
+        )
+        assert v.allowed
+
+    def test_new_content_page_allowed_after_search(self) -> None:
+        ctx = PolicyContext(attended=True)
+        ctx.record_tool_call("search", {"query": "something"})
+        v = check_pre_dispatch(
+            "write_page",
+            {"path": "wiki/concepts/other.md", "content": "..."},
+            ctx,
+        )
+        assert v.allowed
+
+    def test_overwrite_allowed_after_read(self) -> None:
+        ctx = PolicyContext(attended=True)
+        ctx.record_tool_call("read_page", {"path": "wiki/concepts/existing.md"})
+        v = check_pre_dispatch(
+            "write_page",
+            {"path": "wiki/concepts/existing.md", "content": "---\n---\n"},
+            ctx,
+        )
+        assert v.allowed
+
+    def test_write_allowed_if_page_was_written_in_session(self) -> None:
+        ctx = PolicyContext(attended=True)
+        ctx.record_tool_call("survey_topic", {"topic": "x"})
+        ctx.record_tool_call(
+            "write_page",
+            {"path": "wiki/concepts/new.md", "content": "---\ntitle: A\ntype: note\n---\n"},
+        )
+        v = check_pre_dispatch(
+            "write_page",
+            {"path": "wiki/concepts/new.md", "content": "---\ntitle: A\ntype: note\n---\nbody"},
+            ctx,
+        )
+        assert v.allowed
+
+    def test_structure_targets_skip_navigation_gate(self) -> None:
+        ctx = PolicyContext(attended=True)
+        v = check_pre_dispatch(
+            "write_page",
+            {"path": "wiki/index.md", "content": "..."},
+            ctx,
+        )
+        assert v.allowed
+
+    def test_journal_targets_skip_navigation_gate(self) -> None:
+        ctx = PolicyContext(attended=True)
+        v = check_pre_dispatch(
+            "write_page",
+            {"path": "wiki/journals/2025-04-09.md", "content": "..."},
+            ctx,
+        )
+        assert v.allowed
+
+
+# ======================================================================
+# organize — read-before-write for update_metadata and link
+# ======================================================================
+
+class TestOrganizeReadBeforeWrite:
+    def test_update_metadata_blocked_without_read(self) -> None:
+        ctx = PolicyContext(attended=True)
+        v = check_pre_dispatch(
+            "organize",
+            {
+                "target": "wiki/concepts/attention.md",
+                "action": "update_metadata",
+                "metadata": {"tags": ["ai"]},
+            },
             ctx,
         )
         assert not v.allowed
         assert "read_page" in (v.warning or "")
 
-    def test_append_section_allowed_after_read(self) -> None:
+    def test_update_metadata_allowed_after_read(self) -> None:
         ctx = PolicyContext(attended=True)
         ctx.record_tool_call("read_page", {"path": "wiki/concepts/attention.md"})
         v = check_pre_dispatch(
-            "append_section",
-            {"path": "wiki/concepts/attention.md", "heading": "New", "content": "..."},
+            "organize",
+            {
+                "target": "wiki/concepts/attention.md",
+                "action": "update_metadata",
+                "metadata": {"tags": ["ai"]},
+            },
             ctx,
         )
         assert v.allowed
 
-    def test_append_to_section_blocked_without_read(self) -> None:
+    def test_link_blocked_without_read(self) -> None:
         ctx = PolicyContext(attended=True)
         v = check_pre_dispatch(
-            "append_to_section",
-            {"path": "wiki/concepts/ml.md", "heading": "Basics", "content": "..."},
+            "organize",
+            {
+                "target": "wiki/concepts/a.md",
+                "action": "link",
+                "link_to": "Other Page",
+            },
             ctx,
         )
         assert not v.allowed
 
-    def test_update_frontmatter_blocked_without_read(self) -> None:
+    def test_link_allowed_after_read(self) -> None:
         ctx = PolicyContext(attended=True)
+        ctx.record_tool_call("read_page", {"path": "wiki/concepts/a.md"})
         v = check_pre_dispatch(
-            "update_frontmatter",
-            {"path": "wiki/concepts/ml.md", "fields": {"tags": ["ml"]}},
-            ctx,
-        )
-        assert not v.allowed
-
-    def test_update_frontmatter_allowed_after_read(self) -> None:
-        ctx = PolicyContext(attended=True)
-        ctx.record_tool_call("read_page", {"path": "wiki/concepts/ml.md"})
-        v = check_pre_dispatch(
-            "update_frontmatter",
-            {"path": "wiki/concepts/ml.md", "fields": {"tags": ["ml"]}},
+            "organize",
+            {
+                "target": "wiki/concepts/a.md",
+                "action": "link",
+                "link_to": "Other Page",
+            },
             ctx,
         )
         assert v.allowed
 
-    def test_allowed_if_page_was_written_in_session(self) -> None:
-        """If the agent created the page this session, it knows the content."""
-        ctx = PolicyContext(attended=True)
-        ctx.record_tool_call("find_existing_page", {"title": "New Topic"})
-        ctx.record_tool_call("write_page", {"path": "wiki/concepts/new.md"})
-        v = check_pre_dispatch(
-            "append_section",
-            {"path": "wiki/concepts/new.md", "heading": "Extra", "content": "..."},
-            ctx,
-        )
-        assert v.allowed
-
-    def test_structure_targets_exempt_from_read_before_write(self) -> None:
-        """Structure writes don't need a prior read."""
+    def test_classify_does_not_require_prior_read(self) -> None:
         ctx = PolicyContext(attended=True)
         v = check_pre_dispatch(
-            "append_section",
-            {"path": "wiki/index.md", "heading": "New Hub", "content": "..."},
-            ctx,
-        )
-        assert v.allowed
-
-    def test_journal_targets_exempt(self) -> None:
-        ctx = PolicyContext(attended=True)
-        v = check_pre_dispatch(
-            "append_section",
-            {"path": "wiki/journals/2025-04-09.md", "heading": "Note", "content": "..."},
+            "organize",
+            {"target": "wiki/concepts/x.md", "action": "classify"},
             ctx,
         )
         assert v.allowed
@@ -126,7 +186,7 @@ class TestNoteNoLengthGate:
     def test_short_note_allowed(self) -> None:
         """Notes have no minimum length — they're WIP by definition."""
         ctx = PolicyContext(attended=True)
-        ctx.record_tool_call("find_existing_page", {"title": "Test Note"})
+        ctx.record_tool_call("search", {"query": "note"})
         v = check_pre_dispatch(
             "write_page",
             {"path": "wiki/concepts/test.md", "content": _make_note_content("Brief.")},
@@ -136,7 +196,7 @@ class TestNoteNoLengthGate:
 
     def test_long_note_also_allowed(self) -> None:
         ctx = PolicyContext(attended=True)
-        ctx.record_tool_call("find_existing_page", {"title": "Test Note"})
+        ctx.record_tool_call("search", {"query": "note"})
         v = check_pre_dispatch(
             "write_page",
             {"path": "wiki/concepts/test.md", "content": _make_note_content("x" * 500)},
@@ -163,7 +223,7 @@ def _make_synthesis_content(link_count: int) -> str:
 class TestSynthesisLinkCount:
     def test_synthesis_with_no_links_blocked(self) -> None:
         ctx = PolicyContext(attended=True)
-        ctx.record_tool_call("find_existing_page", {"title": "Comparison"})
+        ctx.record_tool_call("survey_topic", {"topic": "Comparison"})
         v = check_pre_dispatch(
             "write_page",
             {"path": "wiki/synthesis/comparison.md", "content": _make_synthesis_content(0)},
@@ -174,7 +234,7 @@ class TestSynthesisLinkCount:
 
     def test_synthesis_with_one_link_blocked(self) -> None:
         ctx = PolicyContext(attended=True)
-        ctx.record_tool_call("find_existing_page", {"title": "Comparison"})
+        ctx.record_tool_call("survey_topic", {"topic": "Comparison"})
         v = check_pre_dispatch(
             "write_page",
             {"path": "wiki/synthesis/comparison.md", "content": _make_synthesis_content(1)},
@@ -184,7 +244,7 @@ class TestSynthesisLinkCount:
 
     def test_synthesis_with_two_links_allowed(self) -> None:
         ctx = PolicyContext(attended=True)
-        ctx.record_tool_call("find_existing_page", {"title": "Comparison"})
+        ctx.record_tool_call("survey_topic", {"topic": "Comparison"})
         v = check_pre_dispatch(
             "write_page",
             {"path": "wiki/synthesis/comparison.md", "content": _make_synthesis_content(2)},
@@ -194,7 +254,7 @@ class TestSynthesisLinkCount:
 
     def test_synthesis_with_many_links_allowed(self) -> None:
         ctx = PolicyContext(attended=True)
-        ctx.record_tool_call("find_existing_page", {"title": "Comparison"})
+        ctx.record_tool_call("survey_topic", {"topic": "Comparison"})
         v = check_pre_dispatch(
             "write_page",
             {"path": "wiki/synthesis/comparison.md", "content": _make_synthesis_content(5)},
@@ -231,12 +291,16 @@ class TestPreferencesGate:
         assert v.warning is not None
         assert "must tell the user" in v.warning.lower() or "must" in v.warning.lower()
 
-    def test_prefs_append_allowed_with_warning(self) -> None:
+    def test_prefs_organize_metadata_allowed_with_warning_after_read(self) -> None:
         ctx = PolicyContext(attended=True)
         ctx.record_tool_call("read_page", {"path": ".schema/preferences.md"})
         v = check_pre_dispatch(
-            "append_section",
-            {"path": ".schema/preferences.md", "heading": "New", "content": "..."},
+            "organize",
+            {
+                "target": ".schema/preferences.md",
+                "action": "update_metadata",
+                "metadata": {"tags": ["x"]},
+            },
             ctx,
         )
         assert v.allowed
@@ -259,7 +323,7 @@ class TestPreferencesGate:
 
 class TestHelpers:
     def test_extract_type_note(self) -> None:
-        assert _extract_type(_make_note_content(100)) == "note"
+        assert _extract_type(_make_note_content("x" * 100)) == "note"
 
     def test_extract_type_synthesis(self) -> None:
         assert _extract_type(_make_synthesis_content(2)) == "synthesis"
@@ -279,3 +343,6 @@ class TestHelpers:
         assert len(matches) == 2
         assert "Attention" in matches
         assert "Transformer Architecture" in matches
+
+    def test_min_synthesis_links_constant(self) -> None:
+        assert MIN_SYNTHESIS_LINKS == 2

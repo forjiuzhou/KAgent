@@ -357,10 +357,10 @@ class TestGenerateOrganizePlan:
                 tool_calls=[
                     ToolCall(
                         id="tc1",
-                        name="append_section",
+                        name="capture",
                         arguments=json.dumps({
-                            "path": "wiki/concepts/react-hooks.md",
-                            "heading": "useState",
+                            "target": "wiki/concepts/react-hooks.md",
+                            "title": "useState",
                             "content": "useState manages local component state.",
                         }),
                     ),
@@ -372,8 +372,8 @@ class TestGenerateOrganizePlan:
         plan = agent.generate_organize_plan()
         assert plan is not None
         assert len(plan) == 1
-        assert plan[0]["name"] == "append_section"
-        assert "react-hooks" in plan[0]["arguments"]["path"]
+        assert plan[0]["name"] == "capture"
+        assert "react-hooks" in plan[0]["arguments"]["target"]
 
     def test_plan_persisted_to_disk(self, agent: KnowledgeAgent) -> None:
         agent.messages.append({"role": "user", "content": "Important content"})
@@ -383,8 +383,14 @@ class TestGenerateOrganizePlan:
             CompletionResult(
                 content=None,
                 tool_calls=[
-                    ToolCall(id="tc1", name="append_log",
-                             arguments=json.dumps({"entry_type": "test", "title": "X"})),
+                    ToolCall(
+                        id="tc1",
+                        name="capture",
+                        arguments=json.dumps({
+                            "title": "X",
+                            "content": "Session note from test.",
+                        }),
+                    ),
                 ],
             ),
             {"role": "assistant", "tool_calls": []},
@@ -407,22 +413,43 @@ class TestFormatOrganizePlan:
     def test_format_write_page(self, agent: KnowledgeAgent) -> None:
         plan = [{"name": "write_page", "arguments": {"path": "wiki/concepts/test.md", "content": "..."}}]
         text = agent.format_organize_plan(plan)
-        assert "新建页面" in text
+        assert "写入页面" in text
         assert "wiki/concepts/test.md" in text
 
-    def test_format_append_section(self, agent: KnowledgeAgent) -> None:
-        plan = [{"name": "append_section", "arguments": {"path": "wiki/concepts/x.md", "heading": "New"}}]
+    def test_format_capture_append(self, agent: KnowledgeAgent) -> None:
+        plan = [{
+            "name": "capture",
+            "arguments": {
+                "target": "wiki/concepts/x.md",
+                "title": "New",
+                "content": "body",
+            },
+        }]
         text = agent.format_organize_plan(plan)
-        assert "添加 section" in text
+        assert "追加" in text
 
     def test_format_update_frontmatter(self, agent: KnowledgeAgent) -> None:
-        plan = [{"name": "update_frontmatter", "arguments": {"path": "wiki/concepts/x.md", "fields": {"tags": ["a"]}}}]
+        plan = [{
+            "name": "organize",
+            "arguments": {
+                "target": "wiki/concepts/x.md",
+                "action": "update_metadata",
+                "metadata": {"tags": ["a"]},
+            },
+        }]
         text = agent.format_organize_plan(plan)
         assert "更新" in text
         assert "tags" in text
 
     def test_format_add_related_link(self, agent: KnowledgeAgent) -> None:
-        plan = [{"name": "add_related_link", "arguments": {"path": "wiki/concepts/x.md", "title": "Y"}}]
+        plan = [{
+            "name": "organize",
+            "arguments": {
+                "target": "wiki/concepts/x.md",
+                "action": "link",
+                "link_to": "Y",
+            },
+        }]
         text = agent.format_organize_plan(plan)
         assert "添加链接" in text
 
@@ -439,10 +466,10 @@ class TestExecuteOrganizePlan:
         # Policy requires the page to be read before editing
         agent._policy_ctx.pages_read.append("wiki/concepts/test.md")
         plan = [{
-            "name": "append_section",
+            "name": "capture",
             "arguments": {
-                "path": "wiki/concepts/test.md",
-                "heading": "New Info",
+                "target": "wiki/concepts/test.md",
+                "title": "New Info",
                 "content": "Some new content.",
             },
         }]
@@ -456,10 +483,11 @@ class TestExecuteOrganizePlan:
         # Policy requires the page to be read before editing
         agent._policy_ctx.pages_read.append("wiki/concepts/test.md")
         plan = [{
-            "name": "update_frontmatter",
+            "name": "organize",
             "arguments": {
-                "path": "wiki/concepts/test.md",
-                "fields": {"tags": ["updated-tag"]},
+                "target": "wiki/concepts/test.md",
+                "action": "update_metadata",
+                "metadata": {"tags": ["updated-tag"]},
             },
         }]
         result = agent.execute_organize_plan(plan)
@@ -473,11 +501,11 @@ class TestExecuteOrganizePlan:
         """Policy blocks editing a page that wasn't read in this session."""
         vault.write_file("wiki/concepts/test.md", _page("Test", summary="A test page"))
         plan = [{
-            "name": "append_section",
+            "name": "organize",
             "arguments": {
-                "path": "wiki/concepts/test.md",
-                "heading": "Sneaky",
-                "content": "Blind edit.",
+                "target": "wiki/concepts/test.md",
+                "action": "update_metadata",
+                "metadata": {"tags": ["sneaky"]},
             },
         }]
         result = agent.execute_organize_plan(plan)
@@ -493,9 +521,15 @@ class TestExecuteOrganizePlan:
 
     def test_execute_loads_from_disk(self, vault: Vault, agent: KnowledgeAgent) -> None:
         vault.write_file("wiki/concepts/test.md", _page("Test", summary="A test page"))
+        vault.write_file("wiki/concepts/other.md", _page("Other", summary="Linked page"))
+        agent._policy_ctx.pages_read.append("wiki/concepts/test.md")
         plan = [{
-            "name": "add_related_link",
-            "arguments": {"path": "wiki/concepts/test.md", "title": "Other"},
+            "name": "organize",
+            "arguments": {
+                "target": "wiki/concepts/test.md",
+                "action": "link",
+                "link_to": "Other",
+            },
         }]
         agent._save_pending_plan(plan)
         result = agent.execute_organize_plan()
@@ -509,7 +543,10 @@ class TestExecuteOrganizePlan:
     def test_execute_advances_boundary(self, agent: KnowledgeAgent) -> None:
         agent.messages.append({"role": "user", "content": "test"})
         agent.messages.append({"role": "assistant", "content": "reply"})
-        plan = [{"name": "vault_stats", "arguments": {}}]
+        plan = [{
+            "name": "restructure",
+            "arguments": {"scope": "vault", "action": "audit"},
+        }]
         old_boundary = agent._last_organize_boundary
         agent.execute_organize_plan(plan)
         assert agent._last_organize_boundary > old_boundary
@@ -517,9 +554,24 @@ class TestExecuteOrganizePlan:
     def test_multiple_actions(self, vault: Vault, agent: KnowledgeAgent) -> None:
         vault.write_file("wiki/concepts/a.md", _page("A", summary="Page A"))
         vault.write_file("wiki/concepts/b.md", _page("B", summary="Page B"))
+        agent._policy_ctx.pages_read.extend(["wiki/concepts/a.md", "wiki/concepts/b.md"])
         plan = [
-            {"name": "add_related_link", "arguments": {"path": "wiki/concepts/a.md", "title": "B"}},
-            {"name": "add_related_link", "arguments": {"path": "wiki/concepts/b.md", "title": "A"}},
+            {
+                "name": "organize",
+                "arguments": {
+                    "target": "wiki/concepts/a.md",
+                    "action": "link",
+                    "link_to": "B",
+                },
+            },
+            {
+                "name": "organize",
+                "arguments": {
+                    "target": "wiki/concepts/b.md",
+                    "action": "link",
+                    "link_to": "A",
+                },
+            },
         ]
         result = agent.execute_organize_plan(plan)
         assert "2 项操作" in result
@@ -635,13 +687,19 @@ class TestWriteInterception:
             (CompletionResult(content=None, tool_calls=[
                 ToolCall(id="tc1", name="read_page",
                          arguments=json.dumps({"path": "wiki/index.md"})),
-                ToolCall(id="tc2", name="append_log",
-                         arguments=json.dumps({"entry_type": "test", "title": "X"})),
+                ToolCall(
+                    id="tc2",
+                    name="capture",
+                    arguments=json.dumps({"title": "X", "content": "Quick capture."}),
+                ),
             ]), {"role": "assistant", "tool_calls": [
                 {"id": "tc1", "type": "function",
                  "function": {"name": "read_page", "arguments": json.dumps({"path": "wiki/index.md"})}},
                 {"id": "tc2", "type": "function",
-                 "function": {"name": "append_log", "arguments": json.dumps({"entry_type": "test", "title": "X"})}},
+                 "function": {
+                     "name": "capture",
+                     "arguments": json.dumps({"title": "X", "content": "Quick capture."}),
+                 }},
             ]}),
             (CompletionResult(content="Done."), {"role": "assistant", "content": "Done."}),
         ]
@@ -652,7 +710,7 @@ class TestWriteInterception:
         plan = agent._load_pending_plan()
         assert plan is not None
         assert len(plan) == 1
-        assert plan[0]["name"] == "append_log"
+        assert plan[0]["name"] == "capture"
 
     def test_no_writes_no_plan(self, vault: Vault) -> None:
         from noteweaver.adapters.provider import CompletionResult
@@ -669,17 +727,15 @@ class TestWriteInterception:
 class TestIsWriteTool:
     def test_read_tools(self) -> None:
         agent = KnowledgeAgent.__new__(KnowledgeAgent)
-        for tool in ["read_page", "list_page_summaries", "search_vault",
-                      "vault_stats", "get_backlinks", "find_existing_page",
-                      "read_transcript", "fetch_url"]:
+        for tool in [
+            "read_page", "list_pages", "search", "survey_topic",
+            "get_backlinks", "fetch_url",
+        ]:
             assert not agent._is_write_tool(tool), f"{tool} should be read"
 
     def test_write_tools(self) -> None:
         agent = KnowledgeAgent.__new__(KnowledgeAgent)
-        for tool in ["write_page", "append_section", "append_to_section",
-                      "update_frontmatter", "add_related_link", "append_log",
-                      "save_source", "archive_page", "import_files",
-                      "promote_insight", "apply_organize_plan", "merge_tags"]:
+        for tool in ["write_page", "capture", "ingest", "organize", "restructure"]:
             assert agent._is_write_tool(tool), f"{tool} should be write"
 
 
@@ -710,9 +766,9 @@ class TestProgressiveDisclosure:
         """A page that already has inbound links needs no disclosure fix."""
         vault.write_file("wiki/concepts/a.md", _page("A", related="- [[B]]"))
         vault.write_file("wiki/concepts/b.md", _page("B", related="- [[A]]"))
-        plan = [{"name": "append_section", "arguments": {
-            "path": "wiki/concepts/a.md",
-            "heading": "New",
+        plan = [{"name": "capture", "arguments": {
+            "target": "wiki/concepts/a.md",
+            "title": "New",
             "content": "x",
         }}]
         report = agent._ensure_progressive_disclosure(plan)
@@ -772,7 +828,7 @@ class TestTagNormalization:
 
 
 # ======================================================================
-# Stale import hint in list_page_summaries
+# Stale import hint in list_pages
 # ======================================================================
 
 
@@ -803,7 +859,7 @@ class TestReadPageByTitle:
         from noteweaver.tools.definitions import dispatch_tool
         result = dispatch_tool(vault, "read_page", {"path": "Nonexistent Page"})
         assert "Error" in result
-        assert "find_existing_page" in result or "No page" in result
+        assert "search" in result or "list_pages" in result or "No page" in result
 
     def test_path_takes_priority(self, vault: Vault) -> None:
         from noteweaver.tools.definitions import dispatch_tool
@@ -843,7 +899,7 @@ class TestTitleUniqueness:
 
 
 # ======================================================================
-# merge_tags tool
+# restructure(action='merge_tags')
 # ======================================================================
 
 
@@ -853,7 +909,16 @@ class TestMergeTags:
         vault.write_file("wiki/concepts/a.md", _page("A", tags=["ml"]))
         vault.write_file("wiki/concepts/b.md", _page("B", tags=["ml", "dl"]))
         vault.write_file("wiki/concepts/c.md", _page("C", tags=["dl"]))
-        result = dispatch_tool(vault, "merge_tags", {"old_tag": "ml", "new_tag": "machine-learning"})
+        result = dispatch_tool(
+            vault,
+            "restructure",
+            {
+                "scope": "vault",
+                "action": "merge_tags",
+                "old_tag": "ml",
+                "new_tag": "machine-learning",
+            },
+        )
         assert "2 file(s)" in result
         from noteweaver.frontmatter import extract_frontmatter
         a = extract_frontmatter(vault.read_file("wiki/concepts/a.md"))
@@ -865,7 +930,16 @@ class TestMergeTags:
     def test_merge_deduplicates(self, vault: Vault) -> None:
         from noteweaver.tools.definitions import dispatch_tool
         vault.write_file("wiki/concepts/a.md", _page("A", tags=["ml", "machine-learning"]))
-        result = dispatch_tool(vault, "merge_tags", {"old_tag": "ml", "new_tag": "machine-learning"})
+        result = dispatch_tool(
+            vault,
+            "restructure",
+            {
+                "scope": "vault",
+                "action": "merge_tags",
+                "old_tag": "ml",
+                "new_tag": "machine-learning",
+            },
+        )
         assert "1 file(s)" in result
         from noteweaver.frontmatter import extract_frontmatter
         a = extract_frontmatter(vault.read_file("wiki/concepts/a.md"))
@@ -873,12 +947,30 @@ class TestMergeTags:
 
     def test_merge_nonexistent_tag(self, vault: Vault) -> None:
         from noteweaver.tools.definitions import dispatch_tool
-        result = dispatch_tool(vault, "merge_tags", {"old_tag": "nope", "new_tag": "something"})
+        result = dispatch_tool(
+            vault,
+            "restructure",
+            {
+                "scope": "vault",
+                "action": "merge_tags",
+                "old_tag": "nope",
+                "new_tag": "something",
+            },
+        )
         assert "No pages" in result
 
     def test_merge_same_tag(self, vault: Vault) -> None:
         from noteweaver.tools.definitions import dispatch_tool
-        result = dispatch_tool(vault, "merge_tags", {"old_tag": "ml", "new_tag": "ML"})
+        result = dispatch_tool(
+            vault,
+            "restructure",
+            {
+                "scope": "vault",
+                "action": "merge_tags",
+                "old_tag": "ml",
+                "new_tag": "ML",
+            },
+        )
         assert "already the same" in result
 
 
@@ -933,13 +1025,13 @@ class TestStaleImportHint:
     def test_no_imported_no_hint(self, vault: Vault) -> None:
         from noteweaver.tools.definitions import dispatch_tool
         vault.write_file("wiki/concepts/clean.md", _page("Clean", tags=["ml"]))
-        result = dispatch_tool(vault, "list_page_summaries", {"directory": "wiki/concepts"})
+        result = dispatch_tool(vault, "list_pages", {"directory": "wiki/concepts"})
         assert "still tagged [imported]" not in result
 
     def test_imported_shows_hint(self, vault: Vault) -> None:
         from noteweaver.tools.definitions import dispatch_tool
         vault.write_file("wiki/concepts/imp.md", _page("Imp", tags=["imported"]))
-        result = dispatch_tool(vault, "list_page_summaries", {"directory": "wiki/concepts"})
+        result = dispatch_tool(vault, "list_pages", {"directory": "wiki/concepts"})
         assert "1 file(s) still tagged [imported]" in result
 
 
@@ -956,7 +1048,7 @@ class TestTitleUniquenessGuidance:
 
     def test_rejection_suggests_append(self, vault: Vault) -> None:
         vault.write_file("wiki/concepts/a.md", _page("Attention Mechanism"))
-        with pytest.raises(PermissionError, match="append_section"):
+        with pytest.raises(PermissionError, match="update it with"):
             vault.write_file("wiki/concepts/b.md", _page("Attention Mechanism"))
 
     def test_rejection_mentions_existing_path(self, vault: Vault) -> None:
@@ -973,7 +1065,7 @@ class TestTitleUniquenessGuidance:
         })
         assert "Error" in result
         assert "read_page" in result
-        assert "append_section" in result
+        assert "append_section" in result or "capture" in result
 
     def test_case_insensitive_rejection(self, vault: Vault) -> None:
         vault.write_file("wiki/concepts/a.md", _page("React Hooks"))
@@ -982,7 +1074,7 @@ class TestTitleUniquenessGuidance:
 
 
 # ======================================================================
-# merge_tags interception and format_organize_plan
+# restructure(merge_tags) interception and format_organize_plan
 # ======================================================================
 
 
@@ -990,14 +1082,18 @@ class TestMergeTagsInterception:
     def test_merge_tags_intercepted_as_plan(self, vault: Vault) -> None:
         from noteweaver.adapters.provider import CompletionResult, ToolCall
         provider = MagicMock()
+        merge_args = json.dumps({
+            "scope": "vault",
+            "action": "merge_tags",
+            "old_tag": "ml",
+            "new_tag": "machine-learning",
+        })
         provider.chat_completion.side_effect = [
             (CompletionResult(content=None, tool_calls=[
-                ToolCall(id="tc1", name="merge_tags",
-                         arguments=json.dumps({"old_tag": "ml", "new_tag": "machine-learning"})),
+                ToolCall(id="tc1", name="restructure", arguments=merge_args),
             ]), {"role": "assistant", "tool_calls": [
                 {"id": "tc1", "type": "function",
-                 "function": {"name": "merge_tags",
-                              "arguments": json.dumps({"old_tag": "ml", "new_tag": "machine-learning"})}}
+                 "function": {"name": "restructure", "arguments": merge_args}}
             ]}),
             (CompletionResult(content="I'll merge the tags after your approval."),
              {"role": "assistant", "content": "I'll merge the tags after your approval."}),
@@ -1005,16 +1101,25 @@ class TestMergeTagsInterception:
         agent = KnowledgeAgent(vault=vault, provider=provider)
         responses = list(agent.chat("Merge ml into machine-learning"))
         assert any("📋" in r for r in responses)
-        assert any("merge_tags" in r for r in responses)
+        assert any("restructure" in r for r in responses)
         plan = agent._load_pending_plan()
         assert plan is not None
         assert len(plan) == 1
-        assert plan[0]["name"] == "merge_tags"
+        assert plan[0]["name"] == "restructure"
+        assert plan[0]["arguments"].get("action") == "merge_tags"
 
     def test_format_merge_tags(self, vault: Vault) -> None:
         provider = MagicMock()
         agent = KnowledgeAgent(vault=vault, provider=provider)
-        plan = [{"name": "merge_tags", "arguments": {"old_tag": "ml", "new_tag": "machine-learning"}}]
+        plan = [{
+            "name": "restructure",
+            "arguments": {
+                "scope": "vault",
+                "action": "merge_tags",
+                "old_tag": "ml",
+                "new_tag": "machine-learning",
+            },
+        }]
         text = agent.format_organize_plan(plan)
         assert "合并标签" in text
         assert "ml" in text
