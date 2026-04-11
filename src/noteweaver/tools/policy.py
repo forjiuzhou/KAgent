@@ -100,6 +100,7 @@ TOOL_TIERS: dict[str, RiskTier] = {
     "get_backlinks": RiskTier.READ,
     "find_existing_page": RiskTier.READ,
     "read_transcript": RiskTier.READ,
+    "list_directory": RiskTier.READ,
     "fetch_url": RiskTier.READ,
     "append_to_section": RiskTier.LOW_WRITE,
     "update_frontmatter": RiskTier.LOW_WRITE,

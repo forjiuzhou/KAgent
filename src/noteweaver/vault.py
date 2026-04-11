@@ -579,6 +579,29 @@ class Vault:
             if p.is_file()
         )
 
+    def list_all_files(self, rel_dir: str = ".", pattern: str = "*") -> list[dict]:
+        """List all files under a vault subdirectory with metadata.
+
+        Returns dicts with path, size_bytes, and suffix for each file.
+        Excludes .meta/ and .git/ directories.
+        """
+        base = self._resolve(rel_dir)
+        if not base.is_dir():
+            return []
+        results = []
+        for p in sorted(base.rglob(pattern)):
+            if not p.is_file():
+                continue
+            rel = str(p.relative_to(self.root))
+            if rel.startswith(".meta/") or rel.startswith(".git/"):
+                continue
+            results.append({
+                "path": rel,
+                "size_bytes": p.stat().st_size,
+                "suffix": p.suffix,
+            })
+        return results
+
     def search_content(self, query: str, directory: str = "wiki") -> list[dict]:
         """Full-text search using SQLite FTS5 index.
 

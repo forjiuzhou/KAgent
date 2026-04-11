@@ -550,6 +550,40 @@ TOOL_SCHEMAS: list[dict] = [
     {
         "type": "function",
         "function": {
+            "name": "list_directory",
+            "description": (
+                "List ALL files in a vault directory — including files without "
+                "frontmatter, non-markdown files, images, attachments, etc. "
+                "Unlike list_page_summaries (which only shows pages with YAML "
+                "frontmatter), this tool shows every file with its size and type. "
+                "Use this to discover raw source files, imports, or any content "
+                "that list_page_summaries cannot see."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "directory": {
+                        "type": "string",
+                        "description": (
+                            "Directory to list, relative to vault root. "
+                            "Examples: 'sources', 'sources/typora', 'wiki/concepts'. "
+                            "Default: '.' (vault root)"
+                        ),
+                        "default": ".",
+                    },
+                    "pattern": {
+                        "type": "string",
+                        "description": "Glob pattern to filter files. Default: '*' (all files). Use '*.md' for markdown only.",
+                        "default": "*",
+                    },
+                },
+                "required": [],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "fetch_url",
             "description": (
                 "Fetch a web page and extract its main content as markdown. "
@@ -605,17 +639,39 @@ def handle_read_page(vault: Vault, path: str, max_chars: int = 0) -> str:
 
 
 def handle_list_page_summaries(vault: Vault, directory: str = "wiki") -> str:
+    from noteweaver.frontmatter import extract_frontmatter
+
+    all_md_files = vault.list_files(directory)
     results = vault.read_frontmatters(directory)
-    if not results:
-        return f"No pages with frontmatter in {directory}/"
+    fm_paths = {r["path"] for r in results}
+
+    no_fm_files = [f for f in all_md_files if f not in fm_paths]
+
+    if not results and not no_fm_files:
+        return f"No files found in {directory}/"
+
     lines = []
     imported_count = 0
-    for r in results:
-        tags_str = f"  tags: {', '.join(r['tags'])}" if r['tags'] else ""
-        summary_str = f"\n    {r['summary']}" if r['summary'] else ""
-        lines.append(f"- [{r['type']}] **{r['title']}** ({r['path']}){tags_str}{summary_str}")
-        if "imported" in (r.get("tags") or []):
-            imported_count += 1
+
+    if results:
+        for r in results:
+            tags_str = f"  tags: {', '.join(r['tags'])}" if r['tags'] else ""
+            summary_str = f"\n    {r['summary']}" if r['summary'] else ""
+            lines.append(f"- [{r['type']}] **{r['title']}** ({r['path']}){tags_str}{summary_str}")
+            if "imported" in (r.get("tags") or []):
+                imported_count += 1
+
+    if no_fm_files:
+        lines.append("")
+        lines.append(f"Also found {len(no_fm_files)} file(s) without frontmatter:")
+        for f in no_fm_files:
+            lines.append(f"  - {f}")
+        lines.append("")
+        lines.append(
+            "These files are not structured wiki pages. "
+            "Use read_page(path) to read them, or list_directory to see all files including non-markdown."
+        )
+
     result = "\n".join(lines)
     if imported_count:
         result += (
@@ -1131,6 +1187,39 @@ def handle_merge_tags(vault: Vault, old_tag: str, new_tag: str) -> str:
     )
 
 
+def handle_list_directory(vault: Vault, directory: str = ".", pattern: str = "*") -> str:
+    """List all files in a directory, regardless of frontmatter."""
+    files = vault.list_all_files(directory, pattern)
+    if not files:
+        base = vault._resolve(directory)
+        if not base.is_dir():
+            return f"Error: directory not found: {directory}/"
+        return f"No files found in {directory}/"
+
+    def _fmt_size(n: int) -> str:
+        if n < 1024:
+            return f"{n}B"
+        if n < 1024 * 1024:
+            return f"{n / 1024:.1f}KB"
+        return f"{n / (1024 * 1024):.1f}MB"
+
+    lines = [f"Files in {directory}/ ({len(files)} total):"]
+    by_suffix: dict[str, int] = {}
+    for f in files:
+        by_suffix[f["suffix"]] = by_suffix.get(f["suffix"], 0) + 1
+        lines.append(f"  {f['path']}  ({_fmt_size(f['size_bytes'])})")
+
+    lines.append("")
+    type_summary = ", ".join(f"{ext or '(no ext)'}: {cnt}" for ext, cnt in sorted(by_suffix.items()))
+    lines.append(f"File types: {type_summary}")
+    lines.append("")
+    lines.append(
+        "Tip: use read_page(path) to read any file by path, "
+        "even files without frontmatter."
+    )
+    return "\n".join(lines)
+
+
 def handle_fetch_url(vault: Vault, url: str) -> str:
     try:
         import httpx
@@ -1199,6 +1288,7 @@ TOOL_HANDLERS: dict[str, Any] = {
     "read_transcript": handle_read_transcript,
     "promote_insight": handle_promote_insight,
     "merge_tags": handle_merge_tags,
+    "list_directory": handle_list_directory,
     "fetch_url": handle_fetch_url,
 }
 
