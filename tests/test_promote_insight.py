@@ -144,3 +144,36 @@ class TestPromoteInsight:
             "target_type": "journal",
         })
         assert "Error" in result
+
+    def test_numeric_title_in_existing_page(self, vault: Vault) -> None:
+        """Pages with numeric titles (from YAML parsing) should not crash."""
+        page = (
+            "---\ntitle: 2026\ntype: note\n"
+            "summary: Year summary\ntags: [journal]\n"
+            "created: 2026-01-01\nupdated: 2026-01-01\n---\n\n"
+            "# 2026\n\nYear overview.\n\n## Related\n"
+        )
+        vault.write_file("wiki/concepts/year-2026.md", page)
+
+        result = dispatch_tool(vault, "promote_insight", {
+            "title": "2026 Highlights",
+            "content": "Key events of the year.",
+        })
+        assert "OK" in result
+
+    def test_numeric_tags_in_existing_page(self, vault: Vault) -> None:
+        """Pages with numeric tags (from YAML parsing) should not crash."""
+        page = (
+            "---\ntitle: Year Review\ntype: note\n"
+            "summary: Review\ntags: [2026, review]\n"
+            "created: 2026-01-01\nupdated: 2026-01-01\n---\n\n"
+            "# Year Review\n\nContent.\n"
+        )
+        vault.write_file("wiki/concepts/year-review.md", page)
+
+        result = dispatch_tool(vault, "promote_insight", {
+            "title": "Year Review",
+            "content": "Additional review insight.",
+        })
+        assert "OK" in result
+        assert "existing page" in result

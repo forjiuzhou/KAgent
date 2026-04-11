@@ -27,6 +27,18 @@ class TestPageSummary:
         assert ps.summary == ""
         assert ps.tags == []
 
+    def test_numeric_title_coerced_to_str(self) -> None:
+        """YAML parses bare numbers as int; PageSummary should coerce to str."""
+        content = "---\ntitle: 2026\ntype: note\nsummary: 42\ntags: [2026, review]\n---\n# Body"
+        ps = page_summary_from_file("wiki/concepts/year.md", content)
+        assert ps is not None
+        assert ps.title == "2026"
+        assert isinstance(ps.title, str)
+        assert ps.summary == "42"
+        assert isinstance(ps.summary, str)
+        assert ps.tags == ["2026", "review"]
+        assert all(isinstance(t, str) for t in ps.tags)
+
 
 class TestTagValidation:
     def test_tags_must_be_list(self) -> None:

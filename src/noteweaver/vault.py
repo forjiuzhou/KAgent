@@ -404,10 +404,10 @@ class Vault:
         tags = fm.get("tags", [])
         self.search.upsert(
             path=rel_path,
-            title=fm.get("title", ""),
-            type=fm.get("type", ""),
-            summary=fm.get("summary", ""),
-            tags=", ".join(tags) if isinstance(tags, list) else str(tags),
+            title=str(fm.get("title", "")),
+            type=str(fm.get("type", "")),
+            summary=str(fm.get("summary", "")),
+            tags=", ".join(str(t) for t in tags) if isinstance(tags, list) else str(tags),
             body=content,
         )
 
@@ -422,10 +422,10 @@ class Vault:
                 tags = fm.get("tags", [])
                 pages.append({
                     "path": rel_path,
-                    "title": fm.get("title", ""),
-                    "type": fm.get("type", ""),
-                    "summary": fm.get("summary", ""),
-                    "tags": ", ".join(tags) if isinstance(tags, list) else str(tags),
+                    "title": str(fm.get("title", "")),
+                    "type": str(fm.get("type", "")),
+                    "summary": str(fm.get("summary", "")),
+                    "tags": ", ".join(str(t) for t in tags) if isinstance(tags, list) else str(tags),
                     "body": content,
                 })
             except (FileNotFoundError, PermissionError):
@@ -457,10 +457,10 @@ class Vault:
     _TAG_NORMALIZE_RE = re.compile(r"[^a-z0-9\u4e00-\u9fff\u3040-\u309f\u30a0-\u30ff-]")
 
     @classmethod
-    def normalize_tag(cls, tag: str) -> str:
+    def normalize_tag(cls, tag: str | int | float) -> str:
         """Normalize a tag: lowercase, replace spaces/underscores with hyphens,
         strip non-alphanumeric characters (preserving CJK)."""
-        t = tag.lower().strip().replace(" ", "-").replace("_", "-")
+        t = str(tag).lower().strip().replace(" ", "-").replace("_", "-")
         t = cls._TAG_NORMALIZE_RE.sub("", t)
         t = re.sub(r"-{2,}", "-", t).strip("-")
         return t
@@ -486,7 +486,7 @@ class Vault:
 
     def resolve_title(self, title: str) -> str | None:
         """Resolve a page title to its path. Returns None if not found."""
-        title_lower = title.lower()
+        title_lower = str(title).lower()
         for rel_path in self.list_files("wiki"):
             try:
                 content = self.read_file(rel_path)
@@ -494,7 +494,7 @@ class Vault:
                 continue
             from noteweaver.frontmatter import extract_frontmatter
             fm = extract_frontmatter(content)
-            if fm and fm.get("title", "").lower() == title_lower:
+            if fm and str(fm.get("title", "")).lower() == title_lower:
                 return rel_path
         return None
 
@@ -866,9 +866,9 @@ class Vault:
             if ptype == "hub":
                 hubs.add(title)
                 for t in (fm.get("tags") or []):
-                    hub_tags.add(t.lower())
+                    hub_tags.add(str(t).lower())
             for t in (fm.get("tags") or []):
-                tag_pages.setdefault(t, []).append(path)
+                tag_pages.setdefault(str(t), []).append(path)
 
         # 1. Stale imports: tagged [imported] with updated > 7 days ago
         for p in all_pages:
@@ -888,7 +888,7 @@ class Vault:
         for tag, pages in tag_pages.items():
             if tag in ("imported", "journal", "pinned"):
                 continue
-            if len(pages) >= 3 and tag.lower() not in hub_tags:
+            if len(pages) >= 3 and str(tag).lower() not in hub_tags:
                 hub_candidates.append({
                     "tag": tag,
                     "page_count": len(pages),
@@ -1452,7 +1452,7 @@ class Vault:
 
             # Create/update hubs
             for hub_name, page_titles in hubs_to_create.items():
-                hub_slug = hub_name.lower().replace(" ", "-")
+                hub_slug = str(hub_name).lower().replace(" ", "-")
                 hub_slug = re.sub(r"[^a-z0-9-]", "", hub_slug)
                 hub_slug = re.sub(r"-{2,}", "-", hub_slug).strip("-")[:60]
                 hub_path = f"wiki/concepts/{hub_slug}.md"

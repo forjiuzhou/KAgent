@@ -137,7 +137,7 @@ class PolicyContext:
         if name == "find_existing_page":
             title = args.get("title", "")
             if title:
-                self.dedup_checked_titles.add(title.lower())
+                self.dedup_checked_titles.add(str(title).lower())
 
         if name in ("list_page_summaries", "read_page", "search_vault"):
             self.navigation_done = True

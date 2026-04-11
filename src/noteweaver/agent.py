@@ -1350,7 +1350,7 @@ class KnowledgeAgent:
                 written_paths.add(path)
             if name == "promote_insight":
                 title = args.get("title", "")
-                slug = title.lower().replace(" ", "-").replace("/", "-")
+                slug = str(title).lower().replace(" ", "-").replace("/", "-")
                 import re as _re
                 slug = _re.sub(r"[^a-z0-9-]", "", slug)[:60]
                 target_type = args.get("target_type", "note")
@@ -1418,7 +1418,7 @@ class KnowledgeAgent:
                         for h in hubs.values()
                     )
                     if len(pages_with_tag) >= 3 and not hub_exists:
-                        hub_slug = tag.lower().replace(" ", "-")
+                        hub_slug = str(tag).lower().replace(" ", "-")
                         import re as _re
                         hub_slug = _re.sub(r"[^a-z0-9-]", "", hub_slug)
                         hub_slug = _re.sub(r"-{2,}", "-", hub_slug).strip("-")[:60]
@@ -1434,19 +1434,20 @@ class KnowledgeAgent:
                             page_titles.append(title)
 
                         links_block = "\n".join(f"- [[{pt}]]" for pt in page_titles[:10])
+                        tag_str = str(tag)
                         hub_content = (
-                            f"---\ntitle: {tag.title()}\ntype: hub\n"
-                            f"summary: Hub for {tag} topics\n"
-                            f"tags: [{tag}]\n"
+                            f"---\ntitle: {tag_str.title()}\ntype: hub\n"
+                            f"summary: Hub for {tag_str} topics\n"
+                            f"tags: [{tag_str}]\n"
                             f"created: {today}\nupdated: {today}\n---\n\n"
-                            f"# {tag.title()}\n\n"
+                            f"# {tag_str.title()}\n\n"
                             f"## Pages\n\n{links_block}\n\n"
                             f"## Related\n"
                         )
                         try:
                             self.vault.write_file(hub_path, hub_content)
                             report.append(
-                                f"✓ 新建 hub「{tag.title()}」（{len(page_titles)} 页面）"
+                                f"✓ 新建 hub「{tag_str.title()}」（{len(page_titles)} 页面）"
                             )
                             linked = True
                         except Exception:

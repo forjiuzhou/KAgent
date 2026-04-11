@@ -53,14 +53,17 @@ def page_summary_from_file(rel_path: str, content: str) -> PageSummary | None:
     fm = extract_frontmatter(content)
     if fm is None:
         return None
+    raw_tags = fm.get("tags", []) or []
+    raw_sources = fm.get("sources", []) or []
+    raw_related = fm.get("related", []) or []
     return PageSummary(
         path=rel_path,
-        title=fm.get("title", ""),
-        type=fm.get("type", ""),
-        summary=fm.get("summary", ""),
-        tags=fm.get("tags", []) or [],
-        sources=fm.get("sources", []) or [],
-        related=fm.get("related", []) or [],
+        title=str(fm.get("title", "")),
+        type=str(fm.get("type", "")),
+        summary=str(fm.get("summary", "")),
+        tags=[str(t) for t in raw_tags] if isinstance(raw_tags, list) else [],
+        sources=[str(s) for s in raw_sources] if isinstance(raw_sources, list) else [],
+        related=[str(r) for r in raw_related] if isinstance(raw_related, list) else [],
     )
 
 

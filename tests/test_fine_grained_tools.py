@@ -122,6 +122,24 @@ class TestAppendToSection:
         assert "Error" in result
         assert "not found" in result
 
+    def test_page_with_numeric_title_and_tags(self, vault: Vault) -> None:
+        """Pages whose YAML title/tags parse as int should not crash."""
+        page = (
+            "---\ntitle: 2026\ntype: note\n"
+            "summary: Year\ntags: [2026, review]\n"
+            "created: 2026-01-01\nupdated: 2026-01-01\n---\n\n"
+            "# 2026\n\n## Highlights\n\nSome highlights.\n"
+        )
+        vault.write_file("wiki/concepts/year-2026.md", page)
+        result = dispatch_tool(vault, "append_to_section", {
+            "path": "wiki/concepts/year-2026.md",
+            "heading": "Highlights",
+            "content": "- New highlight added.",
+        })
+        assert "OK" in result
+        content = vault.read_file("wiki/concepts/year-2026.md")
+        assert "New highlight added" in content
+
 
 # ======================================================================
 # update_frontmatter
@@ -235,6 +253,20 @@ class TestFindExistingPage:
             "title": "Attention",
         })
         assert "append_section" in result or "updating" in result.lower()
+
+    def test_numeric_title_page(self, vault: Vault) -> None:
+        """Pages with numeric YAML titles should not crash find_existing_page."""
+        page = (
+            "---\ntitle: 2026\ntype: note\n"
+            "summary: Year\ntags: [2026]\n"
+            "created: 2026-01-01\nupdated: 2026-01-01\n---\n\n"
+            "# 2026\n\nContent.\n"
+        )
+        vault.write_file("wiki/concepts/year-2026.md", page)
+        result = dispatch_tool(vault, "find_existing_page", {
+            "title": "2026",
+        })
+        assert "Error" not in result
 
 
 # ======================================================================
