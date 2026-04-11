@@ -746,6 +746,10 @@ class TestTagNormalization:
     def test_collapses_hyphens(self) -> None:
         assert Vault.normalize_tag("a--b---c") == "a-b-c"
 
+    def test_numeric_tag(self) -> None:
+        assert Vault.normalize_tag(2026) == "2026"
+        assert Vault.normalize_tag(3.14) == "314"
+
     def test_write_normalizes_tags(self, vault: Vault) -> None:
         vault.write_file(
             "wiki/concepts/test.md",

@@ -897,19 +897,19 @@ def handle_find_existing_page(vault: Vault, title: str, type: str = "") -> str:
     for r in fts_results:
         candidates.append({
             "path": r["path"],
-            "title": r.get("title", ""),
-            "type": r.get("type", ""),
-            "summary": r.get("summary", ""),
+            "title": str(r.get("title", "")),
+            "type": str(r.get("type", "")),
+            "summary": str(r.get("summary", "")),
             "match": "fts",
         })
 
     # 2. Title similarity via frontmatters
     all_pages = vault.read_frontmatters("wiki")
-    title_lower = title.lower()
+    title_lower = str(title).lower()
     for p in all_pages:
         if p["path"] in {c["path"] for c in candidates}:
             continue
-        if title_lower in p["title"].lower() or p["title"].lower() in title_lower:
+        if title_lower in str(p["title"]).lower() or str(p["title"]).lower() in title_lower:
             candidates.append({**p, "match": "title"})
 
     # 3. Backlinks — pages that link to this title
@@ -1008,17 +1008,17 @@ def handle_promote_insight(
     # Step 1: check for existing page
     candidates = vault.search.search(title, limit=5)
     all_pages = vault.read_frontmatters("wiki")
-    title_lower = title.lower()
+    title_lower = str(title).lower()
 
     existing_path = None
     for c in candidates:
-        if title_lower in c.get("title", "").lower():
+        if title_lower in str(c.get("title", "")).lower():
             existing_path = c["path"]
             break
 
     if not existing_path:
         for p in all_pages:
-            if title_lower in p["title"].lower() or p["title"].lower() in title_lower:
+            if title_lower in str(p["title"]).lower() or str(p["title"]).lower() in title_lower:
                 existing_path = p["path"]
                 break
 
@@ -1049,7 +1049,7 @@ def handle_promote_insight(
             )
 
     # Step 2: create new page with the requested type
-    slug = title.lower().replace(" ", "-").replace("/", "-")
+    slug = str(title).lower().replace(" ", "-").replace("/", "-")
     slug = re.sub(r"[^a-z0-9-]", "", slug)[:60]
 
     if target_type == "synthesis":
