@@ -332,7 +332,7 @@ class TestImportFromVaultRelativePath:
 
 class TestScanVaultContextSources:
     def test_context_includes_sources(self, vault: Vault) -> None:
-        """scan_vault_context reports sources/ overview."""
+        """scan_vault_context reports sources/ overview with sample filenames."""
         vault.save_source("sources/articles/a.md", "# Article A")
         vault.save_source("sources/articles/b.md", "# Article B")
         vault.save_source("sources/typora/c.md", "# Note C")
@@ -341,6 +341,17 @@ class TestScanVaultContextSources:
         assert "3 file(s)" in ctx
         assert "articles" in ctx
         assert "typora" in ctx
+        assert "a.md" in ctx
+        assert "b.md" in ctx
+        assert "c.md" in ctx
+
+    def test_sources_sample_truncated(self, vault: Vault) -> None:
+        """When a subdirectory has >3 files, only 3 samples are shown."""
+        for i in range(5):
+            vault.save_source(f"sources/papers/p{i}.md", f"# Paper {i}")
+        ctx = vault.scan_vault_context()
+        assert "5 file(s)" in ctx
+        assert "…" in ctx
 
     def test_context_no_sources(self, vault: Vault) -> None:
         """scan_vault_context omits sources section when empty."""

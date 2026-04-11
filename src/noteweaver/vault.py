@@ -1197,24 +1197,36 @@ class Vault:
     # Vault context (shared by scan_imports and session organize)
     # ------------------------------------------------------------------
 
-    def scan_vault_context(self) -> str:
-        """Build a minimal vault overview for the LLM system prompt.
+    # Vault map tier thresholds (page count)
+    _VAULT_MAP_FULL = 40
+    _VAULT_MAP_COMPACT = 150
 
-        Only shows the top level of the tree: hub names with page counts,
-        tags, and a count of unorganized pages.  This is O(number of hubs),
-        constant regardless of total vault size.
+    def scan_vault_context(self) -> str:
+        """Build a vault map for the LLM system prompt.
+
+        Returns a tiered structural overview so the LLM can navigate
+        effectively without needing an extra tool call:
+
+        - **Small vault** (< 40 pages): full page index with summaries.
+        - **Medium vault** (40–150 pages): compact index (no summaries).
+        - **Large vault** (150+ pages): hub structure with member lists
+          and a truncated page listing.
+
+        Always includes: hub→page membership, journal date range,
+        sources structure with sample filenames, tags, and totals.
 
         The LLM uses tools to drill deeper:
         - ``read_page`` on a hub to see its child pages
-        - ``list_page_summaries`` to scan a directory
-        - ``search_vault`` or ``find_existing_page`` for targeted lookup
+        - ``list_pages`` to scan a directory
+        - ``search`` or ``survey_topic`` for targeted lookup
         """
         _SKIP_PATHS = {"wiki/index.md", "wiki/log.md"}
         all_summaries = self.read_frontmatters("wiki")
         existing_tags: set[str] = set()
         hubs: list[dict] = []
-        non_hub_count = 0
-        unorganized_count = 0
+        content_pages: list[dict] = []
+        journals: list[dict] = []
+        unorganized: list[dict] = []
         total = 0
 
         hub_tag_set: set[str] = set()
@@ -1222,69 +1234,145 @@ class Vault:
         for ps in all_summaries:
             if ps.get("path") in _SKIP_PATHS:
                 continue
-            if ps.get("type") in ("journal", "archive"):
+            ptype = ps.get("type", "")
+            if ptype == "archive":
                 continue
-            total += 1
             for t in (ps.get("tags") or []):
                 if t != "imported":
                     existing_tags.add(t)
-            if ps.get("type") == "hub":
+            if ptype == "journal":
+                journals.append(ps)
+                continue
+            total += 1
+            if ptype == "hub":
                 hubs.append(ps)
                 for t in (ps.get("tags") or []):
                     hub_tag_set.add(t)
             else:
-                non_hub_count += 1
+                content_pages.append(ps)
 
-        for ps in all_summaries:
-            if ps.get("path") in _SKIP_PATHS:
-                continue
-            if ps.get("type") in ("hub", "journal", "archive"):
-                continue
+        # Build hub→children mapping
+        hub_children: dict[str, list[dict]] = {h["path"]: [] for h in hubs}
+        for ps in content_pages:
             page_tags = set(ps.get("tags") or [])
-            if not (page_tags & hub_tag_set):
-                unorganized_count += 1
+            matched = False
+            for hub in hubs:
+                hub_tags = set(hub.get("tags") or [])
+                if page_tags & hub_tags:
+                    hub_children[hub["path"]].append(ps)
+                    matched = True
+                    break
+            if not matched:
+                unorganized.append(ps)
+
+        tier = (
+            "full" if total <= self._VAULT_MAP_FULL
+            else "compact" if total <= self._VAULT_MAP_COMPACT
+            else "large"
+        )
 
         lines: list[str] = []
 
+        # -- Hubs with member pages --
         if hubs:
             lines.append("Hubs:")
             for hub in hubs:
-                hub_tags = set(hub.get("tags") or [])
-                child_count = sum(
-                    1 for ps in all_summaries
-                    if ps.get("path") not in _SKIP_PATHS
-                    and ps.get("type") not in ("hub", "journal", "archive")
-                    and (set(ps.get("tags") or []) & hub_tags)
+                children = hub_children[hub["path"]]
+                lines.append(
+                    f"  {hub['title']} ({len(children)} pages) → {hub['path']}"
                 )
-                lines.append(f"  {hub['title']} ({child_count} pages) → {hub['path']}")
+                if tier == "full":
+                    for ch in children:
+                        summary_part = f" — {ch['summary']}" if ch.get("summary") else ""
+                        lines.append(
+                            f"    [{ch.get('type', '?')}] {ch['title']}{summary_part}"
+                        )
+                elif tier == "compact":
+                    for ch in children:
+                        lines.append(
+                            f"    [{ch.get('type', '?')}] {ch['title']} → {ch['path']}"
+                        )
+                else:
+                    shown = children[:10]
+                    for ch in shown:
+                        lines.append(
+                            f"    [{ch.get('type', '?')}] {ch['title']} → {ch['path']}"
+                        )
+                    remaining = len(children) - len(shown)
+                    if remaining > 0:
+                        lines.append(f"    … and {remaining} more")
 
+        # -- Unorganized pages --
+        if unorganized:
+            lines.append(f"\nUnorganized ({len(unorganized)} page(s) not under any hub):")
+            if tier == "full":
+                for ps in unorganized:
+                    summary_part = f" — {ps['summary']}" if ps.get("summary") else ""
+                    tags_part = f"  tags: {', '.join(ps['tags'])}" if ps.get("tags") else ""
+                    lines.append(
+                        f"  [{ps.get('type', '?')}] {ps['title']} ({ps['path']}){tags_part}{summary_part}"
+                    )
+            elif tier == "compact":
+                for ps in unorganized:
+                    lines.append(
+                        f"  [{ps.get('type', '?')}] {ps['title']} → {ps['path']}"
+                    )
+            else:
+                shown = unorganized[:10]
+                for ps in shown:
+                    lines.append(
+                        f"  [{ps.get('type', '?')}] {ps['title']} → {ps['path']}"
+                    )
+                remaining = len(unorganized) - len(shown)
+                if remaining > 0:
+                    lines.append(f"  … and {remaining} more")
+
+        # -- Tags --
         if existing_tags:
             sorted_tags = sorted(existing_tags)
             if len(sorted_tags) > 20:
-                lines.append(f"Tags ({len(sorted_tags)}): {', '.join(sorted_tags[:20])}, ...")
+                lines.append(f"\nTags ({len(sorted_tags)}): {', '.join(sorted_tags[:20])}, …")
             else:
-                lines.append(f"Tags: {', '.join(sorted_tags)}")
+                lines.append(f"\nTags: {', '.join(sorted_tags)}")
 
-        if unorganized_count:
-            lines.append(f"Unorganized: {unorganized_count} page(s) not under any hub")
+        # -- Journals --
+        if journals:
+            dates = sorted(
+                ps.get("path", "") for ps in journals
+            )
+            lines.append(f"\nJournals: {len(journals)} entries")
+            if len(dates) >= 2:
+                first_stem = Path(dates[0]).stem
+                last_stem = Path(dates[-1]).stem
+                lines.append(f"  range: {first_stem} → {last_stem}")
+            elif dates:
+                lines.append(f"  latest: {Path(dates[0]).stem}")
 
-        lines.append(f"Total: {total} pages")
+        # -- Summary line --
+        lines.append(f"\nTotal: {total} pages")
 
+        # -- Sources --
         source_files = self.list_files("sources")
         if source_files:
-            by_subdir: dict[str, int] = {}
+            by_subdir: dict[str, list[str]] = {}
             for sf in source_files:
                 parts = sf.split("/")
                 subdir = parts[1] if len(parts) > 2 else "(root)"
-                by_subdir[subdir] = by_subdir.get(subdir, 0) + 1
+                by_subdir.setdefault(subdir, []).append(sf)
             lines.append(f"\nSources: {len(source_files)} file(s)")
-            for sd, cnt in sorted(by_subdir.items()):
-                lines.append(f"  sources/{sd}: {cnt} file(s)" if sd != "(root)" else f"  sources/: {cnt} file(s)")
+            for sd, files in sorted(by_subdir.items()):
+                prefix = f"sources/{sd}" if sd != "(root)" else "sources/"
+                samples = [Path(f).name for f in files[:3]]
+                sample_str = ", ".join(samples)
+                more = f", …" if len(files) > 3 else ""
+                lines.append(f"  {prefix}: {len(files)} file(s) [{sample_str}{more}]")
 
+        # -- Footer hint --
         lines.append("")
         lines.append(
             "Use survey_topic to assess a topic before planning, "
             "read_page on a hub to see child pages, "
+            "list_pages to browse a directory, "
             "or search for keyword lookup."
         )
 
