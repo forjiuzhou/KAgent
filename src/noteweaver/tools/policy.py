@@ -4,20 +4,18 @@ Two orthogonal dimensions of control:
 
 1. **Write-target classification** — what is being modified?
    - RUNTIME:   .meta/* (transcripts, session memory) — always OK
-   - STRUCTURE: wiki/index.md, wiki/log.md, backlinks, ## Related — auto OK
+   - STRUCTURE: wiki/index.md, wiki/log.md — auto OK
    - JOURNAL:   wiki/journals/* — low barrier
    - CONTENT:   wiki/concepts/*, wiki/synthesis/*, .schema/preferences.md — guarded
-   - SOURCE:    sources/* — explicit import only (existing create-only enforcement)
+   - SOURCE:    sources/* — explicit import only
 
 2. **Attended vs unattended** — is the user present?
-   - attended (nw chat, nw ingest run by user in terminal): content writes allowed
-   - unattended (gateway cron digest): content writes blocked, only proposals
+   - attended (nw chat, nw ingest): content writes allowed
+   - unattended (gateway cron digest): content writes blocked
 
 Content-layer gates (attended mode):
-   - All content writes: target page must have been read in this session
-   - write_page (new file): find_existing_page must have been called
-   - write_page (synthesis): must contain ≥ 2 [[wiki-links]]
-   - .schema/preferences.md: allowed, but agent must inform user what changed
+   - write_page: target page must have been read in this session
+   - .schema/preferences.md: allowed, but agent must inform user
 """
 
 from __future__ import annotations
@@ -41,15 +39,8 @@ class WriteTarget(Enum):
 
 _STRUCTURE_PATHS = frozenset({"wiki/index.md", "wiki/log.md"})
 
-_STRUCTURE_TOOLS = frozenset({"append_log", "add_related_link"})
-# add_related_link is classified as STRUCTURE (not CONTENT) intentionally:
-# Related links are structural metadata (page topology), not knowledge content.
-# This means it is allowed in unattended mode — the operation is idempotent
-# (duplicate links are skipped) and low-risk.
-
 _PREFERENCES_PATH = ".schema/preferences.md"
 
-# Minimum number of [[wiki-links]] required in synthesis content.
 MIN_SYNTHESIS_LINKS = 2
 
 _WIKI_LINK_RE = re.compile(r"\[\[([^\]]+)\]\]")
@@ -69,7 +60,8 @@ def classify_write_target(tool_name: str, path: str) -> WriteTarget:
     if path in _STRUCTURE_PATHS:
         return WriteTarget.STRUCTURE
 
-    if tool_name in _STRUCTURE_TOOLS:
+    # organize(action="link") and restructure are structural
+    if tool_name in ("restructure",):
         return WriteTarget.STRUCTURE
 
     if path.startswith(".schema/"):
@@ -82,7 +74,7 @@ def classify_write_target(tool_name: str, path: str) -> WriteTarget:
 
 
 # ======================================================================
-# Risk tier (retained for backward compat, now secondary to target)
+# Risk tier
 # ======================================================================
 
 class RiskTier(Enum):
@@ -93,25 +85,18 @@ class RiskTier(Enum):
 
 
 TOOL_TIERS: dict[str, RiskTier] = {
+    # Observation tools — all READ
     "read_page": RiskTier.READ,
-    "list_page_summaries": RiskTier.READ,
-    "search_vault": RiskTier.READ,
-    "vault_stats": RiskTier.READ,
+    "search": RiskTier.READ,
+    "survey_topic": RiskTier.READ,
     "get_backlinks": RiskTier.READ,
-    "find_existing_page": RiskTier.READ,
-    "read_transcript": RiskTier.READ,
-    "list_directory": RiskTier.READ,
+    "list_pages": RiskTier.READ,
     "fetch_url": RiskTier.READ,
-    "append_to_section": RiskTier.LOW_WRITE,
-    "update_frontmatter": RiskTier.LOW_WRITE,
-    "add_related_link": RiskTier.LOW_WRITE,
-    "append_log": RiskTier.LOW_WRITE,
-    "append_section": RiskTier.MEDIUM_WRITE,
-    "archive_page": RiskTier.MEDIUM_WRITE,
-    "save_source": RiskTier.MEDIUM_WRITE,
-    "import_files": RiskTier.MEDIUM_WRITE,
-    "promote_insight": RiskTier.MEDIUM_WRITE,
-    "merge_tags": RiskTier.MEDIUM_WRITE,
+    # Action tools
+    "capture": RiskTier.MEDIUM_WRITE,
+    "ingest": RiskTier.MEDIUM_WRITE,
+    "organize": RiskTier.MEDIUM_WRITE,
+    "restructure": RiskTier.HIGH_WRITE,
     "write_page": RiskTier.HIGH_WRITE,
 }
 
@@ -125,7 +110,7 @@ class PolicyContext:
     """Tracks policy-relevant state within a single chat session."""
 
     attended: bool = True
-    dedup_checked_titles: set[str] = field(default_factory=set)
+    topics_surveyed: set[str] = field(default_factory=set)
     pages_read: list[str] = field(default_factory=list)
     pages_written: list[str] = field(default_factory=list)
     tools_called: list[str] = field(default_factory=list)
@@ -135,22 +120,27 @@ class PolicyContext:
         """Record a tool invocation for policy tracking."""
         self.tools_called.append(name)
 
-        if name == "find_existing_page":
-            title = args.get("title", "")
-            if title:
-                self.dedup_checked_titles.add(str(title).lower())
+        if name == "survey_topic":
+            topic = args.get("topic", "")
+            if topic:
+                self.topics_surveyed.add(str(topic).lower())
 
-        if name in ("list_page_summaries", "read_page", "search_vault"):
+        if name == "search":
+            query = args.get("query", "")
+            if query:
+                self.topics_surveyed.add(str(query).lower())
+
+        if name in ("list_pages", "read_page", "search", "survey_topic"):
             self.navigation_done = True
 
         path = args.get("path", "")
         if name == "read_page" and path:
             if path not in self.pages_read:
                 self.pages_read.append(path)
-        if name in ("write_page", "append_section", "append_to_section",
-                     "update_frontmatter", "add_related_link"):
-            if path and path not in self.pages_written:
-                self.pages_written.append(path)
+        if name in ("write_page", "capture"):
+            target = args.get("target", path)
+            if target and target not in self.pages_written:
+                self.pages_written.append(target)
 
 
 # ======================================================================
@@ -184,18 +174,17 @@ def check_pre_dispatch(
     """Check whether a tool call should proceed."""
     tier = TOOL_TIERS.get(name, RiskTier.MEDIUM_WRITE)
 
-    # Reads always pass
     if tier == RiskTier.READ:
         return PolicyVerdict(allowed=True)
 
-    path = args.get("path", "") or ""
+    path = args.get("path", "") or args.get("target", "") or ""
     target = classify_write_target(name, path)
 
-    # Runtime and structure: always OK regardless of attended
+    # Runtime and structure: always OK
     if target in (WriteTarget.RUNTIME, WriteTarget.STRUCTURE):
         return PolicyVerdict(allowed=True)
 
-    # Journal: always OK (low-cost buffer)
+    # Journal: always OK
     if target == WriteTarget.JOURNAL:
         return PolicyVerdict(allowed=True)
 
@@ -203,9 +192,9 @@ def check_pre_dispatch(
     if not ctx.attended and target in (WriteTarget.CONTENT, WriteTarget.SOURCE):
         return PolicyVerdict(allowed=False, warning=_UNATTENDED_CONTENT_MSG)
 
-    # --- Attended mode, content/source target: per-type gates ---
+    # --- Attended mode gates ---
 
-    # preferences.md: allowed, but must inform the user what changed
+    # preferences.md
     if path == _PREFERENCES_PATH:
         return PolicyVerdict(
             allowed=True,
@@ -216,12 +205,12 @@ def check_pre_dispatch(
             ),
         )
 
-    # write_page gets the heaviest checks
+    # write_page requires read-before-write
     if name == "write_page":
         return _check_write_page(path, args, ctx)
 
-    # All other content-targeting tools: read-before-write
-    if target == WriteTarget.CONTENT:
+    # organize with update_metadata or link requires read
+    if name == "organize" and args.get("action") in ("update_metadata", "link"):
         return _check_read_before_write(name, path, ctx)
 
     return PolicyVerdict(allowed=True)
@@ -232,12 +221,7 @@ def _check_read_before_write(
     path: str,
     ctx: PolicyContext,
 ) -> PolicyVerdict:
-    """Require that the target page has been read in this session.
-
-    This prevents blind edits to content pages the agent hasn't seen.
-    Exemptions: if the page was previously written in this session
-    (the agent created it and knows its content).
-    """
+    """Require that the target page has been read in this session."""
     if not path:
         return PolicyVerdict(allowed=True)
 
@@ -259,45 +243,30 @@ def _check_write_page(
     args: dict,
     ctx: PolicyContext,
 ) -> PolicyVerdict:
-    """Full gate for write_page to content targets.
-
-    Checks applied in order:
-    1. Known-page exemption (read or written before)
-    2. Dedup check (find_existing_page called)
-    3. Type-specific content quality gates
-    """
+    """Full gate for write_page to content targets."""
     if path in _STRUCTURE_PATHS:
         return PolicyVerdict(allowed=True)
 
-    # Overwriting a page we already know about is fine
     if path in ctx.pages_read or path in ctx.pages_written:
         return PolicyVerdict(allowed=True)
 
-    # New page: must have checked for duplicates
-    if not ctx.dedup_checked_titles:
+    # New page: must have done some navigation/search first
+    if not ctx.navigation_done:
         return PolicyVerdict(
             allowed=False,
             warning=(
-                "Policy: call find_existing_page before creating a new page "
-                "to avoid duplicates. If you've already confirmed this is new "
-                "content, call find_existing_page(title) first, then retry "
-                "write_page."
+                "Policy: survey the topic or search before creating a new page "
+                "to avoid duplicates. Call survey_topic(topic) or search(query) "
+                "first, then retry write_page."
             ),
         )
 
-    # Type-specific quality gates on the content being written
     content = args.get("content", "")
     return _check_content_quality(path, content)
 
 
 def _check_content_quality(path: str, content: str) -> PolicyVerdict:
-    """Type-specific quality checks on page content.
-
-    - synthesis: must contain ≥ MIN_SYNTHESIS_LINKS [[wiki-links]]
-    - canonical: sources checked by frontmatter.py (not duplicated here)
-    - note: no minimum length — notes are WIP by definition and may be
-      short concept definitions or placeholders for future expansion
-    """
+    """Type-specific quality checks on page content."""
     if not content:
         return PolicyVerdict(allowed=True)
 

@@ -1283,8 +1283,9 @@ class Vault:
 
         lines.append("")
         lines.append(
-            "Use read_page on a hub, list_page_summaries, search_vault, "
-            "or list_directory to explore."
+            "Use survey_topic to assess a topic before planning, "
+            "read_page on a hub to see child pages, "
+            "or search for keyword lookup."
         )
 
         return "\n".join(lines)

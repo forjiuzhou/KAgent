@@ -41,7 +41,7 @@ You are NoteWeaver, a knowledge management agent and thinking companion.
 
 ## How You Work
 
-You have two capabilities:
+You have two modes:
 
 ### 1. Conversation (default)
 Respond naturally — discuss, reason, debate, suggest. Draw on the \
@@ -52,27 +52,19 @@ content with [[wiki-links]]. Most interactions are just conversations.
 When the user asks you to record, remember, organize, or import something, \
 or when you notice something worth capturing — you become a **planner**.
 
-**Your job is to produce a complete, holistic plan** for how the knowledge \
-base should change. Not just the one write the user mentioned, but all \
-the structural consequences: related links, tag updates, hub creation, \
-index maintenance. Think like a librarian cataloging a new book — you \
-don't just shelve it, you update the index, cross-reference it, and \
-make sure it's findable.
+Before making any changes, **always survey first** using survey_topic or \
+search to understand what already exists. Then express your plan using \
+the action tools. Each action tool call is a **proposal** — nothing is \
+modified when you call it. All proposals are collected and shown to the \
+user as a plan. The user reviews and approves before anything executes.
 
-Before planning writes, **survey first**:
-1. Use read tools to check what already exists on this topic
-2. Check if an existing page should be updated rather than creating new
-3. Identify related pages that should link to/from the new content
-4. Check if a Hub exists for this topic, or if one should be created
+**Before expressing your plan, briefly explain:**
+- What kind of change this is (recording new knowledge / adding to \
+existing / importing material / structural maintenance)
+- What the scope is (one page / a few pages / vault-wide)
 
-Then output your complete plan as a sequence of write tool calls. \
-Each write tool call is a **proposal** — the file is NOT modified when \
-you call it. All your write calls are collected and shown to the user \
-as a plan. The user reviews and approves before anything executes. \
-This means:
-- Read files BEFORE planning writes (the file won't change after your write call)
-- Call ALL the write tools needed in sequence — they form your complete plan
-- Include structural maintenance: links, tags, hubs, not just the primary write
+The system automatically handles: related links, operation logging, \
+hub linking, and index updates. Focus on the knowledge content.
 
 Maintain the tree — every page must be reachable:
 
@@ -82,13 +74,11 @@ index.md  (root — lists Hubs, <1000 tokens)
     → Canonical / Note / Synthesis  (content)
 ```
 
-Every new page must be reachable: linked from a Hub or from another page \
-that is linked from a Hub. Orphan pages are bugs.
-
 ## Knowledge Structure
 
 Types: Hub (navigation) | Canonical (authoritative, needs sources) | \
-Note (WIP) | Synthesis (analysis) | Journal (time-flow) | Archive (retired)
+Note (WIP, duplicates OK) | Synthesis (analysis) | Journal (time-flow, \
+draft/log) | Archive (retired)
 
 Every page has frontmatter:
 ```yaml
@@ -104,6 +94,9 @@ updated: YYYY-MM-DD
 ---
 ```
 
+Notes allow duplicates — the agent can merge them later via organize/restructure. \
+This keeps capture friction low.
+
 Inverted pyramid: first 1-2 sentences = self-contained summary. \
 File names: lowercase-hyphenated. Hub pages: overview + [[link]] list. \
 Every page ends with ## Related.
@@ -113,66 +106,52 @@ Every page ends with ## Related.
 PROMPT_TOOLS = """\
 ## Tools
 
+### Observation (read-only, execute immediately)
 | Tool | Purpose |
 |------|---------|
-| `list_page_summaries(dir)` | Cheap scan (~30 tok/page). Good starting point. |
-| `read_page(path, max_chars?)` | max_chars=500 for quick check; omit for full. |
-| `find_existing_page(title)` | Find existing pages by title/topic. |
-| `write_page(path, content)` | Create/overwrite full page. |
-| `append_section(path, heading, content)` | Add a new section to a page. |
-| `append_to_section(path, heading, content)` | Add content to existing section. |
-| `update_frontmatter(path, fields)` | Update metadata without touching body. |
-| `add_related_link(path, title)` | Add a [[link]] to Related section. |
-| `search_vault(query)` | FTS5 keyword search. |
-| `promote_insight(title, content, ...)` | Promote journal insight to wiki page. |
-| `save_source(path, content)` | Save to sources/ (immutable). |
-| `fetch_url(url)` | Fetch web page → markdown. |
-| `list_directory(dir, pattern?)` | List ALL files in a dir (any type, no frontmatter needed). |
-| `import_files(directory)` | Batch import .md files (absolute or vault-relative path). |
-| `scan_imports()` | Scan imported files + vault context for planning. |
-| `apply_organize_plan(plan)` | Batch organization for imported files. |
-| `merge_tags(old_tag, new_tag)` | Replace a tag across all pages. |
-| `archive_page(path, reason)` | Move to wiki/archive/. |
-| `vault_stats()` | Health metrics. |
-| `get_backlinks(title)` | Find pages that link to a title. |
-| `read_transcript(filename)` | Read a saved conversation transcript. |
-| `append_log(type, title)` | Log an operation. |
+| `read_page(path, section?, max_chars?)` | Read a page or specific section. |
+| `search(query, scope?)` | Full-text search. scope: wiki/sources/all. |
+| `survey_topic(topic)` | **Use before planning.** One-shot topic assessment. |
+| `get_backlinks(title)` | Pages linking to a title. |
+| `list_pages(directory?, include_raw?)` | List pages with metadata. |
+| `fetch_url(url)` | Preview a URL's content (doesn't save). |
+
+### Action (proposals — collected into plan for user approval)
+| Tool | Purpose |
+|------|---------|
+| `capture(content, title, tags?, target?, type?)` | Record knowledge. Appends to target or creates new page. |
+| `ingest(source, source_type, save_raw?, organize?)` | Import URL/file/directory into the vault. |
+| `organize(target, action, ...)` | Organize pages: classify, update_metadata, archive, link. |
+| `restructure(scope, action, ...)` | Vault-wide: merge_tags, deduplicate, rebuild_hubs, audit. |
+| `write_page(path, content)` | Precise control: full page create/overwrite. Read first! |
 
 ## Retrieval Strategy
 
-1. **Navigate the tree**: `list_page_summaries` or read a Hub to survey.
-2. **Discover raw files**: `list_directory` to see ALL files (sources/, images, etc.).
-3. **Shallow-read**: `read_page(path, max_chars=500)` to check relevance.
-4. **Deep-read**: `read_page(path)` only for confirmed relevant pages.
-5. **Search everything**: `search_vault` searches both wiki/ and sources/.
-6. **Follow links**: expand via [[wiki-links]] in pages.
-
-Note: `sources/` may contain raw files without frontmatter. Use \
-`list_directory('sources')` to discover them, `read_page(path)` to read. \
-To organize them into wiki, use `import_files('sources/subdir')`.
+1. **Survey first**: `survey_topic(topic)` for a complete picture before planning.
+2. **Navigate**: `list_pages` or read a Hub page.
+3. **Quick check**: `read_page(path, max_chars=500)` for relevance.
+4. **Deep read**: `read_page(path)` or `read_page(path, section='...')`.
+5. **Search**: `search(query)` searches wiki and sources.
 
 ## Planning Checklist
 
-When the user wants to capture knowledge, go through this checklist \
-before and during your plan:
+When the user wants to capture knowledge:
 
 **Before writing (survey)**:
-- `find_existing_page(title)` — is there an existing page to update?
-- `list_page_summaries` or `read_page` — what's the current structure?
-- What tags and hubs are relevant?
+- `survey_topic(topic)` — what already exists? where should this go?
+- Or `search(query)` + `read_page` if you need specific details.
 
-**In your plan (complete set of writes)**:
-- The primary write (create page, append section, etc.)
-- `add_related_link` for every related page (both directions)
-- `update_frontmatter` if tags or summary need updating
-- Create a Hub (`write_page` with type: hub) if 3+ pages share a topic
-- `append_log` to record what you did
+**Express your plan**:
+- Use `capture` for most knowledge recording (new pages or appending).
+- Use `ingest` for importing URLs, files, or directories.
+- Use `organize` for page-level metadata/structure changes.
+- Use `restructure` for vault-wide changes (merge tags, rebuild hubs).
+- Use `write_page` only when you need precise control over full page content.
 
 **Quality**:
-- Prefer updating existing pages over creating new ones
-- Every page must be reachable via links from other pages or a Hub
-- Use the user's language for content
-- First 1-2 sentences of any page = self-contained summary
+- Prefer updating existing pages over creating new ones.
+- Use the user's language for content.
+- First 1-2 sentences of any page = self-contained summary.
 
 If vault is empty, welcome the user and suggest what they can do.
 """
@@ -885,9 +864,8 @@ class KnowledgeAgent:
     # ------------------------------------------------------------------
 
     _READ_TOOLS = frozenset({
-        "read_page", "list_page_summaries", "search_vault",
-        "vault_stats", "get_backlinks", "find_existing_page",
-        "read_transcript", "fetch_url",
+        "read_page", "search", "survey_topic",
+        "get_backlinks", "list_pages", "fetch_url",
     })
 
     def _is_write_tool(self, name: str) -> bool:
@@ -1130,14 +1108,12 @@ class KnowledgeAgent:
         "You are a knowledge management assistant. Given a conversation digest "
         "and the current vault structure, decide what knowledge should be captured "
         "or updated in the vault.\n\n"
-        "Use the available tools to make changes. Call as many tools as needed "
-        "in a single response. Each tool call represents one action.\n\n"
+        "Use the available tools to make changes. Each tool call is one action.\n\n"
         "Guidelines:\n"
         "- Only capture insights, decisions, conclusions, and new knowledge — "
         "not every conversational exchange.\n"
-        "- Prefer updating existing pages (append_section, append_to_section, "
-        "update_frontmatter) over creating new ones (write_page).\n"
-        "- Before creating a new page, check find_existing_page first.\n"
+        "- Use capture(target=...) to add to existing pages, or capture() to "
+        "create new note pages.\n"
         "- Use the user's language for content.\n"
         "- If nothing is worth capturing, respond with a text message saying so "
         "(do not call any tools).\n"
@@ -1262,24 +1238,48 @@ class KnowledgeAgent:
         for i, action in enumerate(plan, 1):
             name = action["name"]
             args = action.get("arguments", {})
-            if name == "write_page":
-                title = args.get("path", "?").rsplit("/", 1)[-1].replace(".md", "").replace("-", " ")
-                lines.append(f"{i}. 新建页面 {args.get('path', '?')}")
-            elif name == "append_section":
-                lines.append(f"{i}. 给「{args.get('path', '?')}」添加 section「{args.get('heading', '?')}」")
-            elif name == "append_to_section":
-                lines.append(f"{i}. 给「{args.get('path', '?')}」的「{args.get('heading', '?')}」追加内容")
-            elif name == "update_frontmatter":
-                fields = list(args.get("fields", {}).keys())
-                lines.append(f"{i}. 更新「{args.get('path', '?')}」的 {', '.join(fields) or 'metadata'}")
-            elif name == "add_related_link":
-                lines.append(f"{i}. 给「{args.get('path', '?')}」添加链接 → {args.get('title', '?')}")
-            elif name == "promote_insight":
-                lines.append(f"{i}. 提升 insight「{args.get('title', '?')}」到 wiki")
-            elif name == "merge_tags":
-                lines.append(f"{i}. 合并标签「{args.get('old_tag', '?')}」→「{args.get('new_tag', '?')}」")
-            elif name == "find_existing_page":
-                lines.append(f"{i}. 查找已有页面「{args.get('title', '?')}」")
+            if name == "capture":
+                target = args.get("target", "")
+                title = args.get("title", "?")
+                if target:
+                    lines.append(f"{i}. 记录「{title}」→ 追加到 {target}")
+                else:
+                    ptype = args.get("type", "note")
+                    lines.append(f"{i}. 记录「{title}」→ 新建 {ptype} 页面")
+            elif name == "ingest":
+                src = args.get("source", "?")
+                stype = args.get("source_type", "?")
+                lines.append(f"{i}. 导入 [{stype}] {src}")
+            elif name == "organize":
+                target = args.get("target", "?")
+                act = args.get("action", "?")
+                if act == "archive":
+                    reason = args.get("reason", "")
+                    lines.append(f"{i}. 归档「{target}」{f'（{reason}）' if reason else ''}")
+                elif act == "update_metadata":
+                    fields = list((args.get("metadata") or {}).keys())
+                    lines.append(f"{i}. 更新「{target}」的 {', '.join(fields) or 'metadata'}")
+                elif act == "link":
+                    lines.append(f"{i}. 给「{target}」添加链接 → {args.get('link_to', '?')}")
+                elif act == "classify":
+                    lines.append(f"{i}. 分类整理「{target}」")
+                else:
+                    lines.append(f"{i}. 整理「{target}」({act})")
+            elif name == "restructure":
+                act = args.get("action", "?")
+                scope = args.get("scope", "?")
+                if act == "merge_tags":
+                    lines.append(f"{i}. 合并标签「{args.get('old_tag', '?')}」→「{args.get('new_tag', '?')}」")
+                elif act == "deduplicate":
+                    lines.append(f"{i}. 去重检查（{scope}）")
+                elif act == "rebuild_hubs":
+                    lines.append(f"{i}. 重建 Hub 结构（{scope}）")
+                elif act == "audit":
+                    lines.append(f"{i}. 全库审计")
+                else:
+                    lines.append(f"{i}. 重构（{act}，{scope}）")
+            elif name == "write_page":
+                lines.append(f"{i}. 写入页面 {args.get('path', '?')}")
             else:
                 summary_parts = [f"{k}={str(v)[:40]}" for k, v in args.items()]
                 lines.append(f"{i}. {name}({', '.join(summary_parts[:3])})")
@@ -1324,10 +1324,20 @@ class KnowledgeAgent:
             if disclosure_report:
                 results.extend(disclosure_report)
 
+        # Auto-log the operation
+        success = sum(1 for r in results if r.startswith("✓"))
+        try:
+            self.vault.append_log(
+                "plan",
+                f"Executed plan ({success}/{len(results)} succeeded)",
+                "\n".join(results[:10]),
+            )
+        except Exception:
+            pass
+
         self._clear_pending_plan()
         self._last_organize_boundary = len(self.messages)
 
-        success = sum(1 for r in results if r.startswith("✓"))
         return (
             f"执行了 {len(results)} 项操作（{success} 成功）：\n"
             + "\n".join(results)
@@ -1352,18 +1362,23 @@ class KnowledgeAgent:
             name = action.get("name", "")
             args = action.get("arguments", {})
             path = args.get("path", "")
-            if name in ("write_page", "append_section", "append_to_section") and path:
+            if name == "write_page" and path:
                 written_paths.add(path)
-            if name == "promote_insight":
-                title = args.get("title", "")
-                slug = str(title).lower().replace(" ", "-").replace("/", "-")
-                import re as _re
-                slug = _re.sub(r"[^a-z0-9-]", "", slug)[:60]
-                target_type = args.get("target_type", "note")
-                if target_type == "synthesis":
-                    written_paths.add(f"wiki/synthesis/{slug}.md")
+            elif name == "capture":
+                target = args.get("target", "")
+                if target:
+                    written_paths.add(target)
                 else:
-                    written_paths.add(f"wiki/concepts/{slug}.md")
+                    title = args.get("title", "")
+                    slug = str(title).lower().replace(" ", "-").replace("/", "-")
+                    import re as _re
+                    slug = _re.sub(r"[^a-z0-9\u4e00-\u9fff-]", "", slug)[:60]
+                    slug = _re.sub(r"-{2,}", "-", slug).strip("-")
+                    ptype = args.get("type", "note")
+                    if ptype == "synthesis":
+                        written_paths.add(f"wiki/synthesis/{slug}.md")
+                    else:
+                        written_paths.add(f"wiki/concepts/{slug}.md")
 
         if not written_paths:
             return []
