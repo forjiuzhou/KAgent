@@ -6,7 +6,6 @@ import pytest
 
 from noteweaver.tools.policy import (
     PolicyContext,
-    PolicyVerdict,
     RiskTier,
     TOOL_TIERS,
     check_pre_dispatch,
@@ -14,36 +13,33 @@ from noteweaver.tools.policy import (
 
 
 class TestToolTierMapping:
-    def test_all_read_tools_are_read_tier(self) -> None:
+    def test_observation_tools_are_read_tier(self) -> None:
         read_tools = [
-            "read_page", "list_page_summaries", "search_vault",
-            "vault_stats", "get_backlinks", "find_existing_page",
-            "read_transcript", "fetch_url",
+            "read_page",
+            "search",
+            "survey_topic",
+            "get_backlinks",
+            "list_pages",
+            "fetch_url",
         ]
         for tool in read_tools:
             assert TOOL_TIERS[tool] == RiskTier.READ, f"{tool} should be READ"
 
-    def test_write_page_is_high_write(self) -> None:
+    def test_action_tools_medium_write(self) -> None:
+        for tool in ("capture", "ingest", "organize"):
+            assert TOOL_TIERS[tool] == RiskTier.MEDIUM_WRITE, f"{tool} should be MEDIUM_WRITE"
+
+    def test_restructure_and_write_page_high_write(self) -> None:
+        assert TOOL_TIERS["restructure"] == RiskTier.HIGH_WRITE
         assert TOOL_TIERS["write_page"] == RiskTier.HIGH_WRITE
-
-    def test_fine_grained_tools_are_low_write(self) -> None:
-        low_tools = [
-            "append_to_section", "update_frontmatter",
-            "add_related_link", "append_log",
-        ]
-        for tool in low_tools:
-            assert TOOL_TIERS[tool] == RiskTier.LOW_WRITE, f"{tool} should be LOW_WRITE"
-
-    def test_promote_insight_is_medium_write(self) -> None:
-        assert TOOL_TIERS["promote_insight"] == RiskTier.MEDIUM_WRITE
 
 
 class TestPolicyContext:
-    def test_record_find_existing_page(self) -> None:
+    def test_record_survey_topic(self) -> None:
         ctx = PolicyContext()
-        ctx.record_tool_call("find_existing_page", {"title": "Test Page"})
-        assert "test page" in ctx.dedup_checked_titles
-        assert "find_existing_page" in ctx.tools_called
+        ctx.record_tool_call("survey_topic", {"topic": "Test Page"})
+        assert "test page" in ctx.topics_surveyed
+        assert "survey_topic" in ctx.tools_called
 
     def test_record_read_page(self) -> None:
         ctx = PolicyContext()
@@ -56,18 +52,27 @@ class TestPolicyContext:
         ctx.record_tool_call("write_page", {"path": "wiki/concepts/test.md"})
         assert "wiki/concepts/test.md" in ctx.pages_written
 
-    def test_navigation_done_from_list(self) -> None:
+    def test_record_capture_target(self) -> None:
+        ctx = PolicyContext()
+        ctx.record_tool_call("capture", {
+            "target": "wiki/concepts/x.md",
+            "title": "S",
+            "content": "c",
+        })
+        assert "wiki/concepts/x.md" in ctx.pages_written
+
+    def test_navigation_done_from_list_pages(self) -> None:
         ctx = PolicyContext()
         assert not ctx.navigation_done
-        ctx.record_tool_call("list_page_summaries", {"directory": "wiki"})
+        ctx.record_tool_call("list_pages", {"directory": "wiki"})
         assert ctx.navigation_done
 
     def test_navigation_done_from_search(self) -> None:
         ctx = PolicyContext()
-        ctx.record_tool_call("search_vault", {"query": "test"})
+        ctx.record_tool_call("search", {"query": "test"})
         assert ctx.navigation_done
 
-    def test_no_duplicate_entries(self) -> None:
+    def test_no_duplicate_read_entries(self) -> None:
         ctx = PolicyContext()
         ctx.record_tool_call("read_page", {"path": "wiki/x.md"})
         ctx.record_tool_call("read_page", {"path": "wiki/x.md"})
@@ -80,22 +85,39 @@ class TestCheckPreDispatch:
         v = check_pre_dispatch("read_page", {"path": "wiki/index.md"}, ctx)
         assert v.allowed
 
-    def test_low_write_structure_always_allowed(self) -> None:
-        """Structure-targeting low writes pass without prior read."""
+    def test_organize_update_metadata_needs_read(self) -> None:
         ctx = PolicyContext()
-        v = check_pre_dispatch("append_log", {"entry_type": "test", "title": "x"}, ctx)
-        assert v.allowed
-
-    def test_low_write_content_needs_read(self) -> None:
-        """Content-targeting low writes need read-before-write."""
-        ctx = PolicyContext()
-        v = check_pre_dispatch("update_frontmatter", {"path": "wiki/concepts/x.md"}, ctx)
+        v = check_pre_dispatch("organize", {
+            "target": "wiki/concepts/x.md",
+            "action": "update_metadata",
+            "metadata": {"tags": ["a"]},
+        }, ctx)
         assert not v.allowed
         ctx.record_tool_call("read_page", {"path": "wiki/concepts/x.md"})
-        v = check_pre_dispatch("update_frontmatter", {"path": "wiki/concepts/x.md"}, ctx)
+        v = check_pre_dispatch("organize", {
+            "target": "wiki/concepts/x.md",
+            "action": "update_metadata",
+            "metadata": {"tags": ["a"]},
+        }, ctx)
         assert v.allowed
 
-    def test_write_page_blocked_without_dedup(self) -> None:
+    def test_organize_link_needs_read(self) -> None:
+        ctx = PolicyContext()
+        v = check_pre_dispatch("organize", {
+            "target": "wiki/concepts/x.md",
+            "action": "link",
+            "link_to": "Other",
+        }, ctx)
+        assert not v.allowed
+        ctx.record_tool_call("read_page", {"path": "wiki/concepts/x.md"})
+        v = check_pre_dispatch("organize", {
+            "target": "wiki/concepts/x.md",
+            "action": "link",
+            "link_to": "Other",
+        }, ctx)
+        assert v.allowed
+
+    def test_write_page_blocked_without_navigation(self) -> None:
         ctx = PolicyContext()
         v = check_pre_dispatch(
             "write_page",
@@ -103,11 +125,11 @@ class TestCheckPreDispatch:
             ctx,
         )
         assert not v.allowed
-        assert "find_existing_page" in (v.warning or "")
+        assert "survey_topic" in (v.warning or "") or "search" in (v.warning or "")
 
-    def test_write_page_allowed_after_dedup(self) -> None:
+    def test_write_page_allowed_after_survey(self) -> None:
         ctx = PolicyContext()
-        ctx.record_tool_call("find_existing_page", {"title": "New Topic"})
+        ctx.record_tool_call("survey_topic", {"topic": "New Topic"})
         v = check_pre_dispatch(
             "write_page",
             {"path": "wiki/concepts/new-topic.md", "content": "..."},
@@ -153,11 +175,10 @@ class TestCheckPreDispatch:
         )
         assert v.allowed
 
-    def test_promote_insight_allowed_without_dedup(self) -> None:
-        """promote_insight has built-in dedup, no need for external check."""
+    def test_capture_allowed_without_prior_read(self) -> None:
         ctx = PolicyContext()
         v = check_pre_dispatch(
-            "promote_insight",
+            "capture",
             {"title": "test", "content": "insight text"},
             ctx,
         )
