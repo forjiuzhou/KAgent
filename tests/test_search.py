@@ -101,3 +101,34 @@ class TestVaultSearchIntegration:
         assert count >= 2
         assert len(vault.search.search("alpha")) >= 1
         assert len(vault.search.search("beta")) >= 1
+
+    def test_rebuild_search_index_includes_sources(self, vault: Vault) -> None:
+        """Sources files are indexed so search_vault can find them."""
+        vault.save_source("sources/articles/raw.md", "# quantum computing breakthroughs")
+        count = vault.rebuild_search_index()
+        results = vault.search.search("quantum computing")
+        assert len(results) >= 1
+        assert any("sources/" in r["path"] for r in results)
+
+    def test_save_source_indexes_content(self, vault: Vault) -> None:
+        """save_source now indexes the file immediately for FTS."""
+        vault.save_source("sources/notes/myfile.md", "# unique xylophone content")
+        results = vault.search.search("xylophone")
+        assert len(results) >= 1
+        assert results[0]["path"] == "sources/notes/myfile.md"
+
+    def test_search_content_finds_sources(self, vault: Vault) -> None:
+        """search_content brute-force fallback also works for sources/."""
+        src = vault.root / "sources" / "raw"
+        src.mkdir(parents=True)
+        (src / "plain.md").write_text("# no frontmatter, unique zebra content")
+        results = vault.search_content("zebra", "sources")
+        assert len(results) >= 1
+        assert any("plain.md" in r["path"] for r in results)
+
+    def test_sources_without_frontmatter_get_derived_title(self, vault: Vault) -> None:
+        """Files without frontmatter get a path-derived title in the index."""
+        vault.save_source("sources/my-research-notes.md", "content about AI")
+        vault.rebuild_search_index()
+        results = vault.search.search("research notes")
+        assert len(results) >= 1

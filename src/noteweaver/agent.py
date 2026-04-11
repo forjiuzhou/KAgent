@@ -127,7 +127,8 @@ PROMPT_TOOLS = """\
 | `promote_insight(title, content, ...)` | Promote journal insight to wiki page. |
 | `save_source(path, content)` | Save to sources/ (immutable). |
 | `fetch_url(url)` | Fetch web page → markdown. |
-| `import_files(directory)` | Batch import .md files. |
+| `list_directory(dir, pattern?)` | List ALL files in a dir (any type, no frontmatter needed). |
+| `import_files(directory)` | Batch import .md files (absolute or vault-relative path). |
 | `scan_imports()` | Scan imported files + vault context for planning. |
 | `apply_organize_plan(plan)` | Batch organization for imported files. |
 | `merge_tags(old_tag, new_tag)` | Replace a tag across all pages. |
@@ -140,10 +141,15 @@ PROMPT_TOOLS = """\
 ## Retrieval Strategy
 
 1. **Navigate the tree**: `list_page_summaries` or read a Hub to survey.
-2. **Shallow-read**: `read_page(path, max_chars=500)` to check relevance.
-3. **Deep-read**: `read_page(path)` only for confirmed relevant pages.
-4. **Search as supplement**: `search_vault` for what tree navigation missed.
-5. **Follow links**: expand via [[wiki-links]] in pages.
+2. **Discover raw files**: `list_directory` to see ALL files (sources/, images, etc.).
+3. **Shallow-read**: `read_page(path, max_chars=500)` to check relevance.
+4. **Deep-read**: `read_page(path)` only for confirmed relevant pages.
+5. **Search everything**: `search_vault` searches both wiki/ and sources/.
+6. **Follow links**: expand via [[wiki-links]] in pages.
+
+Note: `sources/` may contain raw files without frontmatter. Use \
+`list_directory('sources')` to discover them, `read_page(path)` to read. \
+To organize them into wiki, use `import_files('sources/subdir')`.
 
 ## Planning Checklist
 

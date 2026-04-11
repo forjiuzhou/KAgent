@@ -32,7 +32,7 @@ class TestToolSchemas:
         assert schema_names == handler_names
 
     def test_schema_count(self) -> None:
-        assert len(TOOL_SCHEMAS) == 21
+        assert len(TOOL_SCHEMAS) == 22
 
 
 class TestDispatch:
@@ -146,7 +146,7 @@ class TestDispatch:
 
     def test_list_page_summaries_empty(self, vault: Vault) -> None:
         result = dispatch_tool(vault, "list_page_summaries", {"directory": "wiki/concepts"})
-        assert "No pages" in result
+        assert "No files" in result
 
     def test_write_page_index_budget_warning(self, vault: Vault) -> None:
         big_index = "# Index\n" + "- hub " * 2000
@@ -212,3 +212,60 @@ class TestDispatch:
         assert "archive" in result
         archived = vault.read_file("wiki/archive/old.md")
         assert "archive" in archived
+
+    def test_list_directory_sources(self, vault: Vault) -> None:
+        """list_directory sees all files, including ones without frontmatter."""
+        src_dir = vault.root / "sources" / "typora"
+        src_dir.mkdir(parents=True)
+        (src_dir / "note1.md").write_text("# Plain markdown, no frontmatter")
+        (src_dir / "note2.md").write_text("Another plain file")
+        (src_dir / "image.png").write_bytes(b"\x89PNG\r\n")
+        result = dispatch_tool(vault, "list_directory", {"directory": "sources/typora"})
+        assert "3 total" in result
+        assert "note1.md" in result
+        assert "note2.md" in result
+        assert "image.png" in result
+        assert ".md" in result
+        assert ".png" in result
+
+    def test_list_directory_empty(self, vault: Vault) -> None:
+        empty_dir = vault.root / "sources" / "empty"
+        empty_dir.mkdir(parents=True)
+        result = dispatch_tool(vault, "list_directory", {"directory": "sources/empty"})
+        assert "No files" in result
+
+    def test_list_directory_not_found(self, vault: Vault) -> None:
+        result = dispatch_tool(vault, "list_directory", {"directory": "nonexistent"})
+        assert "Error" in result or "not found" in result
+
+    def test_list_directory_with_pattern(self, vault: Vault) -> None:
+        vault.save_source("sources/articles/a.md", "# Article")
+        (vault.root / "sources" / "articles" / "b.txt").write_text("text file")
+        result = dispatch_tool(vault, "list_directory", {
+            "directory": "sources/articles",
+            "pattern": "*.md",
+        })
+        assert "a.md" in result
+        assert "b.txt" not in result
+
+    def test_list_page_summaries_shows_no_frontmatter_files(self, vault: Vault) -> None:
+        """list_page_summaries now also reports files lacking frontmatter."""
+        vault.write_file(
+            "wiki/concepts/good.md",
+            "---\ntitle: Good\ntype: note\n---\n# Good page",
+        )
+        raw_path = vault.root / "wiki" / "concepts" / "raw.md"
+        raw_path.write_text("# Just plain markdown, no frontmatter")
+        result = dispatch_tool(vault, "list_page_summaries", {"directory": "wiki"})
+        assert "Good" in result
+        assert "without frontmatter" in result
+        assert "wiki/concepts/raw.md" in result
+
+    def test_list_page_summaries_sources_no_frontmatter(self, vault: Vault) -> None:
+        """list_page_summaries on sources/ shows files without frontmatter."""
+        src = vault.root / "sources" / "typora"
+        src.mkdir(parents=True)
+        (src / "note.md").write_text("# No frontmatter here")
+        result = dispatch_tool(vault, "list_page_summaries", {"directory": "sources"})
+        assert "without frontmatter" in result
+        assert "sources/typora/note.md" in result
