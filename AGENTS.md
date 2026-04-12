@@ -37,13 +37,14 @@ User input (CLI / Telegram / Gateway)
 | Module | LOC | Role | Key types/functions |
 |--------|-----|------|---------------------|
 | `agent.py` | ~1200 | Agent loop, context assembly, system prompt (with schema core) | `KnowledgeAgent`, `chat()`, `SYSTEM_PROMPT`, `PROMPT_SCHEMA_CORE` |
+| `session.py` | ~280 | Shared session logic (agent construction, finalization, journal, digest prompts) — used by both cli.py and gateway.py | `make_agent()`, `finalize_session()`, `build_digest_prompt()` |
 | `plan.py` | ~200 | Plan data model (legacy, kept for backward compat) | `Plan`, `PlanStatus`, `PlanStore` |
 | `tools/definitions.py` | ~1100 | 9 tool schemas + legacy handlers + dispatch | `TOOL_SCHEMAS`, `TOOL_HANDLERS`, `dispatch_tool()` |
 | `vault.py` | 882 | On-disk vault: reads, writes, git batching, FTS, stats | `Vault`, `write_file()`, `read_file()`, `init()`, `rebuild_search_index()` |
-| `cli.py` | ~700 | CLI commands, session finalization, journal generation | `cmd_chat()`, `cmd_trace()`, `_finalize_session()`, `main()` |
+| `cli.py` | ~500 | CLI commands, interactive plan approval, UI | `cmd_chat()`, `cmd_trace()`, `_approve_and_execute()`, `main()` |
 | `tools/policy.py` | ~300 | Pre-dispatch safety gates (read-before-write, etc.) | `check_pre_dispatch()`, `PolicyContext` |
 | `trace.py` | 334 | Structured trace for agent observability | `TraceCollector`, `record_tool_call()`, `render_human()` |
-| `gateway.py` | 243 | Long-running gateway (Telegram + cron digest/lint) | `run_gateway()` |
+| `gateway.py` | ~200 | Long-running gateway (Telegram + cron digest/lint) | `run_gateway()`, `Gateway` |
 | `adapters/anthropic_provider.py` | 206 | Anthropic Messages API adapter | `AnthropicProvider` |
 | `adapters/retry.py` | 127 | Exponential backoff for LLM calls | `with_retry()` |
 | `config.py` | 127 | Config from `.meta/config.yaml` + env vars | `Config.load()` |
@@ -69,7 +70,8 @@ User input (CLI / Telegram / Gateway)
 | How git commits happen | `vault.py` — `_end_operation()`, `_git_commit()` |
 | How search works | `search.py` — `SearchIndex` (SQLite FTS5) |
 | The CLI command routing | `cli.py` — `main()` at the bottom |
-| How sessions are saved on exit | `cli.py` — `_finalize_session()` |
+| How sessions are saved on exit | `session.py` — `finalize_session()` (shared by CLI + Gateway) |
+| How agents are constructed | `session.py` — `make_agent()` (shared by CLI + Gateway) |
 | Agent run traces (observability) | `trace.py` — `TraceCollector`; CLI: `nw trace` |
 | How Anthropic messages are shaped | `adapters/anthropic_provider.py` — `_to_anthropic_messages()` |
 | Gateway cron logic | `gateway.py` — `_periodic_tasks()` |
@@ -116,6 +118,7 @@ Tests are in `tests/`. All use pytest, create temp vaults with `auto_git=False`,
 | `test_promote_insight.py` | Journal → wiki promotion tool |
 | `test_git.py` | Git auto-commit integration |
 | `test_telegram_adapter.py` | Telegram adapter basics |
+| `test_session.py` | Shared session logic (make_agent, finalize, digest prompts) |
 
 **Pattern for adding a new tool:**
 1. Add schema to `TOOL_SCHEMAS` and handler to `TOOL_HANDLERS` in `tools/definitions.py`

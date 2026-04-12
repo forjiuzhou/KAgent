@@ -258,8 +258,8 @@ class TestJournalGeneration:
 
 class TestFinalizationWithJournal:
     def test_finalize_includes_llm_journal(self, vault: Vault) -> None:
-        """_finalize_session calls generate_journal_summary and writes slots."""
-        from noteweaver.cli import _finalize_session
+        """finalize_session calls generate_journal_summary and writes slots."""
+        from noteweaver.session import finalize_session
 
         provider = MagicMock()
         provider.simple_completion.return_value = (
@@ -282,7 +282,7 @@ class TestFinalizationWithJournal:
         agent.messages.append({"role": "assistant", "content": "world"})
 
         exchanges = [{"user": "create a note", "tools": ["write_page"], "reply": "world"}]
-        _finalize_session(vault, agent, exchanges, "chat")
+        finalize_session(vault, agent, exchanges, "chat", run_organize=False)
 
         from datetime import datetime
         today = datetime.now().strftime("%Y-%m-%d")

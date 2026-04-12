@@ -3,6 +3,9 @@
 Manages platform adapters and routes messages to the KnowledgeAgent.
 All adapters share the same vault and agent instance.
 
+Uses ``noteweaver.session`` for agent construction, session finalization,
+digest prompts, and digest-date tracking — shared with ``cli.py``.
+
 Usage:
     nw gateway              # start gateway (reads config from env vars)
     NW_TELEGRAM_TOKEN=...   # enable Telegram
@@ -17,10 +20,14 @@ import os
 from pathlib import Path
 
 from noteweaver.adapters.base import BaseAdapter, IncomingMessage, OutgoingMessage
-from noteweaver.agent import KnowledgeAgent
-from noteweaver.config import Config
 from noteweaver.plan import PlanStatus
-from noteweaver.vault import Vault
+from noteweaver.session import (
+    make_agent,
+    finalize_session,
+    build_digest_prompt,
+    load_last_digest_date,
+    save_last_digest_date,
+)
 
 log = logging.getLogger(__name__)
 
@@ -29,44 +36,16 @@ class Gateway:
     """Manages IM adapters and routes messages to the Agent."""
 
     def __init__(self, vault_path: Path) -> None:
-        self.vault = Vault(vault_path)
-        if not self.vault.exists():
-            raise RuntimeError(f"No vault at {vault_path}. Run `nw init` first.")
-
-        cfg = Config.load(vault_path)
-        if not cfg.api_key:
-            raise RuntimeError("No LLM API key configured. Set OPENAI_API_KEY or ANTHROPIC_API_KEY.")
-
-        from noteweaver.agent import create_provider
-        provider = create_provider(
-            cfg.provider, api_key=cfg.api_key, base_url=cfg.base_url
-        )
-
-        self.agent = KnowledgeAgent(
-            vault=self.vault,
-            model=cfg.model,
-            provider=provider,
-        )
+        self.vault, self.agent, _cfg = make_agent(vault_path)
         self.adapters: list[BaseAdapter] = []
         self._lock = asyncio.Lock()
         self._message_count = 0
-        self._SAVE_INTERVAL = 10  # save transcript every N messages
+        self._SAVE_INTERVAL = 10
         self._active_chat_ids: set[str] = set()
         self._pending_notifications: list[str] = []
         self._notify_hour = int(os.environ.get("NW_NOTIFY_HOUR", "9"))
         self._pending_plan_id: str | None = None
-
-    def _load_last_digest_date(self) -> str | None:
-        path = self.vault.meta_dir / "last-digest-date"
-        if path.is_file():
-            return path.read_text(encoding="utf-8").strip() or None
-        return None
-
-    def _save_last_digest_date(self) -> None:
-        from datetime import datetime
-        path = self.vault.meta_dir / "last-digest-date"
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(datetime.now().strftime("%Y-%m-%d"), encoding="utf-8")
+        self._exchanges: list[dict] = []
 
     def _setup_adapters(self) -> None:
         """Detect which platforms are configured and create adapters."""
@@ -128,21 +107,23 @@ class Gateway:
                     )
                 self._pending_plan_id = None
 
+            exchange: dict = {"user": msg.text, "tools": [], "reply": ""}
             reply_parts = []
             tool_parts = []
             try:
                 for chunk in self.agent.chat(msg.text):
                     if chunk.startswith("  📋 ") or chunk.startswith("  ↳ "):
                         tool_parts.append(chunk.strip())
+                        exchange["tools"].append(chunk.strip())
                     else:
                         reply_parts.append(chunk)
+                        exchange["reply"] = chunk
             except Exception as e:
                 log.error("Agent error: %s", e)
+                exchange["reply"] = f"(error: {e})"
                 return f"Error: {e}"
+            self._exchanges.append(exchange)
 
-            # Handle organize plans (the only source of pending plans in V2).
-            # Normal chat() writes directly and never creates plans.
-            # Plans only appear here from generate_organize_plan() / cron.
             pending_plans = self.agent.plan_store.list_pending()
             for plan in pending_plans:
                 self._pending_plan_id = plan.id
@@ -211,17 +192,18 @@ class Gateway:
                 async with self._lock:
                     try:
                         self.agent.set_attended(False)
-                        since = self._load_last_digest_date()
-                        since_hint = f" Only review journals after {since}." if since else ""
-                        for chunk in self.agent.chat(
-                            "Review recent journal entries and promote any insights "
-                            "worth capturing as wiki pages. Write findings as "
-                            "'#### Promotion Candidates' sections in today's "
-                            "journal — the user will review them interactively."
-                            + since_hint
-                        ):
-                            pass
-                        self._save_last_digest_date()
+                        prompt = build_digest_prompt(self.vault)
+                        exchange: dict = {"user": "digest", "tools": [], "reply": ""}
+                        for chunk in self.agent.chat(prompt):
+                            if chunk.startswith("  📋 ") or chunk.startswith("  ↳ "):
+                                exchange["tools"].append(chunk.strip())
+                            else:
+                                exchange["reply"] = chunk
+                        save_last_digest_date(self.vault)
+                        finalize_session(
+                            self.vault, self.agent, [exchange], "digest",
+                            run_organize=False,
+                        )
                     except Exception as e:
                         log.error("Cron digest failed: %s", e)
                     finally:
@@ -275,11 +257,13 @@ class Gateway:
             cron_task.cancel()
             log.info("Shutting down...")
             try:
-                self.agent.save_transcript()
-                self.agent.save_session_memory()
-                log.info("Transcript and session memory saved.")
+                finalize_session(
+                    self.vault, self.agent, self._exchanges, "chat",
+                    run_organize=False,
+                )
+                log.info("Session finalized (transcript, trace, memory, journal).")
             except Exception as e:
-                log.warning("Failed to save on shutdown: %s", e)
+                log.warning("Failed to finalize session on shutdown: %s", e)
             for adapter in self.adapters:
                 await adapter.stop()
             log.info("Gateway stopped.")
