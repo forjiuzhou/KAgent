@@ -1648,6 +1648,43 @@ Add related links. Use proper frontmatter.
             path.unlink()
 
     # ------------------------------------------------------------------
+    # Skill execution
+    # ------------------------------------------------------------------
+
+    def run_skill(
+        self,
+        skill_name: str,
+        **kwargs,
+    ) -> Generator[str, None, "SkillResult"]:
+        """Run a named skill, yielding progress strings.
+
+        Skills are multi-step workflows that sit above atomic tools.
+        They use ``agent.chat()`` internally with carefully crafted
+        prompts, so the agent's tool dispatch and policy layer still
+        apply.
+
+        Returns the final ``SkillResult`` from the generator.
+        """
+        from noteweaver.skills import get_skill, SkillContext, SkillResult
+
+        skill = get_skill(skill_name)
+        if skill is None:
+            return SkillResult(
+                skill_name=skill_name,
+                success=False,
+                summary=f"Unknown skill: {skill_name}",
+            )
+
+        ctx = SkillContext(
+            vault=self.vault,
+            agent=self,
+            attended=self._policy_ctx.attended,
+            dry_run=kwargs.pop("dry_run", False),
+        )
+
+        return (yield from skill.run(ctx, **kwargs))
+
+    # ------------------------------------------------------------------
     # Sizing helpers
     # ------------------------------------------------------------------
 
