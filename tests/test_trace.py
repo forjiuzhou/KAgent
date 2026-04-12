@@ -37,6 +37,15 @@ class TestTraceCollector:
         assert tc.session_meta["model"] == "gpt-4o"
         assert tc.session_meta["attended"] is True
 
+    def test_record_user_message(self) -> None:
+        tc = TraceCollector()
+        tc.record_user_message(message="hello world")
+        assert len(tc.events) == 1
+        ev = tc.events[0]
+        assert ev.kind == "user_message"
+        assert ev.data["message"] == "hello world"
+        assert ev.data["message_chars"] == 11
+
     def test_record_context_assembly(self) -> None:
         tc = TraceCollector()
         tc.record_context_assembly(
@@ -55,6 +64,71 @@ class TestTraceCollector:
         assert ev.data["system_prompt_chars"] == 5000
         assert ev.data["session_memory_injected"] is True
         assert ev.data["estimated_tokens"] == 1250
+
+    def test_record_llm_request(self) -> None:
+        tc = TraceCollector()
+        tc.record_llm_request(
+            step=1,
+            model="gpt-4o",
+            message_count=5,
+            tool_count=9,
+            estimated_prompt_chars=12000,
+        )
+        assert len(tc.events) == 1
+        ev = tc.events[0]
+        assert ev.kind == "llm_request"
+        assert ev.data["step"] == 1
+        assert ev.data["model"] == "gpt-4o"
+        assert ev.data["message_count"] == 5
+        assert ev.data["tool_count"] == 9
+        assert ev.data["estimated_prompt_chars"] == 12000
+
+    def test_record_llm_response_with_content(self) -> None:
+        tc = TraceCollector()
+        tc.record_llm_response(
+            step=1,
+            has_content=True,
+            content_preview="Here is my response...",
+            tool_calls=None,
+            duration_ms=450.5,
+        )
+        assert len(tc.events) == 1
+        ev = tc.events[0]
+        assert ev.kind == "llm_response"
+        assert ev.data["has_content"] is True
+        assert ev.data["content_preview"] == "Here is my response..."
+        assert ev.data["tool_call_count"] == 0
+        assert ev.data["duration_ms"] == 450.5
+
+    def test_record_llm_response_with_tool_calls(self) -> None:
+        tc = TraceCollector()
+        tool_calls = [
+            {"name": "read_page", "arguments": {"path": "wiki/index.md"}},
+            {"name": "search", "arguments": {"query": "test"}},
+        ]
+        tc.record_llm_response(
+            step=2,
+            has_content=False,
+            content_preview="",
+            tool_calls=tool_calls,
+            duration_ms=300.0,
+        )
+        ev = tc.events[0]
+        assert ev.data["tool_call_count"] == 2
+        assert ev.data["tool_calls"] == tool_calls
+
+    def test_record_llm_response_with_error(self) -> None:
+        tc = TraceCollector()
+        tc.record_llm_response(
+            step=1,
+            has_content=False,
+            content_preview="",
+            tool_calls=None,
+            duration_ms=100.0,
+            error="RateLimitError: too many requests",
+        )
+        ev = tc.events[0]
+        assert ev.data["error"] == "RateLimitError: too many requests"
 
     def test_record_tool_call(self) -> None:
         tc = TraceCollector()
@@ -114,6 +188,55 @@ class TestTraceCollector:
         )
         assert len(tc.events[0].data["result_preview"]) == 500
         assert tc.events[0].data["result_chars"] == 1000
+
+    def test_result_full_preserved_up_to_limit(self) -> None:
+        tc = TraceCollector()
+        long_result = "y" * 2000
+        tc.record_tool_call(
+            name="read_page",
+            arguments={"path": "test.md"},
+            policy_allowed=True,
+            policy_warning=None,
+            result_preview=long_result,
+            duration_ms=1.0,
+        )
+        assert len(tc.events[0].data["result_full"]) == 2000
+        assert tc.events[0].data["result_chars"] == 2000
+
+    def test_record_agent_reply(self) -> None:
+        tc = TraceCollector()
+        tc.record_agent_reply(content="This is my reply to the user.")
+        assert len(tc.events) == 1
+        ev = tc.events[0]
+        assert ev.kind == "agent_reply"
+        assert ev.data["content"] == "This is my reply to the user."
+        assert ev.data["content_chars"] == 29
+
+    def test_record_error(self) -> None:
+        tc = TraceCollector()
+        tc.record_error(
+            error_type="ValueError",
+            message="invalid argument",
+            traceback_str="Traceback (most recent call last):\n  ...",
+            context={"step": 3, "tool": "read_page"},
+        )
+        assert len(tc.events) == 1
+        ev = tc.events[0]
+        assert ev.kind == "error"
+        assert ev.data["error_type"] == "ValueError"
+        assert ev.data["message"] == "invalid argument"
+        assert "Traceback" in ev.data["traceback"]
+        assert ev.data["context"]["step"] == 3
+
+    def test_record_error_without_traceback(self) -> None:
+        tc = TraceCollector()
+        tc.record_error(
+            error_type="TimeoutError",
+            message="request timed out",
+        )
+        ev = tc.events[0]
+        assert ev.kind == "error"
+        assert "traceback" not in ev.data
 
     def test_record_state_mutation(self) -> None:
         tc = TraceCollector()
@@ -240,6 +363,91 @@ class TestTracePersistence:
         kinds = [e["kind"] for e in events]
         assert kinds == ["session_meta", "context_assembly", "tool_call", "turn_end"]
 
+    def test_load_roundtrip_all_event_types(self, tmp_path: Path) -> None:
+        """Ensure all new event types survive save/load."""
+        tc = TraceCollector()
+        tc.set_session_meta(
+            model="gpt-4o",
+            provider="openai",
+            attended=True,
+            vault_path="/tmp/v",
+            has_session_memory=False,
+            has_long_term_memory=False,
+            has_preferences=False,
+        )
+        tc.record_user_message(message="What is attention?")
+        tc.record_context_assembly(
+            system_prompt_chars=3000,
+            session_memory_injected=False,
+            pending_proposals_injected=False,
+            summary_active=False,
+            summary_boundary=1,
+            recent_message_count=1,
+            total_query_messages=2,
+            estimated_tokens=750,
+        )
+        tc.record_llm_request(
+            step=1,
+            model="gpt-4o",
+            message_count=2,
+            tool_count=9,
+            estimated_prompt_chars=3000,
+        )
+        tc.record_llm_response(
+            step=1,
+            has_content=False,
+            content_preview="",
+            tool_calls=[{"name": "search", "arguments": {"query": "attention"}}],
+            duration_ms=200.0,
+        )
+        tc.record_tool_call(
+            name="search",
+            arguments={"query": "attention"},
+            policy_allowed=True,
+            policy_warning=None,
+            result_preview="Found 3 results",
+            duration_ms=5.0,
+        )
+        tc.record_llm_request(
+            step=2,
+            model="gpt-4o",
+            message_count=4,
+            tool_count=9,
+            estimated_prompt_chars=5000,
+        )
+        tc.record_llm_response(
+            step=2,
+            has_content=True,
+            content_preview="Attention is a mechanism...",
+            tool_calls=None,
+            duration_ms=600.0,
+        )
+        tc.record_agent_reply(content="Attention is a mechanism...")
+        tc.record_error(
+            error_type="TestError",
+            message="test only",
+            traceback_str="fake traceback",
+        )
+        tc.record_turn_end(
+            steps_taken=2,
+            has_response=True,
+            hit_max_steps=False,
+        )
+
+        path = tc.save(tmp_path)
+        events = TraceCollector.load(path)
+
+        kinds = [e["kind"] for e in events]
+        assert "session_meta" in kinds
+        assert "user_message" in kinds
+        assert "context_assembly" in kinds
+        assert "llm_request" in kinds
+        assert "llm_response" in kinds
+        assert "tool_call" in kinds
+        assert "agent_reply" in kinds
+        assert "error" in kinds
+        assert "turn_end" in kinds
+
 
 # ======================================================================
 # Human-readable rendering
@@ -312,6 +520,132 @@ class TestTraceRendering:
     def test_render_empty_trace(self) -> None:
         report = TraceCollector.render_human([])
         assert report == ""
+
+    def test_render_new_event_types(self) -> None:
+        """Verify that new event types render correctly in compact mode."""
+        events = [
+            {
+                "ts": "2025-01-01T00:00:00.000Z",
+                "kind": "user_message",
+                "message": "Hello agent",
+                "message_chars": 11,
+            },
+            {
+                "ts": "2025-01-01T00:00:00.100Z",
+                "kind": "llm_request",
+                "step": 1,
+                "model": "gpt-4o",
+                "message_count": 3,
+                "tool_count": 9,
+                "estimated_prompt_chars": 5000,
+            },
+            {
+                "ts": "2025-01-01T00:00:00.500Z",
+                "kind": "llm_response",
+                "step": 1,
+                "has_content": True,
+                "content_preview": "Hello! How can I help?",
+                "content_chars": 22,
+                "tool_call_count": 0,
+                "duration_ms": 400.0,
+            },
+            {
+                "ts": "2025-01-01T00:00:00.600Z",
+                "kind": "agent_reply",
+                "content": "Hello! How can I help?",
+                "content_chars": 22,
+            },
+            {
+                "ts": "2025-01-01T00:00:00.700Z",
+                "kind": "error",
+                "error_type": "ValueError",
+                "message": "something went wrong",
+                "traceback": "Traceback:\n  File ...\nValueError: ...",
+            },
+        ]
+
+        report = TraceCollector.render_human(events)
+        assert "User Message" in report
+        assert "Hello agent" in report
+        assert "LLM Request (step 1)" in report
+        assert "gpt-4o" in report
+        assert "LLM Response (step 1)" in report
+        assert "400" in report
+        assert "Agent Reply" in report
+        assert "ERROR: ValueError" in report
+        assert "something went wrong" in report
+        assert "Traceback" not in report  # compact mode hides traceback
+
+    def test_render_verbose_mode(self) -> None:
+        """Verify that verbose mode shows full debug information."""
+        events = [
+            {
+                "ts": "2025-01-01T00:00:00.000Z",
+                "kind": "user_message",
+                "message": "Explain attention mechanism in detail please",
+                "message_chars": 46,
+            },
+            {
+                "ts": "2025-01-01T00:00:00.100Z",
+                "kind": "llm_response",
+                "step": 1,
+                "has_content": False,
+                "content_preview": "",
+                "content_chars": 0,
+                "tool_call_count": 1,
+                "tool_calls": [
+                    {"name": "search", "arguments": {"query": "attention mechanism"}},
+                ],
+                "duration_ms": 300.0,
+            },
+            {
+                "ts": "2025-01-01T00:00:00.200Z",
+                "kind": "tool_call",
+                "name": "search",
+                "arguments": {"query": "attention mechanism"},
+                "policy_allowed": True,
+                "policy_warning": None,
+                "result_preview": "Found 2 results",
+                "result_full": "Found 2 results:\n1. Attention page\n2. Transformer page",
+                "result_chars": 55,
+                "duration_ms": 5.0,
+                "error": None,
+            },
+            {
+                "ts": "2025-01-01T00:00:00.600Z",
+                "kind": "agent_reply",
+                "content": "Attention mechanisms allow models to focus...",
+                "content_chars": 44,
+            },
+            {
+                "ts": "2025-01-01T00:00:00.700Z",
+                "kind": "error",
+                "error_type": "ValueError",
+                "message": "something went wrong",
+                "traceback": "Traceback (most recent call last):\n  File test.py\nValueError: bad",
+                "context": {"step": 3, "tool": "read_page"},
+            },
+        ]
+
+        report = TraceCollector.render_human(events, verbose=True)
+
+        # user_message: verbose shows full text
+        assert "Explain attention mechanism in detail please" in report
+
+        # llm_response: verbose shows tool_calls detail
+        assert "search" in report
+        assert "attention mechanism" in report
+
+        # tool_call: verbose shows full result, not just preview
+        assert "Transformer page" in report  # from result_full
+        assert "Arguments:" in report
+
+        # agent_reply: verbose shows full content
+        assert "Attention mechanisms allow models to focus" in report
+
+        # error: verbose shows traceback
+        assert "Traceback (most recent call last)" in report
+        assert "Context:" in report
 
 
 # ======================================================================

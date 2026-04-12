@@ -498,16 +498,35 @@ def cmd_trace(vault_path: Path, args: list[str]) -> None:
     """Show or list agent traces for debugging.
 
     Usage:
-        nw trace              — list recent traces
-        nw trace <file>       — render a specific trace (human-readable)
-        nw trace --raw <file> — output raw JSONL for machine consumption
+        nw trace                   — list recent traces
+        nw trace <file>            — render a trace (compact)
+        nw trace -v <file>         — render with full debug info
+        nw trace --verbose <file>  — same as -v
+        nw trace --raw <file>      — output raw JSONL for machine consumption
+        nw trace --last             — show the most recent trace
+        nw trace --last -v          — most recent trace, verbose
     """
     from noteweaver.trace import TraceCollector
 
     trace_dir = vault_path / ".meta" / "traces"
 
     raw_mode = "--raw" in args
-    remaining = [a for a in args if a != "--raw"]
+    verbose_mode = "--verbose" in args or "-v" in args
+    last_mode = "--last" in args
+    remaining = [
+        a for a in args
+        if a not in ("--raw", "--verbose", "-v", "--last")
+    ]
+
+    if last_mode and not remaining:
+        if not trace_dir.is_dir():
+            console.print("[info]No traces found.[/info]")
+            return
+        traces = sorted(trace_dir.glob("*.trace.jsonl"))
+        if not traces:
+            console.print("[info]No traces found.[/info]")
+            return
+        remaining = [traces[-1].name]
 
     if not remaining:
         if not trace_dir.is_dir():
@@ -521,7 +540,11 @@ def cmd_trace(vault_path: Path, args: list[str]) -> None:
         for t in traces[-20:]:
             size = t.stat().st_size
             console.print(f"  {t.name}  ({size:,} bytes)")
-        console.print(f"\n[info]Run `nw trace <filename>` to view a trace.[/info]")
+        console.print(
+            f"\n[info]Run `nw trace <filename>` to view a trace.\n"
+            f"     `nw trace -v <filename>` for verbose debug output.\n"
+            f"     `nw trace --last` to view the most recent trace.[/info]"
+        )
         return
 
     target = remaining[0]
@@ -538,7 +561,7 @@ def cmd_trace(vault_path: Path, args: list[str]) -> None:
         sys.stdout.write(path.read_text(encoding="utf-8"))
     else:
         events = TraceCollector.load(path)
-        report = TraceCollector.render_human(events)
+        report = TraceCollector.render_human(events, verbose=verbose_mode)
         console.print(report)
 
 
@@ -601,6 +624,8 @@ def main() -> None:
                 "  [bold]nw rebuild-index[/bold]     Rebuild index.md and search index\n"
                 "  [bold]nw status[/bold]            Show vault status\n"
                 "  [bold]nw trace[/bold]             List/view agent run traces\n"
+                "  [bold]nw trace -v <file>[/bold]   View trace with full debug info\n"
+                "  [bold]nw trace --last[/bold]      View the most recent trace\n"
                 "  [bold]nw gateway[/bold]           Start IM gateway (Telegram/Feishu)\n"
                 "  [bold]nw help[/bold]              Show this help\n\n"
                 "Environment:\n"

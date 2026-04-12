@@ -776,6 +776,8 @@ class KnowledgeAgent:
         self.messages.append({"role": "user", "content": user_message})
         self._update_session_summary()
 
+        self._trace.record_user_message(message=user_message)
+
         short_msg = (
             user_message[:60] + "..." if len(user_message) > 60 else user_message
         )
@@ -790,10 +792,63 @@ class KnowledgeAgent:
             for _ in range(max_steps):
                 steps_taken += 1
                 query_messages = self._build_messages_for_query()
-                completion, raw_message = self.provider.chat_completion(
+
+                prompt_chars = sum(len(_msg_content(m)) for m in query_messages)
+                self._trace.record_llm_request(
+                    step=steps_taken,
                     model=self.model,
-                    messages=query_messages,
-                    tools=TOOL_SCHEMAS,
+                    message_count=len(query_messages),
+                    tool_count=len(TOOL_SCHEMAS),
+                    estimated_prompt_chars=prompt_chars,
+                )
+
+                t_llm = time.monotonic()
+                llm_error: str | None = None
+                try:
+                    completion, raw_message = self.provider.chat_completion(
+                        model=self.model,
+                        messages=query_messages,
+                        tools=TOOL_SCHEMAS,
+                    )
+                except Exception as exc:
+                    llm_error = f"{type(exc).__name__}: {exc}"
+                    self._trace.record_llm_response(
+                        step=steps_taken,
+                        has_content=False,
+                        content_preview="",
+                        tool_calls=None,
+                        duration_ms=(time.monotonic() - t_llm) * 1000,
+                        error=llm_error,
+                    )
+                    self._trace.record_error(
+                        error_type=type(exc).__name__,
+                        message=str(exc),
+                        traceback_str=self._trace.capture_traceback(),
+                        context={"step": steps_taken, "phase": "llm_call"},
+                    )
+                    raise
+
+                llm_duration = (time.monotonic() - t_llm) * 1000
+
+                tc_summaries: list[dict] | None = None
+                if completion.tool_calls:
+                    tc_summaries = []
+                    for tc in completion.tool_calls:
+                        try:
+                            tc_args = json.loads(tc.arguments)
+                        except json.JSONDecodeError:
+                            tc_args = {}
+                        tc_summaries.append({
+                            "name": tc.name,
+                            "arguments": tc_args,
+                        })
+
+                self._trace.record_llm_response(
+                    step=steps_taken,
+                    has_content=bool(completion.content),
+                    content_preview=completion.content or "",
+                    tool_calls=tc_summaries,
+                    duration_ms=llm_duration,
                 )
 
                 self.messages.append(raw_message)
@@ -801,6 +856,9 @@ class KnowledgeAgent:
                 if not completion.tool_calls:
                     if completion.content:
                         has_response = True
+                        self._trace.record_agent_reply(
+                            content=completion.content,
+                        )
                         yield completion.content
                     return
 
@@ -829,6 +887,16 @@ class KnowledgeAgent:
                             error_msg = f"{type(exc).__name__}: {exc}"
                             result = (
                                 f"Error executing {tool_call.name}: {error_msg}"
+                            )
+                            self._trace.record_error(
+                                error_type=type(exc).__name__,
+                                message=str(exc),
+                                traceback_str=self._trace.capture_traceback(),
+                                context={
+                                    "step": steps_taken,
+                                    "tool": tool_call.name,
+                                    "arguments": fn_args,
+                                },
                             )
 
                     duration_ms = (time.monotonic() - t0) * 1000
