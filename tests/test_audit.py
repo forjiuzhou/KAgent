@@ -849,7 +849,26 @@ class TestProgressiveDisclosure:
             "content": _page("New ML Page", tags=["ml"], summary="A new ML page"),
         }}]
         report = agent._ensure_progressive_disclosure(plan)
-        assert any("hub" in r.lower() or "链接" in r for r in report)
+        assert any("链接" in r for r in report)
+        hub_content = vault.read_file("wiki/concepts/ml-hub.md")
+        assert "[[New ML Page]]" in hub_content
+
+    def test_orphan_page_creates_hub_when_no_hub_exists(
+        self, vault: Vault, agent: KnowledgeAgent,
+    ) -> None:
+        """When no hub exists for a tag, a new hub is created for the orphan page."""
+        vault.write_file(
+            "wiki/concepts/solo.md",
+            _page("Solo Page", tags=["niche"], summary="A solo page"),
+        )
+        plan = [{"name": "write_page", "arguments": {
+            "path": "wiki/concepts/solo.md",
+            "content": _page("Solo Page", tags=["niche"], summary="A solo page"),
+        }}]
+        report = agent._ensure_progressive_disclosure(plan)
+        assert any("hub" in r.lower() for r in report)
+        hub_content = vault.read_file("wiki/concepts/niche.md")
+        assert "[[Solo Page]]" in hub_content
 
     def test_already_linked_page_no_action(self, vault: Vault, agent: KnowledgeAgent) -> None:
         """A page that already has inbound links needs no disclosure fix."""

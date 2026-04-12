@@ -13,7 +13,7 @@ Action tools (used during plan execution after user approval):
 
 Automated (no longer tools — system handles internally):
   append_log → auto after plan execution
-  add_related_link → auto via _ensure_progressive_disclosure
+  organize(action="link") → auto via _ensure_progressive_disclosure
 
 Tool sets:
   TOOL_SCHEMAS       — all tools (used during plan execution)
