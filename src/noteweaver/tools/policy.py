@@ -1,5 +1,7 @@
 """Runtime policy layer for tool dispatch.
 
+V2 simplified policy — safety gates only, no Plan classification.
+
 Two orthogonal dimensions of control:
 
 1. **Write-target classification** — what is being modified?
@@ -14,7 +16,10 @@ Two orthogonal dimensions of control:
    - unattended (gateway cron digest): content writes blocked
 
 Content-layer gates (attended mode):
-   - write_page: target page must have been read in this session
+   - write_page: target page must have been read in this session (for overwrites)
+   - append_section: target page must have been read in this session
+   - update_frontmatter: target page must have been read in this session
+   - add_related_link: target page must have been read in this session
    - .schema/preferences.md: allowed, but agent must inform user
 """
 
@@ -64,7 +69,6 @@ def classify_write_target(tool_name: str, path: str) -> WriteTarget:
     if path in _STRUCTURE_PATHS:
         return WriteTarget.STRUCTURE
 
-    # organize(action="link") and restructure are structural
     if tool_name in ("restructure",):
         return WriteTarget.STRUCTURE
 
@@ -89,19 +93,23 @@ class RiskTier(Enum):
 
 
 TOOL_TIERS: dict[str, RiskTier] = {
-    # Observation tools — all READ
+    # Read tools
     "read_page": RiskTier.READ,
     "search": RiskTier.READ,
-    "survey_topic": RiskTier.READ,
     "get_backlinks": RiskTier.READ,
     "list_pages": RiskTier.READ,
     "fetch_url": RiskTier.READ,
-    # Action tools
+    # V2 write tools
+    "write_page": RiskTier.HIGH_WRITE,
+    "append_section": RiskTier.MEDIUM_WRITE,
+    "update_frontmatter": RiskTier.MEDIUM_WRITE,
+    "add_related_link": RiskTier.LOW_WRITE,
+    # Legacy tools (kept for backward compatibility)
+    "survey_topic": RiskTier.READ,
     "capture": RiskTier.MEDIUM_WRITE,
     "ingest": RiskTier.MEDIUM_WRITE,
     "organize": RiskTier.MEDIUM_WRITE,
     "restructure": RiskTier.HIGH_WRITE,
-    "write_page": RiskTier.HIGH_WRITE,
 }
 
 
@@ -141,7 +149,8 @@ class PolicyContext:
         if name == "read_page" and path:
             if path not in self.pages_read:
                 self.pages_read.append(path)
-        if name in ("write_page", "capture"):
+        if name in ("write_page", "capture", "append_section",
+                     "update_frontmatter", "add_related_link"):
             target = args.get("target", path)
             if target and target not in self.pages_written:
                 self.pages_written.append(target)
@@ -184,21 +193,17 @@ def check_pre_dispatch(
     path = args.get("path", "") or args.get("target", "") or ""
     target = classify_write_target(name, path)
 
-    # Runtime and structure: always OK
     if target in (WriteTarget.RUNTIME, WriteTarget.STRUCTURE):
         return PolicyVerdict(allowed=True)
 
-    # Journal: always OK
     if target == WriteTarget.JOURNAL:
         return PolicyVerdict(allowed=True)
 
-    # Content or source in unattended mode: block
     if not ctx.attended and target in (WriteTarget.CONTENT, WriteTarget.SOURCE):
         return PolicyVerdict(allowed=False, warning=_UNATTENDED_CONTENT_MSG)
 
     # --- Attended mode gates ---
 
-    # preferences.md
     if path == _PREFERENCES_PATH:
         return PolicyVerdict(
             allowed=True,
@@ -213,7 +218,11 @@ def check_pre_dispatch(
     if name == "write_page":
         return _check_write_page(path, args, ctx)
 
-    # organize with update_metadata or link requires read
+    # Fine-grained write tools require read-before-write
+    if name in ("append_section", "update_frontmatter", "add_related_link"):
+        return _check_read_before_write(name, path, ctx)
+
+    # Legacy: organize with update_metadata or link requires read
     if name == "organize" and args.get("action") in ("update_metadata", "link"):
         return _check_read_before_write(name, path, ctx)
 
@@ -254,13 +263,12 @@ def _check_write_page(
     if path in ctx.pages_read or path in ctx.pages_written:
         return PolicyVerdict(allowed=True)
 
-    # New page: must have done some navigation/search first
     if not ctx.navigation_done:
         return PolicyVerdict(
             allowed=False,
             warning=(
                 "Policy: survey the topic or search before creating a new page "
-                "to avoid duplicates. Call survey_topic(topic) or search(query) "
+                "to avoid duplicates. Call search(query) or list_pages() "
                 "first, then retry write_page."
             ),
         )
@@ -320,7 +328,7 @@ def _strip_frontmatter(content: str) -> str:
 
 
 # ======================================================================
-# Change type classification (system review of model suggestion)
+# Change type classification (legacy — kept for backward compatibility)
 # ======================================================================
 
 _STRUCTURAL_INTENTS = frozenset({"create", "restructure"})
@@ -334,12 +342,8 @@ def classify_change_type(
 ) -> str:
     """Verify and possibly override the model's change_type suggestion.
 
-    Rules:
-    - create / restructure intent → always structural
-    - append to non-existent target → structural (it would create a page)
-    - organize with archive → structural
-    - 3+ targets → structural
-    - Otherwise trust the model suggestion
+    Legacy function kept for backward compatibility with tests.
+    V2 does not use Plan-based classification.
     """
     if intent in _STRUCTURAL_INTENTS:
         return "structural"

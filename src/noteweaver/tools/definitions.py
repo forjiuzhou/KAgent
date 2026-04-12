@@ -1,23 +1,16 @@
 """Tool definitions for LLM function calling.
 
-Redesigned around user-level knowledge operations rather than file-level edits.
+V2 primitive tool set — low-semantic file operations.
 
-Observation tools (read-only, execute immediately):
-  read_page, search, survey_topic, get_backlinks, list_pages, fetch_url
+Read tools (always available):
+  read_page, search, get_backlinks, list_pages, fetch_url
 
-Planning tool (used during chat to submit change proposals):
-  submit_plan — submit a natural-language change proposal for user approval
-
-Action tools (used during plan execution after user approval):
-  capture, ingest, organize, restructure, write_page
-
-Automated (no longer tools — system handles internally):
-  append_log → auto after plan execution
-  organize(action="link") → auto via _ensure_progressive_disclosure
+Write tools (always available, policy gates enforce safety):
+  write_page, append_section, update_frontmatter, add_related_link
 
 Tool sets:
-  TOOL_SCHEMAS       — all tools (used during plan execution)
-  CHAT_TOOL_SCHEMAS  — observation + submit_plan (used during chat)
+  TOOL_SCHEMAS       — all tools (single set, used everywhere)
+  OBSERVATION_SCHEMAS — read-only subset (for reference / unattended mode)
 """
 
 from __future__ import annotations
@@ -38,7 +31,7 @@ from noteweaver.frontmatter import validate_frontmatter, extract_frontmatter
 
 TOOL_SCHEMAS: list[dict] = [
     # ------------------------------------------------------------------
-    # Observation tools (read-only)
+    # Read tools
     # ------------------------------------------------------------------
     {
         "type": "function",
@@ -100,30 +93,6 @@ TOOL_SCHEMAS: list[dict] = [
     {
         "type": "function",
         "function": {
-            "name": "survey_topic",
-            "description": (
-                "Assess a topic against the current knowledge base BEFORE "
-                "planning any writes. Returns: candidate pages that could "
-                "host the content, related tags/hubs, source material status, "
-                "backlink connections, and a suggested landing page. "
-                "This is your primary planning tool — call it before making "
-                "any knowledge capture plan."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "topic": {
-                        "type": "string",
-                        "description": "The topic to survey",
-                    },
-                },
-                "required": ["topic"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
             "name": "get_backlinks",
             "description": (
                 "Find all pages that link to a given page title via "
@@ -174,9 +143,7 @@ TOOL_SCHEMAS: list[dict] = [
             "name": "fetch_url",
             "description": (
                 "Fetch a web page and extract its content as markdown. "
-                "Use this to preview a URL's content during conversation. "
-                "To actually import a URL into the knowledge base, use "
-                "ingest(source_type='url') instead."
+                "Use this to preview or import a URL's content."
             ),
             "parameters": {
                 "type": "object",
@@ -191,179 +158,17 @@ TOOL_SCHEMAS: list[dict] = [
         },
     },
     # ------------------------------------------------------------------
-    # Action tools (trigger plan mode)
+    # Write tools
     # ------------------------------------------------------------------
-    {
-        "type": "function",
-        "function": {
-            "name": "capture",
-            "description": (
-                "Record knowledge into the vault. This is your primary write "
-                "tool for all knowledge capture: quick ideas, conversation "
-                "insights, new topics, additions to existing pages.\n\n"
-                "If target is given: appends content as a new section to that page.\n"
-                "If target is omitted: creates a new page (note by default). "
-                "Duplicates at note level are OK — organize/restructure can "
-                "merge them later.\n\n"
-                "The system automatically handles: frontmatter, related links, "
-                "hub linking, and operation logging."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "content": {
-                        "type": "string",
-                        "description": "The knowledge content to capture (markdown)",
-                    },
-                    "title": {
-                        "type": "string",
-                        "description": "Title for the page or section heading",
-                    },
-                    "tags": {
-                        "type": "array",
-                        "items": {"type": "string"},
-                        "description": "Tags for categorization",
-                    },
-                    "target": {
-                        "type": "string",
-                        "description": "Optional: path of existing page to append to",
-                    },
-                    "type": {
-                        "type": "string",
-                        "enum": ["note", "canonical", "synthesis"],
-                        "description": "Page type when creating new. Default: 'note'",
-                    },
-                },
-                "required": ["content", "title"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "ingest",
-            "description": (
-                "Bring external content into the knowledge base.\n\n"
-                "source_type='url': fetches the URL, saves raw content to "
-                "sources/, and creates wiki page(s) with key information.\n"
-                "source_type='file': reads a single file, optionally saves "
-                "to sources/, creates a wiki page.\n"
-                "source_type='directory': batch imports all .md files, "
-                "classifies by frontmatter, optionally triggers organization."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "source": {
-                        "type": "string",
-                        "description": "URL, file path, or directory path",
-                    },
-                    "source_type": {
-                        "type": "string",
-                        "enum": ["url", "file", "directory"],
-                        "description": "What kind of source this is",
-                    },
-                    "save_raw": {
-                        "type": "boolean",
-                        "description": "Save raw content to sources/. Default: true",
-                    },
-                    "organize": {
-                        "type": "boolean",
-                        "description": "Trigger organization after import (for directory). Default: false",
-                    },
-                },
-                "required": ["source", "source_type"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "organize",
-            "description": (
-                "Organize specific pages or small groups of pages.\n\n"
-                "Actions:\n"
-                "- classify: update type, tags, summary for imported pages\n"
-                "- update_metadata: update specific frontmatter fields\n"
-                "- archive: move page to archive (requires reason)\n"
-                "- link: add related links between pages"
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "target": {
-                        "type": "string",
-                        "description": "Page path, or 'imported' for all imported pages",
-                    },
-                    "action": {
-                        "type": "string",
-                        "enum": ["classify", "update_metadata", "archive", "link"],
-                        "description": "What kind of organization to perform",
-                    },
-                    "reason": {
-                        "type": "string",
-                        "description": "Required for archive action",
-                    },
-                    "metadata": {
-                        "type": "object",
-                        "description": "Fields to update for update_metadata action",
-                    },
-                    "link_to": {
-                        "type": "string",
-                        "description": "Page title to link to (for link action)",
-                    },
-                },
-                "required": ["target", "action"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "restructure",
-            "description": (
-                "Vault-wide structural changes.\n\n"
-                "Actions:\n"
-                "- merge_tags: replace old_tag with new_tag across all pages\n"
-                "- deduplicate: find and flag duplicate pages for review\n"
-                "- rebuild_hubs: create/update hubs for topics with 3+ pages\n"
-                "- audit: run full vault health check and report issues"
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "scope": {
-                        "type": "string",
-                        "description": "Scope: 'vault', 'topic:X', or 'tag:X'",
-                    },
-                    "action": {
-                        "type": "string",
-                        "enum": ["merge_tags", "deduplicate", "rebuild_hubs", "audit"],
-                        "description": "What structural change to perform",
-                    },
-                    "old_tag": {
-                        "type": "string",
-                        "description": "Tag to replace (for merge_tags)",
-                    },
-                    "new_tag": {
-                        "type": "string",
-                        "description": "Replacement tag (for merge_tags)",
-                    },
-                },
-                "required": ["scope", "action"],
-            },
-        },
-    },
     {
         "type": "function",
         "function": {
             "name": "write_page",
             "description": (
-                "Create or overwrite a full wiki page. This is the precise "
-                "control tool — use it when capture doesn't give enough "
-                "control over page structure. You MUST read the target page "
-                "first (read_page) before overwriting. Always include YAML "
-                "frontmatter with title, type, created/updated dates."
+                "Create or overwrite a full wiki page. You MUST read the "
+                "target page first (read_page) before overwriting an existing "
+                "page. Always include YAML frontmatter with title, type, "
+                "created/updated dates, summary, tags."
             ),
             "parameters": {
                 "type": "object",
@@ -381,86 +186,95 @@ TOOL_SCHEMAS: list[dict] = [
             },
         },
     },
-]
-
-# ------------------------------------------------------------------
-# Planning tool (chat phase only)
-# ------------------------------------------------------------------
-
-SUBMIT_PLAN_SCHEMA: dict = {
-    "type": "function",
-    "function": {
-        "name": "submit_plan",
-        "description": (
-            "Submit a knowledge base change proposal for user review. "
-            "Call this after surveying the topic and forming a plan. "
-            "Describe WHAT should change and WHY — the system handles "
-            "precise implementation after user approval.\n\n"
-            "change_type:\n"
-            "- 'incremental': appending to existing pages, adding links, "
-            "updating metadata — executes immediately, user is notified\n"
-            "- 'structural': creating new pages, new hubs, archiving, "
-            "restructuring — requires explicit user approval"
-        ),
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "summary": {
-                    "type": "string",
-                    "description": (
-                        "Human-readable description of the proposed changes. "
-                        "Be specific about what content goes where."
-                    ),
+    {
+        "type": "function",
+        "function": {
+            "name": "append_section",
+            "description": (
+                "Append a new section to an existing wiki page. The section "
+                "is inserted before the ## Related section if one exists, "
+                "otherwise appended at the end. Use this for incremental "
+                "additions to existing pages."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {
+                        "type": "string",
+                        "description": "Path of the existing wiki page",
+                    },
+                    "heading": {
+                        "type": "string",
+                        "description": "Heading for the new section",
+                    },
+                    "content": {
+                        "type": "string",
+                        "description": "Markdown content for the new section",
+                    },
                 },
-                "targets": {
-                    "type": "array",
-                    "items": {"type": "string"},
-                    "description": (
-                        "File paths that will be affected "
-                        "(e.g. 'wiki/concepts/react.md')"
-                    ),
-                },
-                "rationale": {
-                    "type": "string",
-                    "description": (
-                        "Why this change is appropriate — what context "
-                        "supports this decision"
-                    ),
-                },
-                "intent": {
-                    "type": "string",
-                    "enum": ["append", "create", "organize", "restructure"],
-                    "description": (
-                        "High-level intent: append (add to existing page), "
-                        "create (new page), organize (metadata/links/archive), "
-                        "restructure (vault-wide structural change)"
-                    ),
-                },
-                "change_type": {
-                    "type": "string",
-                    "enum": ["incremental", "structural"],
-                    "description": (
-                        "incremental = low-risk changes to existing content "
-                        "(auto-approved). structural = new pages, hubs, "
-                        "restructuring (requires user approval)."
-                    ),
-                },
-                "open_questions": {
-                    "type": "array",
-                    "items": {"type": "string"},
-                    "description": (
-                        "Uncertainties that the user might want to weigh in on"
-                    ),
-                },
+                "required": ["path", "heading", "content"],
             },
-            "required": ["summary", "rationale", "intent", "change_type"],
         },
     },
-}
+    {
+        "type": "function",
+        "function": {
+            "name": "update_frontmatter",
+            "description": (
+                "Update specific frontmatter fields on an existing wiki page. "
+                "Only the fields you specify will be changed; all other fields "
+                "and the page body are preserved."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {
+                        "type": "string",
+                        "description": "Path of the wiki page to update",
+                    },
+                    "fields": {
+                        "type": "object",
+                        "description": "Frontmatter fields to update, e.g. {\"tags\": [\"ai\"], \"summary\": \"...\"}",
+                    },
+                },
+                "required": ["path", "fields"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "add_related_link",
+            "description": (
+                "Add a [[wiki-link]] to the Related section of a page. "
+                "Creates the ## Related section if it doesn't exist. "
+                "Skips if the link already exists."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {
+                        "type": "string",
+                        "description": "Path of the wiki page",
+                    },
+                    "link_to": {
+                        "type": "string",
+                        "description": "Page title to link to",
+                    },
+                },
+                "required": ["path", "link_to"],
+            },
+        },
+    },
+]
+
+
+# ------------------------------------------------------------------
+# Tool subsets
+# ------------------------------------------------------------------
 
 _OBSERVATION_TOOL_NAMES = frozenset({
-    "read_page", "search", "survey_topic",
-    "get_backlinks", "list_pages", "fetch_url",
+    "read_page", "search", "get_backlinks", "list_pages", "fetch_url",
 })
 
 OBSERVATION_SCHEMAS: list[dict] = [
@@ -468,7 +282,19 @@ OBSERVATION_SCHEMAS: list[dict] = [
     if s["function"]["name"] in _OBSERVATION_TOOL_NAMES
 ]
 
-CHAT_TOOL_SCHEMAS: list[dict] = OBSERVATION_SCHEMAS + [SUBMIT_PLAN_SCHEMA]
+# V2: no separate CHAT_TOOL_SCHEMAS — agent always has full tool set.
+# Keep alias for backward compatibility with tests that import it.
+CHAT_TOOL_SCHEMAS: list[dict] = TOOL_SCHEMAS
+
+# Legacy: keep SUBMIT_PLAN_SCHEMA as empty for imports that reference it
+SUBMIT_PLAN_SCHEMA: dict = {
+    "type": "function",
+    "function": {
+        "name": "submit_plan",
+        "description": "(deprecated — V2 uses continuous conversation flow)",
+        "parameters": {"type": "object", "properties": {}, "required": []},
+    },
+}
 
 
 # ======================================================================
@@ -512,6 +338,10 @@ def _extract_section(content: str, heading: str) -> str | None:
             break
     return "\n".join(lines[start_idx:end_idx]).strip()
 
+
+# ------------------------------------------------------------------
+# Read tool handlers
+# ------------------------------------------------------------------
 
 def handle_read_page(
     vault: Vault, path: str, section: str = "", max_chars: int = 0,
@@ -568,7 +398,6 @@ def handle_search(vault: Vault, query: str, scope: str = "all") -> str:
         }
     all_fm = {**frontmatters_wiki, **frontmatters_src}
 
-    # Also check title similarity
     title_lower = query.lower()
     title_matches = []
     for p in frontmatters_wiki.values():
@@ -593,7 +422,6 @@ def handle_search(vault: Vault, query: str, scope: str = "all") -> str:
         bl_count = vault.backlinks.reference_count(title_str) if title_str else 0
         if bl_count > 0:
             lines.append(f"  Backlinks: {bl_count}")
-        # Show updated date from frontmatter
         try:
             content = vault.read_file(path)
             page_fm = extract_frontmatter(content)
@@ -615,107 +443,6 @@ def handle_search(vault: Vault, query: str, scope: str = "all") -> str:
             )
 
     return "\n".join(lines)
-
-
-def handle_survey_topic(vault: Vault, topic: str) -> str:
-    """One-shot topic assessment for planning."""
-    sections: list[str] = [f"## Topic Survey: {topic}\n"]
-
-    # 1. FTS search
-    fts_results = vault.search.search(topic, limit=10)
-    candidates = []
-    for r in fts_results:
-        if r["path"].startswith("wiki/"):
-            candidates.append(r)
-
-    # 2. Title similarity
-    all_pages = vault.read_frontmatters("wiki")
-    topic_lower = topic.lower()
-    title_hits = []
-    for p in all_pages:
-        p_title = str(p.get("title", "")).lower()
-        if topic_lower in p_title or p_title in topic_lower:
-            if p["path"] not in {c["path"] for c in candidates}:
-                title_hits.append(p)
-
-    # 3. Candidate pages
-    if candidates or title_hits:
-        sections.append("### Candidate pages (could host this content)")
-        suggested = None
-        for c in candidates[:5]:
-            fm_info = next(
-                (p for p in all_pages if p["path"] == c["path"]), {}
-            )
-            type_str = fm_info.get("type", "")
-            title_str = c.get("title", "") or fm_info.get("title", "")
-            summary = fm_info.get("summary", "")
-            bl = vault.backlinks.reference_count(title_str) if title_str else 0
-            sections.append(
-                f"- **{title_str}** [{type_str}] ({c['path']}) "
-                f"— {summary} (backlinks: {bl})"
-            )
-            if suggested is None and type_str in ("canonical", "hub", "note"):
-                suggested = {"title": title_str, "path": c["path"], "type": type_str}
-        for p in title_hits[:3]:
-            bl = vault.backlinks.reference_count(p.get("title", "")) if p.get("title") else 0
-            sections.append(
-                f"- **{p.get('title', '?')}** [{p.get('type', '')}] "
-                f"({p['path']}) — {p.get('summary', '')} (backlinks: {bl})"
-            )
-        sections.append("")
-    else:
-        sections.append("### Candidate pages\nNone found — this appears to be a new topic.\n")
-        suggested = None
-
-    # 4. Related tags and hubs
-    related_tags: set[str] = set()
-    hub_matches: list[dict] = []
-    for p in all_pages:
-        tags = p.get("tags") or []
-        title = str(p.get("title", "")).lower()
-        if topic_lower in title or any(topic_lower in str(t).lower() for t in tags):
-            for t in tags:
-                related_tags.add(str(t))
-            if p.get("type") == "hub":
-                hub_matches.append(p)
-
-    if related_tags:
-        sections.append(f"### Related tags\n{', '.join(sorted(related_tags))}\n")
-    if hub_matches:
-        sections.append("### Related hubs")
-        for h in hub_matches:
-            sections.append(f"- **{h.get('title', '?')}** ({h['path']})")
-        sections.append("")
-
-    # 5. Source material
-    source_hits = vault.search_content(topic, "sources")
-    if source_hits:
-        sections.append(f"### Related sources ({len(source_hits)} found)")
-        for sh in source_hits[:5]:
-            sections.append(f"- {sh['path']}")
-        sections.append("")
-
-    # 6. Backlink connections
-    bl_sources = vault.backlinks.backlinks_for(topic)
-    if bl_sources:
-        sections.append(f"### Pages linking to '{topic}'")
-        for bl in bl_sources[:10]:
-            sections.append(f"- {bl}")
-        sections.append("")
-
-    # 7. Suggestion
-    sections.append("### Suggestion")
-    if suggested:
-        sections.append(
-            f"Consider updating **{suggested['title']}** ({suggested['path']}) "
-            f"rather than creating a new page."
-        )
-    else:
-        sections.append(
-            f"No existing page covers this topic. Creating a new note is appropriate."
-        )
-
-    return "\n".join(sections)
 
 
 def handle_get_backlinks(vault: Vault, title: str) -> str:
@@ -766,16 +493,12 @@ def handle_list_pages(
     unstructured = [r for r in results if not r.get("has_frontmatter", True)]
 
     lines = []
-    imported_count = 0
-
     for r in structured:
         tags_str = f"  tags: {', '.join(r['tags'])}" if r['tags'] else ""
         summary_str = f"\n    {r['summary']}" if r['summary'] else ""
         lines.append(
             f"- [{r['type']}] **{r['title']}** ({r['path']}){tags_str}{summary_str}"
         )
-        if "imported" in (r.get("tags") or []):
-            imported_count += 1
 
     if unstructured:
         lines.append("")
@@ -785,18 +508,10 @@ def handle_list_pages(
         lines.append("")
         lines.append(
             "These files lack structured metadata. "
-            "Use read_page(path) to read them, "
-            "or ingest(source_type='directory') to import and organize."
+            "Use read_page(path) to read them."
         )
 
-    result = "\n".join(lines)
-    if imported_count:
-        result += (
-            f"\n\nNote: {imported_count} file(s) still tagged [imported] — "
-            "consider using organize(target='imported', action='classify') "
-            "to classify them."
-        )
-    return result
+    return "\n".join(lines)
 
 
 def handle_fetch_url(vault: Vault, url: str) -> str:
@@ -838,10 +553,220 @@ def handle_fetch_url(vault: Vault, url: str) -> str:
 
 
 # ------------------------------------------------------------------
-# Action tool handlers
+# Write tool handlers
 # ------------------------------------------------------------------
 
 INDEX_TOKEN_BUDGET = 4000
+
+
+def handle_write_page(vault: Vault, path: str, content: str) -> str:
+    try:
+        if not path.startswith("wiki/"):
+            return f"Error: write_page can only write to wiki/. Rejected path: {path}"
+        validation = validate_frontmatter(path, content)
+        if not validation.valid:
+            return "Error: frontmatter validation failed:\n" + "\n".join(
+                f"  - {e}" for e in validation.errors
+            )
+        vault.write_file(path, content)
+        result = f"OK: written to {path} ({len(content)} chars)"
+        if path == "wiki/index.md" and len(content) > INDEX_TOKEN_BUDGET:
+            result += (
+                f"\n\nWarning: index.md is {len(content)} chars "
+                f"(target: <{INDEX_TOKEN_BUDGET})."
+            )
+        return result
+    except PermissionError as e:
+        return f"Error: {e}"
+
+
+def handle_append_section(
+    vault: Vault, path: str, heading: str, content: str,
+) -> str:
+    """Append a new section to an existing wiki page."""
+    try:
+        resolved = _resolve_path_or_title(vault, path)
+        existing = vault.read_file(resolved)
+    except FileNotFoundError:
+        return f"Error: page not found: {path}"
+    except PermissionError as e:
+        return f"Error: {e}"
+
+    if not resolved.startswith("wiki/"):
+        return f"Error: can only write to wiki/ pages. Path: {resolved}"
+
+    section_text = f"\n## {heading}\n\n{content}\n"
+
+    related_pattern = re.compile(r"(\n## Related\b)", re.IGNORECASE)
+    match = related_pattern.search(existing)
+    if match:
+        insert_pos = match.start()
+        new_content = existing[:insert_pos] + section_text + existing[insert_pos:]
+    else:
+        new_content = existing.rstrip() + "\n" + section_text
+
+    vault.write_file(resolved, new_content)
+    return f"OK: appended section '{heading}' to {resolved}"
+
+
+def handle_update_frontmatter(
+    vault: Vault, path: str, fields: dict,
+) -> str:
+    """Update specific frontmatter fields on an existing wiki page."""
+    try:
+        existing = vault.read_file(path)
+    except FileNotFoundError:
+        return f"Error: file not found: {path}"
+    if not path.startswith("wiki/"):
+        return f"Error: can only edit wiki/ pages. Path: {path}"
+
+    from noteweaver.frontmatter import FRONTMATTER_PATTERN
+    fm = extract_frontmatter(existing)
+    if fm is None:
+        return f"Error: no frontmatter found in {path}"
+
+    fm.update(fields)
+    fm_str = yaml.dump(fm, default_flow_style=False, allow_unicode=True).strip()
+    body = FRONTMATTER_PATTERN.sub("", existing, count=1)
+    new_content = f"---\n{fm_str}\n---\n{body}"
+
+    validation = validate_frontmatter(path, new_content)
+    if not validation.valid:
+        return "Error: updated frontmatter is invalid:\n" + "\n".join(
+            f"  - {e}" for e in validation.errors
+        )
+
+    vault.write_file(path, new_content)
+    updated_keys = ", ".join(fields.keys())
+    return f"OK: updated [{updated_keys}] in {path}"
+
+
+def handle_add_related_link(
+    vault: Vault, path: str, link_to: str,
+) -> str:
+    """Add a [[wiki-link]] to the Related section of a page."""
+    if not link_to:
+        return "Error: link_to is required"
+    try:
+        existing = vault.read_file(path)
+    except FileNotFoundError:
+        return f"Error: file not found: {path}"
+    if not path.startswith("wiki/"):
+        return f"Error: can only edit wiki/ pages. Path: {path}"
+
+    link = f"[[{link_to}]]"
+    if link in existing:
+        return f"OK: link to {link} already exists in {path}"
+
+    related_pattern = re.compile(r"(## Related\b.*)", re.IGNORECASE | re.DOTALL)
+    match = related_pattern.search(existing)
+    if match:
+        related_section = match.group(1)
+        new_related = related_section.rstrip() + f"\n- {link}\n"
+        new_content = existing[: match.start()] + new_related
+    else:
+        new_content = existing.rstrip() + f"\n\n## Related\n\n- {link}\n"
+
+    vault.write_file(path, new_content)
+    return f"OK: added {link} to Related section of {path}"
+
+
+# ======================================================================
+# Legacy handler stubs (for backward compatibility with tests)
+# ======================================================================
+
+def handle_survey_topic(vault: Vault, topic: str) -> str:
+    """Topic assessment — combines search + list + title matching."""
+    sections: list[str] = [f"## Topic Survey: {topic}\n"]
+
+    fts_results = vault.search.search(topic, limit=10)
+    candidates = []
+    for r in fts_results:
+        if r["path"].startswith("wiki/"):
+            candidates.append(r)
+
+    all_pages = vault.read_frontmatters("wiki")
+    topic_lower = topic.lower()
+    title_hits = []
+    for p in all_pages:
+        p_title = str(p.get("title", "")).lower()
+        if topic_lower in p_title or p_title in topic_lower:
+            if p["path"] not in {c["path"] for c in candidates}:
+                title_hits.append(p)
+
+    if candidates or title_hits:
+        sections.append("### Candidate pages (could host this content)")
+        suggested = None
+        for c in candidates[:5]:
+            fm_info = next(
+                (p for p in all_pages if p["path"] == c["path"]), {}
+            )
+            type_str = fm_info.get("type", "")
+            title_str = c.get("title", "") or fm_info.get("title", "")
+            summary = fm_info.get("summary", "")
+            bl = vault.backlinks.reference_count(title_str) if title_str else 0
+            sections.append(
+                f"- **{title_str}** [{type_str}] ({c['path']}) "
+                f"— {summary} (backlinks: {bl})"
+            )
+            if suggested is None and type_str in ("canonical", "hub", "note"):
+                suggested = {"title": title_str, "path": c["path"], "type": type_str}
+        for p in title_hits[:3]:
+            bl = vault.backlinks.reference_count(p.get("title", "")) if p.get("title") else 0
+            sections.append(
+                f"- **{p.get('title', '?')}** [{p.get('type', '')}] "
+                f"({p['path']}) — {p.get('summary', '')} (backlinks: {bl})"
+            )
+        sections.append("")
+    else:
+        sections.append("### Candidate pages\nNone found — this appears to be a new topic.\n")
+        suggested = None
+
+    related_tags: set[str] = set()
+    hub_matches: list[dict] = []
+    for p in all_pages:
+        tags = p.get("tags") or []
+        title = str(p.get("title", "")).lower()
+        if topic_lower in title or any(topic_lower in str(t).lower() for t in tags):
+            for t in tags:
+                related_tags.add(str(t))
+            if p.get("type") == "hub":
+                hub_matches.append(p)
+
+    if related_tags:
+        sections.append(f"### Related tags\n{', '.join(sorted(related_tags))}\n")
+    if hub_matches:
+        sections.append("### Related hubs")
+        for h in hub_matches:
+            sections.append(f"- **{h.get('title', '?')}** ({h['path']})")
+        sections.append("")
+
+    source_hits = vault.search_content(topic, "sources")
+    if source_hits:
+        sections.append(f"### Related sources ({len(source_hits)} found)")
+        for sh in source_hits[:5]:
+            sections.append(f"- {sh['path']}")
+        sections.append("")
+
+    bl_sources = vault.backlinks.backlinks_for(topic)
+    if bl_sources:
+        sections.append(f"### Pages linking to '{topic}'")
+        for bl in bl_sources[:10]:
+            sections.append(f"- {bl}")
+        sections.append("")
+
+    sections.append("### Suggestion")
+    if suggested:
+        sections.append(
+            f"Consider updating **{suggested['title']}** ({suggested['path']}) "
+            f"rather than creating a new page."
+        )
+    else:
+        sections.append(
+            f"No existing page covers this topic. Creating a new note is appropriate."
+        )
+
+    return "\n".join(sections)
 
 
 def handle_capture(
@@ -852,12 +777,11 @@ def handle_capture(
     target: str = "",
     type: str = "note",
 ) -> str:
-    """Capture knowledge: create a new page or append to an existing one."""
+    """Legacy capture handler — kept for backward compatibility with tests."""
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     tag_list = tags or []
 
     if target:
-        # Append to existing page as a new section
         try:
             resolved = _resolve_path_or_title(vault, target)
             existing = vault.read_file(resolved)
@@ -876,7 +800,6 @@ def handle_capture(
 
         vault.write_file(resolved, new_content)
 
-        # Update tags if provided
         if tag_list:
             fm = extract_frontmatter(new_content)
             if fm:
@@ -893,7 +816,6 @@ def handle_capture(
 
         return f"OK: appended section '{title}' to {resolved}"
 
-    # Create new page
     _ALLOWED_TYPES = {"note", "canonical", "synthesis"}
     if type not in _ALLOWED_TYPES:
         type = "note"
@@ -942,7 +864,7 @@ def handle_ingest(
     save_raw: bool = True,
     organize: bool = False,
 ) -> str:
-    """Unified content ingestion: URL, file, or directory."""
+    """Legacy ingest handler — kept for backward compatibility."""
     if source_type == "url":
         return _ingest_url(vault, source, save_raw)
     elif source_type == "file":
@@ -957,9 +879,7 @@ def _ingest_url(vault: Vault, url: str, save_raw: bool) -> str:
     fetched = handle_fetch_url(vault, url)
     if fetched.startswith("Error"):
         return fetched
-
     results = [f"Fetched: {url}"]
-
     if save_raw:
         slug = re.sub(r"[^a-z0-9-]", "", url.split("//")[-1].split("?")[0].replace("/", "-"))[:60]
         source_path = f"sources/web/{slug}.md"
@@ -968,34 +888,26 @@ def _ingest_url(vault: Vault, url: str, save_raw: bool) -> str:
             results.append(f"Saved raw to {source_path}")
         except PermissionError:
             results.append(f"Source already exists at {source_path} (skipped)")
-
     results.append(f"\nContent preview ({len(fetched)} chars):\n{fetched[:2000]}")
     if len(fetched) > 2000:
         results.append("... (truncated preview)")
-    results.append(
-        "\nUse capture() to record key information into wiki pages."
-    )
+    results.append("\nUse write_page() or append_section() to add to the wiki.")
     return "\n".join(results)
 
 
 def _ingest_file(vault: Vault, file_path: str, save_raw: bool) -> str:
     from pathlib import Path
-
     p = Path(file_path)
     if not p.is_absolute():
         p = vault.root / file_path
     p = p.resolve()
-
     if not p.is_file():
         return f"Error: file not found: {file_path}"
-
     try:
         content = p.read_text(encoding="utf-8", errors="replace")
     except Exception as e:
         return f"Error reading {file_path}: {e}"
-
     results = [f"Read: {file_path} ({len(content)} chars)"]
-
     if save_raw:
         source_path = f"sources/files/{p.name}"
         try:
@@ -1003,26 +915,15 @@ def _ingest_file(vault: Vault, file_path: str, save_raw: bool) -> str:
             results.append(f"Saved raw to {source_path}")
         except PermissionError:
             results.append(f"Source already exists at {source_path} (skipped)")
-
     results.append(f"\nContent preview:\n{content[:2000]}")
     if len(content) > 2000:
         results.append("... (truncated preview)")
-    results.append(
-        "\nUse capture() to record key information into wiki pages."
-    )
+    results.append("\nUse write_page() or append_section() to add to the wiki.")
     return "\n".join(results)
 
 
 def _ingest_directory(vault: Vault, directory: str, do_organize: bool) -> str:
     result = vault.import_directory(directory)
-
-    if do_organize and "Imported" in result:
-        scan_result = vault.scan_imports()
-        if "Nothing to organize" not in scan_result:
-            result += (
-                "\n\n--- Organization scan ---\n" + scan_result
-            )
-
     return result
 
 
@@ -1034,7 +935,7 @@ def handle_organize(
     metadata: dict | None = None,
     link_to: str = "",
 ) -> str:
-    """Organize specific pages."""
+    """Legacy organize handler — kept for backward compatibility with tests."""
     if action == "archive":
         return _organize_archive(vault, target, reason)
     elif action == "update_metadata":
@@ -1082,36 +983,10 @@ def _organize_archive(vault: Vault, path: str, reason: str) -> str:
 
 
 def _organize_update_metadata(vault: Vault, path: str, fields: dict) -> str:
-    try:
-        existing = vault.read_file(path)
-    except FileNotFoundError:
-        return f"Error: file not found: {path}"
-    if not path.startswith("wiki/"):
-        return f"Error: can only edit wiki/ pages. Path: {path}"
-
-    from noteweaver.frontmatter import FRONTMATTER_PATTERN
-    fm = extract_frontmatter(existing)
-    if fm is None:
-        return f"Error: no frontmatter found in {path}"
-
-    fm.update(fields)
-    fm_str = yaml.dump(fm, default_flow_style=False, allow_unicode=True).strip()
-    body = FRONTMATTER_PATTERN.sub("", existing, count=1)
-    new_content = f"---\n{fm_str}\n---\n{body}"
-
-    validation = validate_frontmatter(path, new_content)
-    if not validation.valid:
-        return "Error: updated frontmatter is invalid:\n" + "\n".join(
-            f"  - {e}" for e in validation.errors
-        )
-
-    vault.write_file(path, new_content)
-    updated_keys = ", ".join(fields.keys())
-    return f"OK: updated [{updated_keys}] in {path}"
+    return handle_update_frontmatter(vault, path, fields)
 
 
 def _organize_classify(vault: Vault, target: str) -> str:
-    """Scan imported/target pages and return structured info for planning."""
     if target == "imported":
         return vault.scan_imports()
     try:
@@ -1134,31 +1009,7 @@ def _organize_classify(vault: Vault, target: str) -> str:
 
 
 def _organize_link(vault: Vault, path: str, link_to: str) -> str:
-    """Add a [[wiki-link]] to the Related section of a page."""
-    if not link_to:
-        return "Error: link_to is required for link action"
-    try:
-        existing = vault.read_file(path)
-    except FileNotFoundError:
-        return f"Error: file not found: {path}"
-    if not path.startswith("wiki/"):
-        return f"Error: can only edit wiki/ pages. Path: {path}"
-
-    link = f"[[{link_to}]]"
-    if link in existing:
-        return f"OK: link to {link} already exists in {path}"
-
-    related_pattern = re.compile(r"(## Related\b.*)", re.IGNORECASE | re.DOTALL)
-    match = related_pattern.search(existing)
-    if match:
-        related_section = match.group(1)
-        new_related = related_section.rstrip() + f"\n- {link}\n"
-        new_content = existing[: match.start()] + new_related
-    else:
-        new_content = existing.rstrip() + f"\n\n## Related\n\n- {link}\n"
-
-    vault.write_file(path, new_content)
-    return f"OK: added {link} to Related section of {path}"
+    return handle_add_related_link(vault, path, link_to)
 
 
 def handle_restructure(
@@ -1168,7 +1019,7 @@ def handle_restructure(
     old_tag: str = "",
     new_tag: str = "",
 ) -> str:
-    """Vault-wide structural changes."""
+    """Legacy restructure handler — kept for backward compatibility."""
     if action == "merge_tags":
         return _restructure_merge_tags(vault, old_tag, new_tag)
     elif action == "deduplicate":
@@ -1227,7 +1078,6 @@ def _restructure_merge_tags(vault: Vault, old_tag: str, new_tag: str) -> str:
 
 
 def _restructure_deduplicate(vault: Vault, scope: str) -> str:
-    """Find pages with similar titles or overlapping content."""
     all_pages = vault.read_frontmatters("wiki")
     content_pages = [
         p for p in all_pages
@@ -1283,14 +1133,12 @@ def _restructure_deduplicate(vault: Vault, scope: str) -> str:
             f"**{d['title_b']}** ({d['page_b']}) — {d['reason']}"
         )
     lines.append(
-        "\nReview these pages and use organize(action='archive') to retire "
-        "duplicates, or write_page to merge their content."
+        "\nReview these pages and use write_page to merge their content."
     )
     return "\n".join(lines)
 
 
 def _restructure_rebuild_hubs(vault: Vault, scope: str) -> str:
-    """Rebuild hub pages from tag analysis."""
     all_pages = vault.read_frontmatters("wiki")
     tag_pages: dict[str, list[dict]] = {}
     existing_hubs: set[str] = set()
@@ -1352,7 +1200,6 @@ def _restructure_rebuild_hubs(vault: Vault, scope: str) -> str:
 
 
 def _restructure_audit(vault: Vault) -> str:
-    """Run full vault audit and return report."""
     report = vault.audit_vault()
     vault.save_audit_report(report)
 
@@ -1380,27 +1227,6 @@ def _restructure_audit(vault: Vault) -> str:
     return "\n".join(lines)
 
 
-def handle_write_page(vault: Vault, path: str, content: str) -> str:
-    try:
-        if not path.startswith("wiki/"):
-            return f"Error: write_page can only write to wiki/. Rejected path: {path}"
-        validation = validate_frontmatter(path, content)
-        if not validation.valid:
-            return "Error: frontmatter validation failed:\n" + "\n".join(
-                f"  - {e}" for e in validation.errors
-            )
-        vault.write_file(path, content)
-        result = f"OK: written to {path} ({len(content)} chars)"
-        if path == "wiki/index.md" and len(content) > INDEX_TOKEN_BUDGET:
-            result += (
-                f"\n\nWarning: index.md is {len(content)} chars "
-                f"(target: <{INDEX_TOKEN_BUDGET})."
-            )
-        return result
-    except PermissionError as e:
-        return f"Error: {e}"
-
-
 # ======================================================================
 # Dispatch
 # ======================================================================
@@ -1408,15 +1234,19 @@ def handle_write_page(vault: Vault, path: str, content: str) -> str:
 TOOL_HANDLERS: dict[str, Any] = {
     "read_page": handle_read_page,
     "search": handle_search,
-    "survey_topic": handle_survey_topic,
     "get_backlinks": handle_get_backlinks,
     "list_pages": handle_list_pages,
     "fetch_url": handle_fetch_url,
+    "write_page": handle_write_page,
+    "append_section": handle_append_section,
+    "update_frontmatter": handle_update_frontmatter,
+    "add_related_link": handle_add_related_link,
+    # Legacy handlers (not in TOOL_SCHEMAS but still dispatchable for tests)
+    "survey_topic": handle_survey_topic,
     "capture": handle_capture,
     "ingest": handle_ingest,
     "organize": handle_organize,
     "restructure": handle_restructure,
-    "write_page": handle_write_page,
 }
 
 
