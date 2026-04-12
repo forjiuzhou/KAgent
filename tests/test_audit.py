@@ -215,9 +215,8 @@ class TestScanVaultContext:
         assert "wiki/concepts/ml.md" in ctx
         assert "ml" in ctx
         assert "dl" in ctx
-        # Small vault → full tier shows child pages with summaries
-        assert "Deep Learning" in ctx
-        assert "DL overview" in ctx
+        # World summary shows hub aggregates only; child details via list_pages
+        assert "DL overview" not in ctx
 
     def test_hub_shows_page_count(self, vault: Vault) -> None:
         vault.write_file(
@@ -233,8 +232,6 @@ class TestScanVaultContext:
         assert "React (5 pages)" in ctx
         assert "wiki/concepts/react-hub.md" in ctx
         assert "Total: 6 pages" in ctx
-        # Hub children listed
-        assert "React Page 0" in ctx
 
     def test_unorganized_listed(self, vault: Vault) -> None:
         vault.write_file(
@@ -246,8 +243,8 @@ class TestScanVaultContext:
         assert "1 page(s)" in ctx
         assert "Orphan" in ctx
 
-    def test_compact_tier_no_summaries(self, vault: Vault) -> None:
-        """Medium vault (40-150 pages) uses compact tier: titles but no summaries."""
+    def test_fixed_structure_regardless_of_size(self, vault: Vault) -> None:
+        """World summary uses fixed structure — hub aggregates, no child summaries."""
         vault.write_file("wiki/concepts/hub.md", _page("Hub", ptype="hub", tags=["t"]))
         for i in range(45):
             vault.write_file(
@@ -255,19 +252,30 @@ class TestScanVaultContext:
                 _page(f"Page {i}", tags=["t"], summary=f"Summary {i}"),
             )
         ctx = vault.scan_vault_context()
-        assert "Page 0" in ctx
+        # Hub aggregate shown
+        assert "Hub (45 pages)" in ctx
+        # Child page summaries never in world summary (use list_pages for that)
         assert "Summary 0" not in ctx
-        # Paths shown in compact mode
-        assert "wiki/concepts/p0.md" in ctx
 
-    def test_large_tier_truncated(self, vault: Vault) -> None:
-        """Large vault (150+) truncates hub member lists."""
-        vault.write_file("wiki/concepts/hub.md", _page("Hub", ptype="hub", tags=["t"]))
-        for i in range(160):
-            vault.write_file(f"wiki/concepts/p{i}.md", _page(f"Page {i}", tags=["t"]))
+    def test_orphan_pages_shown(self, vault: Vault) -> None:
+        """Orphan pages (no inbound links) appear in world summary."""
+        vault.write_file(
+            "wiki/concepts/lonely.md",
+            _page("Lonely Page", tags=["misc"]),
+        )
         ctx = vault.scan_vault_context()
-        assert "… and " in ctx
-        assert " more" in ctx
+        assert "Orphan pages" in ctx
+        assert "Lonely Page" in ctx
+
+    def test_health_signals_shown(self, vault: Vault) -> None:
+        """Health signals summarize structural issues."""
+        vault.write_file(
+            "wiki/concepts/no-summary.md",
+            _page("No Summary Page"),
+        )
+        ctx = vault.scan_vault_context()
+        assert "Health:" in ctx
+        assert "missing summary" in ctx
 
     def test_journal_range_shown(self, vault: Vault) -> None:
         """Journal entries produce a date range in the output."""
@@ -309,8 +317,8 @@ class TestScanVaultContext:
     def test_footer_mentions_current_tools(self, vault: Vault) -> None:
         """The footer hint references tools that actually exist."""
         ctx = vault.scan_vault_context()
-        assert "survey_topic" in ctx
         assert "list_pages" in ctx
+        assert "read_page" in ctx
         assert "search" in ctx
         # Old stale tool names must NOT appear
         assert "list_page_summaries" not in ctx

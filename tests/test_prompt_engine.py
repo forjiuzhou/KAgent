@@ -8,7 +8,6 @@ import pytest
 from noteweaver.agent import (
     KnowledgeAgent,
     PROMPT_IDENTITY,
-    PROMPT_SCHEMA_CORE,
     PROMPT_TOOLS,
     SYSTEM_PROMPT,
 )
@@ -40,16 +39,25 @@ class TestPromptStructure:
     def test_identity_has_object_types(self) -> None:
         assert "Canonical" in PROMPT_IDENTITY
         assert "Hub" in PROMPT_IDENTITY
-        assert "**journal**" in PROMPT_SCHEMA_CORE
-        assert "**archive**" in PROMPT_SCHEMA_CORE
 
-    def test_identity_has_frontmatter_template(self) -> None:
-        assert "type: hub | canonical" in PROMPT_SCHEMA_CORE
-        assert "summary:" in PROMPT_SCHEMA_CORE
-        assert "tags:" in PROMPT_SCHEMA_CORE
+    def test_schema_has_page_types(self, agent: KnowledgeAgent) -> None:
+        system_msg = agent.messages[0]["content"]
+        assert "`journal`" in system_msg
+        assert "`archive`" in system_msg
+        assert "`hub`" in system_msg
+        assert "`canonical`" in system_msg
+        assert "`note`" in system_msg
+        assert "`synthesis`" in system_msg
 
-    def test_identity_has_inverted_pyramid(self) -> None:
-        assert "Inverted pyramid" in PROMPT_SCHEMA_CORE
+    def test_schema_has_frontmatter_template(self, agent: KnowledgeAgent) -> None:
+        system_msg = agent.messages[0]["content"]
+        assert "type: hub | canonical" in system_msg
+        assert "summary:" in system_msg
+        assert "tags:" in system_msg
+
+    def test_schema_has_inverted_pyramid(self, agent: KnowledgeAgent) -> None:
+        system_msg = agent.messages[0]["content"]
+        assert "Inverted pyramid" in system_msg
 
     def test_tools_has_all_tools(self) -> None:
         from noteweaver.tools.definitions import TOOL_SCHEMAS, CHAT_TOOL_SCHEMAS
@@ -76,9 +84,11 @@ class TestPromptStructure:
         assert "fetch_url" in PROMPT_TOOLS
         assert "search" in PROMPT_TOOLS
 
-    def test_schema_not_in_system_prompt(self, agent: KnowledgeAgent) -> None:
+    def test_schema_loaded_from_file(self, agent: KnowledgeAgent) -> None:
         system_msg = agent.messages[0]["content"]
-        assert "This is the operating manual" not in system_msg
+        assert "Wiki Schema" in system_msg
+        assert "Page Types" in system_msg
+        assert "Directory Layout" in system_msg
 
     def test_preferences_in_system_prompt(self, vault: Vault) -> None:
         prefs = vault.schema_dir / "preferences.md"
@@ -90,6 +100,29 @@ class TestPromptStructure:
 
     def test_prompt_token_budget(self) -> None:
         assert len(SYSTEM_PROMPT) < 7500, f"System prompt too large: {len(SYSTEM_PROMPT)} chars"
+
+    def test_protocols_in_system_prompt(self, vault: Vault) -> None:
+        mock_provider = MagicMock()
+        a = KnowledgeAgent(vault=vault, provider=mock_provider)
+        system_msg = a.messages[0]["content"]
+        assert "Observation Protocols" in system_msg
+        assert "Structure Protocols" in system_msg
+        assert "Change Protocols" in system_msg
+
+    def test_custom_protocols_injected(self, vault: Vault) -> None:
+        (vault.schema_dir / "protocols.md").write_text(
+            "---\ntitle: Protocols\ntype: preference\n---\n# Custom Rule\nAlways say hello"
+        )
+        mock_provider = MagicMock()
+        a = KnowledgeAgent(vault=vault, provider=mock_provider)
+        system_msg = a.messages[0]["content"]
+        assert "Always say hello" in system_msg
+
+    def test_no_protocols_file_still_works(self, vault: Vault) -> None:
+        (vault.schema_dir / "protocols.md").unlink(missing_ok=True)
+        mock_provider = MagicMock()
+        a = KnowledgeAgent(vault=vault, provider=mock_provider)
+        assert a.messages[0]["role"] == "system"
 
 
 class TestHistoryCompression:

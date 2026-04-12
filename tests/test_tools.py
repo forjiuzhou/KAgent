@@ -120,7 +120,7 @@ class TestDispatch:
         assert "Error" in result
         assert "wiki/" in result
         original = vault.read_file(".schema/schema.md")
-        assert "Vault Schema" in original
+        assert "Wiki Schema" in original
 
     def test_write_page_rejects_meta_path(self, vault: Vault) -> None:
         result = dispatch_tool(
@@ -220,6 +220,20 @@ class TestDispatch:
         assert "hub" in result
         assert "ai, ml" in result or "ai" in result
         assert "Artificial intelligence overview" in result
+
+    def test_list_pages_page_card_format(self, vault: Vault) -> None:
+        vault.write_file(
+            "wiki/concepts/test.md",
+            "---\ntitle: Test Page\ntype: note\nsummary: A test note\n"
+            "tags: [testing, demo]\nupdated: 2026-04-12\n---\n# Test Page",
+        )
+        result = dispatch_tool(vault, "list_pages", {"directory": "wiki"})
+        assert "Page cards for" in result
+        assert "Test Page" in result
+        assert "note" in result
+        assert "A test note" in result
+        assert "testing" in result
+        assert "2026-04-12" in result
 
     def test_list_pages_empty_subdir(self, vault: Vault) -> None:
         result = dispatch_tool(

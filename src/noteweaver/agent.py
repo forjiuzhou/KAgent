@@ -58,63 +58,17 @@ content with [[wiki-links]]. Most interactions are just conversations.
 
 ### 2. Knowledge Capture
 When the user asks you to record, remember, organize, or import something, \
-or when you notice something worth capturing:
+or when you notice something worth capturing, follow the protocols \
+defined in .schema/protocols.md (injected below). Key principle: \
+read first, propose in natural language, write after user approval.
 
-**Workflow:**
-1. **Read first** — use read tools to understand what exists. \
-Search, list pages, or read specific pages before making any changes.
-2. **For small / clear changes** — go ahead and write directly. \
-Update a page, append a section, add a link. Tell the user what you did.
-3. **For larger / ambiguous changes** — describe your plan in natural \
-language first and let the user confirm before writing.
-
-**When deciding whether to write directly or propose first, consider:**
-- Small, additive changes (append a section, add a link, update tags) → write directly.
-- Creating new pages or restructuring existing content → propose first.
-- If the user's intent is clear and specific → write directly.
-- If there are trade-offs or uncertainties → propose and ask.
-
-Maintain the tree — every page must be reachable:
+The wiki is a tree overlaid with a graph:
 
 ```
 index.md  (root — lists Hubs, <1000 tokens)
   → Hub   (topic entry — overview + child page links)
     → Canonical / Note / Synthesis  (content)
 ```
-"""
-
-PROMPT_SCHEMA_CORE = """\
-## Wiki Schema (always active)
-
-### Page Types
-- **hub**: Navigation entry for a topic. Lists child pages with descriptions.
-- **canonical**: Authoritative main document. MUST have `sources`. One per topic.
-- **note**: Work-in-progress. Can be revised, merged, promoted. Duplicates OK.
-- **synthesis**: Cross-cutting analysis. Must cite ≥2 sources via [[links]].
-- **journal**: Time-ordered captures, daily logs. Preserve original expression.
-- **archive**: Retired page.
-
-### Frontmatter (required on all wiki pages)
-```yaml
----
-title: Page Title
-type: hub | canonical | note | synthesis | journal | archive
-summary: One-sentence description
-tags: [topic-a, topic-b]
-sources: []       # required for canonical
-created: YYYY-MM-DD
-updated: YYYY-MM-DD
----
-```
-
-### Structure Rules
-- File names: lowercase-hyphenated (e.g. attention-mechanism.md)
-- Inverted pyramid: first 1-2 sentences = self-contained summary
-- Every page ends with ## Related listing [[wiki-links]]
-- Hub pages: overview + [[link]] list with descriptions
-- Create Hub when 3+ pages accumulate on a topic
-- index.md lists Hubs only, kept under ~1000 tokens
-- sources/ is immutable — never write to sources/
 """
 
 PROMPT_TOOLS = """\
@@ -126,36 +80,31 @@ PROMPT_TOOLS = """\
 | `read_page(path, section?, max_chars?)` | Read a page or specific section. |
 | `search(query, scope?)` | Full-text search. scope: wiki/sources/all. |
 | `get_backlinks(title)` | Pages linking to a title. |
-| `list_pages(directory?, include_raw?)` | List pages with metadata. |
+| `list_pages(directory?)` | List pages with structured page cards. |
 | `fetch_url(url)` | Preview a URL's content. |
 
 ### Write Tools
 | Tool | Purpose |
 |------|---------|
-| `write_page(path, content)` | Create or overwrite a full page. Read first! |
+| `write_page(path, content)` | Create or overwrite a full page. |
 | `append_section(path, heading, content)` | Add a section to an existing page. |
 | `update_frontmatter(path, fields)` | Update metadata fields on a page. |
 | `add_related_link(path, link_to)` | Add a [[wiki-link]] to Related section. |
 
-### Important
-- **Always read before writing.** Read a page before modifying it.
-- **Always search/list before creating.** Check what exists to avoid duplicates.
-- **Small changes: write directly.** Appending, linking, updating metadata — just do it.
-- **Larger changes: propose first.** Creating pages or restructuring — describe \
-your plan and let the user confirm.
-- Prefer updating existing pages over creating new ones.
-- Use the user's language for content.
+### Reading Strategy (progressive disclosure)
 
-## Reading Strategy
+1. **World summary** (always visible above) — understand wiki shape first.
+2. **Page cards**: `list_pages` returns structured cards (title, type, \
+summary, tags, updated) — judge relevance without reading full pages.
+3. **Quick scan**: `read_page(path, max_chars=500)` for a relevance check.
+4. **Deep read**: `read_page(path)` or `read_page(path, section='...')`.
+5. **Search**: `search(query)` for keyword lookup across wiki and sources.
 
-1. **Quick scan**: `list_pages` or `read_page(path, max_chars=500)` for relevance.
-2. **Deep read**: `read_page(path)` or `read_page(path, section='...')`.
-3. **Search**: `search(query)` searches wiki and sources.
-
+Use the user's language for content. \
 If vault is empty, welcome the user and suggest what they can do.
 """
 
-SYSTEM_PROMPT = PROMPT_IDENTITY + "\n" + PROMPT_SCHEMA_CORE + "\n" + PROMPT_TOOLS
+SYSTEM_PROMPT = PROMPT_IDENTITY + "\n" + PROMPT_TOOLS
 
 
 # ======================================================================
@@ -264,17 +213,31 @@ class KnowledgeAgent:
     # ------------------------------------------------------------------
 
     def _build_system_prompt(self) -> str:
-        """Build system prompt: static core + schema core + preferences + memory.
+        """Build system prompt from static core + .schema/ files.
 
-        V2: Schema summary is always included (~800 tokens). The agent
-        always knows the wiki rules without needing to read_page schema.md.
+        Injection order:
+        1. SYSTEM_PROMPT (identity + tools) — hardcoded
+        2. .schema/schema.md — wiki structure definition
+        3. .schema/protocols.md — behavioral constraints
+        4. .schema/preferences.md — user preferences
+        5. .schema/memory.md — long-term knowledge base memory
         """
         prompt = SYSTEM_PROMPT
+
+        schema_path = self.vault.schema_dir / "schema.md"
+        if schema_path.is_file():
+            schema_content = schema_path.read_text(encoding="utf-8")
+            prompt += f"\n\n{schema_content}"
+
+        protocols_path = self.vault.schema_dir / "protocols.md"
+        if protocols_path.is_file():
+            proto_content = protocols_path.read_text(encoding="utf-8")
+            prompt += f"\n\n{proto_content}"
 
         prefs_path = self.vault.schema_dir / "preferences.md"
         if prefs_path.is_file():
             prefs_content = prefs_path.read_text(encoding="utf-8")
-            prompt += f"\n\n## User Preferences\n\n{prefs_content}"
+            prompt += f"\n\n{prefs_content}"
 
         memory_path = self.vault.schema_dir / "memory.md"
         if memory_path.is_file():

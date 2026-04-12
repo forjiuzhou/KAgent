@@ -497,13 +497,22 @@ def handle_list_pages(
     structured = [r for r in results if r.get("has_frontmatter", True)]
     unstructured = [r for r in results if not r.get("has_frontmatter", True)]
 
-    lines = []
+    lines = [f"Page cards for {directory}/ ({len(results)} pages):"]
+    lines.append("")
     for r in structured:
         tags_str = f"  tags: {', '.join(r['tags'])}" if r['tags'] else ""
-        summary_str = f"\n    {r['summary']}" if r['summary'] else ""
-        lines.append(
-            f"- [{r['type']}] **{r['title']}** ({r['path']}){tags_str}{summary_str}"
-        )
+        summary_str = f"  summary: {r['summary']}" if r['summary'] else ""
+        updated_str = f"  updated: {r['updated']}" if r.get('updated') else ""
+        lines.append(f"- [{r['type']}] **{r['title']}** → {r['path']}")
+        if summary_str:
+            lines.append(f"  {summary_str.strip()}")
+        detail_parts = []
+        if tags_str:
+            detail_parts.append(tags_str.strip())
+        if updated_str:
+            detail_parts.append(updated_str.strip())
+        if detail_parts:
+            lines.append(f"  {' | '.join(detail_parts)}")
 
     if unstructured:
         lines.append("")
