@@ -5,7 +5,13 @@ from unittest.mock import MagicMock
 from pathlib import Path
 
 import pytest
-from noteweaver.agent import KnowledgeAgent, PROMPT_IDENTITY, PROMPT_TOOLS, SYSTEM_PROMPT
+from noteweaver.agent import (
+    KnowledgeAgent,
+    PROMPT_IDENTITY,
+    PROMPT_SCHEMA_CORE,
+    PROMPT_TOOLS,
+    SYSTEM_PROMPT,
+)
 from noteweaver.vault import Vault
 
 
@@ -34,38 +40,41 @@ class TestPromptStructure:
     def test_identity_has_object_types(self) -> None:
         assert "Canonical" in PROMPT_IDENTITY
         assert "Hub" in PROMPT_IDENTITY
-        assert "Journal" in PROMPT_IDENTITY
-        assert "Archive" in PROMPT_IDENTITY
+        assert "**journal**" in PROMPT_SCHEMA_CORE
+        assert "**archive**" in PROMPT_SCHEMA_CORE
 
     def test_identity_has_frontmatter_template(self) -> None:
-        assert "type: hub | canonical" in PROMPT_IDENTITY
-        assert "summary:" in PROMPT_IDENTITY
-        assert "tags:" in PROMPT_IDENTITY
+        assert "type: hub | canonical" in PROMPT_SCHEMA_CORE
+        assert "summary:" in PROMPT_SCHEMA_CORE
+        assert "tags:" in PROMPT_SCHEMA_CORE
 
     def test_identity_has_inverted_pyramid(self) -> None:
-        assert "Inverted pyramid" in PROMPT_IDENTITY
+        assert "Inverted pyramid" in PROMPT_SCHEMA_CORE
 
     def test_tools_has_all_tools(self) -> None:
         from noteweaver.tools.definitions import TOOL_SCHEMAS, CHAT_TOOL_SCHEMAS
 
-        assert len(TOOL_SCHEMAS) == 11
+        assert len(TOOL_SCHEMAS) == 9
         for tool in [
             "read_page",
             "search",
-            "survey_topic",
             "get_backlinks",
             "list_pages",
             "fetch_url",
+            "write_page",
+            "append_section",
+            "update_frontmatter",
+            "add_related_link",
         ]:
             assert tool in PROMPT_TOOLS, f"Missing tool: {tool}"
-        assert "submit_plan" in PROMPT_TOOLS
         chat_names = {s["function"]["name"] for s in CHAT_TOOL_SCHEMAS}
-        assert "submit_plan" in chat_names
+        assert chat_names == {s["function"]["name"] for s in TOOL_SCHEMAS}
 
     def test_tools_has_common_requests(self) -> None:
-        assert "submit_plan" in PROMPT_TOOLS
+        assert "write_page" in PROMPT_TOOLS
+        assert "append_section" in PROMPT_TOOLS
         assert "fetch_url" in PROMPT_TOOLS
-        assert "survey_topic" in PROMPT_TOOLS
+        assert "search" in PROMPT_TOOLS
 
     def test_schema_not_in_system_prompt(self, agent: KnowledgeAgent) -> None:
         system_msg = agent.messages[0]["content"]
