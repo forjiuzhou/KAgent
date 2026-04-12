@@ -182,8 +182,9 @@ class Gateway:
         log.info("Cron enabled: digest every %dh, lint every %dh, notify at %02d:00",
                  digest_interval // 3600, lint_interval // 3600, self._notify_hour)
 
-        last_digest = 0.0
-        last_lint = 0.0
+        import time as _time
+        last_digest = _time.time()
+        last_lint = _time.time()
         last_notify_date = ""
 
         while True:
@@ -213,7 +214,7 @@ class Gateway:
                                 )
 
                         self.agent.set_attended(False)
-                        prompt = build_digest_prompt(self.vault)
+                        prompt = build_digest_prompt(self.vault, attended=False)
                         exchange: dict = {"user": "digest", "tools": [], "reply": ""}
                         for chunk in self.agent.chat(prompt):
                             if chunk.startswith("  📋 ") or chunk.startswith("  ↳ "):
