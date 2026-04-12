@@ -178,8 +178,9 @@ not preferences, not suggestions.
 
 ## Change Protocols
 
-- **Small changes: write directly.** Appending a section, adding
-  a link, updating tags or metadata — just do it and tell the user.
+- **Small changes: brief notice then write.** Appending a section,
+  adding a link, updating tags or metadata — briefly tell the user
+  what you're about to do, then write. No need to wait for approval.
 - **Larger changes: propose first.** Creating new pages or
   restructuring existing content — describe your plan in natural
   language and let the user confirm before writing.
