@@ -1,6 +1,7 @@
 """Runtime policy layer for tool dispatch.
 
-V2 simplified policy — safety gates only, no Plan classification.
+V2 policy — safety gates for the direct-write chat path, plus
+``classify_change_type()`` for session-organize plans.
 
 Two orthogonal dimensions of control:
 
@@ -328,7 +329,7 @@ def _strip_frontmatter(content: str) -> str:
 
 
 # ======================================================================
-# Change type classification (legacy — kept for backward compatibility)
+# Change type classification (used by session-organize plans)
 # ======================================================================
 
 _STRUCTURAL_INTENTS = frozenset({"create", "restructure"})
@@ -342,8 +343,9 @@ def classify_change_type(
 ) -> str:
     """Verify and possibly override the model's change_type suggestion.
 
-    Legacy function kept for backward compatibility with tests.
-    V2 does not use Plan-based classification.
+    Called by ``_handle_submit_plan()`` when ``generate_organize_plan()``
+    creates a Plan object.  Not involved in the normal ``chat()`` direct-
+    write path — V2 chat uses ``check_pre_dispatch()`` for safety gates.
     """
     if intent in _STRUCTURAL_INTENTS:
         return "structural"

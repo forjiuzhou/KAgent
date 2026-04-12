@@ -96,8 +96,10 @@ class Gateway:
     async def _handle_message(self, msg: IncomingMessage) -> str:
         """Route an incoming message to the Agent and return the reply.
 
-        Plans are persisted to disk. Structural plans require user approval.
-        Incremental plans are auto-executed.
+        V2: the agent writes directly during chat() — no plans are created
+        from normal conversation.  The ``_pending_plan_id`` path only
+        activates when an *organize* plan is generated at session boundaries
+        (e.g. cron digest calling ``generate_organize_plan``).
         """
         self._active_chat_ids.add(msg.chat_id)
         async with self._lock:
@@ -138,25 +140,17 @@ class Gateway:
                 log.error("Agent error: %s", e)
                 return f"Error: {e}"
 
-            # Handle plans created during chat
+            # Handle organize plans (the only source of pending plans in V2).
+            # Normal chat() writes directly and never creates plans.
+            # Plans only appear here from generate_organize_plan() / cron.
             pending_plans = self.agent.plan_store.list_pending()
             for plan in pending_plans:
-                if plan.change_type == "incremental":
-                    self.agent.plan_store.update_status(
-                        plan.id, PlanStatus.APPROVED,
-                    )
-                    try:
-                        result = self.agent.execute_plan(plan.id)
-                        reply_parts.append(f"\n\n✅ {result}")
-                    except Exception as e:
-                        log.error("Incremental plan execution failed: %s", e)
-                else:
-                    self._pending_plan_id = plan.id
-                    summary = self.agent.format_plan(plan)
-                    reply_parts.append(
-                        f"\n\n---\n\n📋 *变更提案* [{plan.id}]\n\n{summary}\n\n"
-                        "回复「好的」执行，或发送其他消息跳过。"
-                    )
+                self._pending_plan_id = plan.id
+                summary = self.agent.format_plan(plan)
+                reply_parts.append(
+                    f"\n\n---\n\n📋 *整理提案* [{plan.id}]\n\n{summary}\n\n"
+                    "回复「好的」执行，或发送其他消息跳过。"
+                )
 
             self._message_count += 1
             if self._message_count % self._SAVE_INTERVAL == 0:
@@ -221,19 +215,12 @@ class Gateway:
                         since_hint = f" Only review journals after {since}." if since else ""
                         for chunk in self.agent.chat(
                             "Review recent journal entries and promote any insights "
-                            "worth capturing as wiki pages. Use capture() for each "
-                            "finding worth recording."
+                            "worth capturing as wiki pages. Write findings as "
+                            "'#### Promotion Candidates' sections in today's "
+                            "journal — the user will review them interactively."
                             + since_hint
                         ):
                             pass
-                        pending_plans = self.agent.plan_store.list_pending()
-                        for plan in pending_plans:
-                            self._pending_plan_id = plan.id
-                            summary = self.agent.format_plan(plan)
-                            self._pending_notifications.append(
-                                f"📋 *Digest plan* [{plan.id}]\n\n{summary}\n\n"
-                                "回复「好的」执行。"
-                            )
                         self._save_last_digest_date()
                     except Exception as e:
                         log.error("Cron digest failed: %s", e)
