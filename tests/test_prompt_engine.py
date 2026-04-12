@@ -91,6 +91,29 @@ class TestPromptStructure:
     def test_prompt_token_budget(self) -> None:
         assert len(SYSTEM_PROMPT) < 7500, f"System prompt too large: {len(SYSTEM_PROMPT)} chars"
 
+    def test_protocols_in_system_prompt(self, vault: Vault) -> None:
+        mock_provider = MagicMock()
+        a = KnowledgeAgent(vault=vault, provider=mock_provider)
+        system_msg = a.messages[0]["content"]
+        assert "Observation Protocols" in system_msg
+        assert "Structure Protocols" in system_msg
+        assert "Change Protocols" in system_msg
+
+    def test_custom_protocols_injected(self, vault: Vault) -> None:
+        (vault.schema_dir / "protocols.md").write_text(
+            "---\ntitle: Protocols\ntype: preference\n---\n# Custom Rule\nAlways say hello"
+        )
+        mock_provider = MagicMock()
+        a = KnowledgeAgent(vault=vault, provider=mock_provider)
+        system_msg = a.messages[0]["content"]
+        assert "Always say hello" in system_msg
+
+    def test_no_protocols_file_still_works(self, vault: Vault) -> None:
+        (vault.schema_dir / "protocols.md").unlink(missing_ok=True)
+        mock_provider = MagicMock()
+        a = KnowledgeAgent(vault=vault, provider=mock_provider)
+        assert a.messages[0]["role"] == "system"
+
 
 class TestHistoryCompression:
     def test_no_compression_under_threshold(self, agent: KnowledgeAgent) -> None:

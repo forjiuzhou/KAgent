@@ -58,22 +58,11 @@ content with [[wiki-links]]. Most interactions are just conversations.
 
 ### 2. Knowledge Capture
 When the user asks you to record, remember, organize, or import something, \
-or when you notice something worth capturing:
+or when you notice something worth capturing, follow the protocols \
+defined in .schema/protocols.md (injected below). Key principle: \
+read first, propose in natural language, write after user approval.
 
-**Workflow:**
-1. **Read first** — use read tools to understand what exists. \
-Search, list pages, or read specific pages before proposing any changes.
-2. **Propose in natural language** — describe what you want to change \
-and why. Wait for user confirmation before writing.
-3. **Write after approval** — once the user agrees, execute the changes \
-using the write tools.
-
-**When proposing changes, consider:**
-- Would this be better as an addition to an existing page, or a new page?
-- What connections (related links, hub references) need updating?
-- Are there any uncertainties the user should weigh in on?
-
-Maintain the tree — every page must be reachable:
+The wiki is a tree overlaid with a graph:
 
 ```
 index.md  (root — lists Hubs, <1000 tokens)
@@ -125,31 +114,27 @@ PROMPT_TOOLS = """\
 | `read_page(path, section?, max_chars?)` | Read a page or specific section. |
 | `search(query, scope?)` | Full-text search. scope: wiki/sources/all. |
 | `get_backlinks(title)` | Pages linking to a title. |
-| `list_pages(directory?, include_raw?)` | List pages with metadata. |
+| `list_pages(directory?)` | List pages with structured page cards. |
 | `fetch_url(url)` | Preview a URL's content. |
 
 ### Write Tools (use after user approval)
 | Tool | Purpose |
 |------|---------|
-| `write_page(path, content)` | Create or overwrite a full page. Read first! |
+| `write_page(path, content)` | Create or overwrite a full page. |
 | `append_section(path, heading, content)` | Add a section to an existing page. |
 | `update_frontmatter(path, fields)` | Update metadata fields on a page. |
 | `add_related_link(path, link_to)` | Add a [[wiki-link]] to Related section. |
 
-### Important
-- **Always read before writing.** Read a page before modifying it.
-- **Always search/list before creating.** Check what exists to avoid duplicates.
-- **Propose changes in natural language first.** Describe what you plan to do \
-and wait for the user to agree before using write tools.
-- Prefer updating existing pages over creating new ones.
-- Use the user's language for content.
+### Reading Strategy (progressive disclosure)
 
-## Reading Strategy
+1. **World summary** (always visible above) — understand wiki shape first.
+2. **Page cards**: `list_pages` returns structured cards (title, type, \
+summary, tags, updated) — judge relevance without reading full pages.
+3. **Quick scan**: `read_page(path, max_chars=500)` for a relevance check.
+4. **Deep read**: `read_page(path)` or `read_page(path, section='...')`.
+5. **Search**: `search(query)` for keyword lookup across wiki and sources.
 
-1. **Quick scan**: `list_pages` or `read_page(path, max_chars=500)` for relevance.
-2. **Deep read**: `read_page(path)` or `read_page(path, section='...')`.
-3. **Search**: `search(query)` searches wiki and sources.
-
+Use the user's language for content. \
 If vault is empty, welcome the user and suggest what they can do.
 """
 
@@ -262,12 +247,18 @@ class KnowledgeAgent:
     # ------------------------------------------------------------------
 
     def _build_system_prompt(self) -> str:
-        """Build system prompt: static core + schema core + preferences + memory.
+        """Build system prompt: static core + protocols + preferences + memory.
 
         V2: Schema summary is always included (~800 tokens). The agent
         always knows the wiki rules without needing to read_page schema.md.
+        Protocols are injected in full from .schema/protocols.md.
         """
         prompt = SYSTEM_PROMPT
+
+        protocols_path = self.vault.schema_dir / "protocols.md"
+        if protocols_path.is_file():
+            proto_content = protocols_path.read_text(encoding="utf-8")
+            prompt += f"\n\n{proto_content}"
 
         prefs_path = self.vault.schema_dir / "preferences.md"
         if prefs_path.is_file():

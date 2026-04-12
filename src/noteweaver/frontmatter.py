@@ -35,6 +35,8 @@ class PageSummary:
     tags: list[str]
     sources: list[str]
     related: list[str]
+    created: str = ""
+    updated: str = ""
 
 
 def extract_frontmatter(content: str) -> dict | None:
@@ -58,12 +60,14 @@ def page_summary_from_file(rel_path: str, content: str) -> PageSummary | None:
     raw_related = fm.get("related", []) or []
     return PageSummary(
         path=rel_path,
-        title=str(fm.get("title", "")),
-        type=str(fm.get("type", "")),
-        summary=str(fm.get("summary", "")),
+        title=str(fm.get("title") or ""),
+        type=str(fm.get("type") or ""),
+        summary=str(fm.get("summary") or ""),
         tags=[str(t) for t in raw_tags] if isinstance(raw_tags, list) else [],
         sources=[str(s) for s in raw_sources] if isinstance(raw_sources, list) else [],
         related=[str(r) for r in raw_related] if isinstance(raw_related, list) else [],
+        created=str(fm.get("created") or ""),
+        updated=str(fm.get("updated") or ""),
     )
 
 

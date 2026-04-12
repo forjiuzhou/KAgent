@@ -492,3 +492,47 @@ class TestResolveTitleFallback:
         assert result == "wiki/concepts/different-name.md"
         # Filename fallback also works — files are findable by multiple names
         assert vault.resolve_title("different name") == "wiki/concepts/different-name.md"
+
+
+class TestProtocolsInit:
+    def test_init_creates_protocols(self, tmp_path: Path) -> None:
+        v = Vault(tmp_path, auto_git=False)
+        v.init()
+        protocols_path = tmp_path / ".schema" / "protocols.md"
+        assert protocols_path.is_file()
+
+    def test_protocols_has_required_sections(self, vault: Vault) -> None:
+        content = vault.read_file(".schema/protocols.md")
+        assert "Observation Protocols" in content
+        assert "Structure Protocols" in content
+        assert "Change Protocols" in content
+        assert "Conversation-to-Wiki Protocol" in content
+        assert "Source Import Protocol" in content
+
+    def test_protocols_not_overwritten_on_reinit(self, vault: Vault) -> None:
+        custom = "---\ntitle: Protocols\ntype: preference\n---\n# My custom protocols"
+        (vault.schema_dir / "protocols.md").write_text(custom)
+        vault.init()
+        assert vault.read_file(".schema/protocols.md") == custom
+
+
+class TestReadFrontmattersUpdated:
+    def test_includes_updated_field(self, vault: Vault) -> None:
+        vault.write_file(
+            "wiki/concepts/page.md",
+            "---\ntitle: Test\ntype: note\nupdated: 2026-04-01\n---\n# Test",
+        )
+        results = vault.read_frontmatters("wiki")
+        page = next(r for r in results if r["title"] == "Test")
+        # write_file auto-touches updated to today, so just verify it's non-empty
+        assert page["updated"] != ""
+
+    def test_missing_updated_is_empty(self, vault: Vault) -> None:
+        vault.write_file(
+            "wiki/concepts/no-date.md",
+            "---\ntitle: No Date\ntype: note\n---\n# No Date",
+        )
+        results = vault.read_frontmatters("wiki")
+        page = next(r for r in results if r["title"] == "No Date")
+        # No updated field in original, and _touch_updated only updates existing field
+        assert page["updated"] == ""
