@@ -120,7 +120,7 @@ class TestDispatch:
         assert "Error" in result
         assert "wiki/" in result
         original = vault.read_file(".schema/schema.md")
-        assert "Vault Schema" in original
+        assert "Wiki Schema" in original
 
     def test_write_page_rejects_meta_path(self, vault: Vault) -> None:
         result = dispatch_tool(

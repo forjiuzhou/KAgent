@@ -34,7 +34,7 @@ class TestVaultInit:
     def test_seed_files_have_content(self, vault: Vault) -> None:
         assert "Wiki Index" in vault.read_file("wiki/index.md")
         assert "Operation Log" in vault.read_file("wiki/log.md")
-        assert "Vault Schema" in vault.read_file(".schema/schema.md")
+        assert "Wiki Schema" in vault.read_file(".schema/schema.md")
 
 
 class TestReadWrite:

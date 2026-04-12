@@ -71,40 +71,6 @@ index.md  (root — lists Hubs, <1000 tokens)
 ```
 """
 
-PROMPT_SCHEMA_CORE = """\
-## Wiki Schema (always active)
-
-### Page Types
-- **hub**: Navigation entry for a topic. Lists child pages with descriptions.
-- **canonical**: Authoritative main document. MUST have `sources`. One per topic.
-- **note**: Work-in-progress. Can be revised, merged, promoted. Duplicates OK.
-- **synthesis**: Cross-cutting analysis. Must cite ≥2 sources via [[links]].
-- **journal**: Time-ordered captures, daily logs. Preserve original expression.
-- **archive**: Retired page.
-
-### Frontmatter (required on all wiki pages)
-```yaml
----
-title: Page Title
-type: hub | canonical | note | synthesis | journal | archive
-summary: One-sentence description
-tags: [topic-a, topic-b]
-sources: []       # required for canonical
-created: YYYY-MM-DD
-updated: YYYY-MM-DD
----
-```
-
-### Structure Rules
-- File names: lowercase-hyphenated (e.g. attention-mechanism.md)
-- Inverted pyramid: first 1-2 sentences = self-contained summary
-- Every page ends with ## Related listing [[wiki-links]]
-- Hub pages: overview + [[link]] list with descriptions
-- Create Hub when 3+ pages accumulate on a topic
-- index.md lists Hubs only, kept under ~1000 tokens
-- sources/ is immutable — never write to sources/
-"""
-
 PROMPT_TOOLS = """\
 ## Tools
 
@@ -138,7 +104,7 @@ Use the user's language for content. \
 If vault is empty, welcome the user and suggest what they can do.
 """
 
-SYSTEM_PROMPT = PROMPT_IDENTITY + "\n" + PROMPT_SCHEMA_CORE + "\n" + PROMPT_TOOLS
+SYSTEM_PROMPT = PROMPT_IDENTITY + "\n" + PROMPT_TOOLS
 
 
 # ======================================================================
@@ -247,13 +213,21 @@ class KnowledgeAgent:
     # ------------------------------------------------------------------
 
     def _build_system_prompt(self) -> str:
-        """Build system prompt: static core + protocols + preferences + memory.
+        """Build system prompt from static core + .schema/ files.
 
-        V2: Schema summary is always included (~800 tokens). The agent
-        always knows the wiki rules without needing to read_page schema.md.
-        Protocols are injected in full from .schema/protocols.md.
+        Injection order:
+        1. SYSTEM_PROMPT (identity + tools) — hardcoded
+        2. .schema/schema.md — wiki structure definition
+        3. .schema/protocols.md — behavioral constraints
+        4. .schema/preferences.md — user preferences
+        5. .schema/memory.md — long-term knowledge base memory
         """
         prompt = SYSTEM_PROMPT
+
+        schema_path = self.vault.schema_dir / "schema.md"
+        if schema_path.is_file():
+            schema_content = schema_path.read_text(encoding="utf-8")
+            prompt += f"\n\n{schema_content}"
 
         protocols_path = self.vault.schema_dir / "protocols.md"
         if protocols_path.is_file():
@@ -263,7 +237,7 @@ class KnowledgeAgent:
         prefs_path = self.vault.schema_dir / "preferences.md"
         if prefs_path.is_file():
             prefs_content = prefs_path.read_text(encoding="utf-8")
-            prompt += f"\n\n## User Preferences\n\n{prefs_content}"
+            prompt += f"\n\n{prefs_content}"
 
         memory_path = self.vault.schema_dir / "memory.md"
         if memory_path.is_file():

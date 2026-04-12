@@ -28,32 +28,28 @@ WIKI_DIRS = ["concepts", "journals", "synthesis", "archive"]
 
 INITIAL_SCHEMA = """\
 ---
-title: Vault Schema
+title: Wiki Schema
+type: preference
 updated: {date}
 ---
 
-# Vault Schema
+# Wiki Schema
 
-This is the operating manual for this knowledge base. Any agent (LLM or human)
-maintaining this vault should read this file first.
+Structure definition for this knowledge base. The agent loads this at
+startup to understand how the wiki is organized.
 
-## Why This Design
-
-The structured document is the primary asset. The LLM is the maintainer and
-executor — it maintains the structure during use, and draws on the structure
-plus its own capabilities when executing tasks. The knowledge base must remain
-valuable even if the model is replaced, and navigable even without any model.
+For behavioral rules (how to read, write, maintain), see protocols.md.
+For user preferences (language, style), see preferences.md.
 
 ## Core Principle: Progressive Disclosure
 
-The knowledge base is a tree (hierarchy for top-down access) overlaid with
-a graph (cross-references) and tags (horizontal slicing). This gives O(log n)
-access to any knowledge:
+The wiki is a tree (top-down hierarchy) overlaid with a graph
+(cross-references) and tags (horizontal slicing):
 
 ```
-index.md  (root — Hubs + pinned pages, kept under ~1000 tokens)
-  → Hub   (topic entry — overview + child page links with descriptions)
-    → Canonical / Note / Synthesis  (actual content)
+index.md  (root — lists Hubs, kept under ~1000 tokens)
+  → Hub   (topic entry — overview + child page links)
+    → Canonical / Note / Synthesis  (content pages)
 ```
 
 Three navigation mechanisms:
@@ -61,29 +57,20 @@ Three navigation mechanisms:
 - **Tags** (frontmatter `tags` field): cross-cutting, horizontal
 - **Links** ([[wiki-links]]): associative, point-to-point
 
-**Inverted pyramid**: every page's first 1-2 sentences are a self-contained
-summary. Reading only summaries should be enough to judge relevance.
+**Inverted pyramid**: every page's first 1-2 sentences are a
+self-contained summary. Reading only summaries should be enough
+to judge relevance.
 
-## Three Levels of Reading
-
-| Level | How | Cost/page | When |
-|-------|-----|-----------|------|
-| Scan | `list_page_summaries` | ~30 tokens | Surveying, filtering by tag |
-| Shallow | `read_page(max_chars=500)` | ~150 tokens | Relevance check |
-| Deep | `read_page` (full) | ~2000 tokens | Reading relevant content |
-
-Always scan or shallow-read before deep-reading.
-
-## Knowledge Object Types
+## Page Types
 
 | Type | Role | Key rules |
 |------|------|-----------|
-| `hub` | Navigation entry for a topic | Keep concise. List child pages with descriptions. |
-| `canonical` | Authoritative main document | MUST have `sources`. One per topic. |
-| `journal` | Time-ordered captures, daily logs | Preserve original expression. |
-| `synthesis` | Cross-cutting analysis, source summaries | Cite sources via [[links]]. |
-| `note` | Work-in-progress | Can be revised, merged, promoted. |
-| `archive` | Retired page | Created by archive_page tool only. |
+| `hub` | Navigation entry for a topic | Concise. Lists child pages with one-line descriptions. No deep content. |
+| `canonical` | Authoritative document on a topic | MUST have `sources`. One per topic. |
+| `note` | Work-in-progress | Low barrier. Can be revised, merged, promoted. Duplicates OK. |
+| `synthesis` | Cross-cutting analysis | Must cite ≥2 sources via [[wiki-links]]. |
+| `journal` | Time-ordered captures, daily logs | Preserve original expression. Low-barrier entry. |
+| `archive` | Retired page | Soft-deleted. Never hard-delete — always archive. |
 
 Hub says "here's everything about X, go read these pages."
 Canonical says "here's the definitive explanation of X."
@@ -91,14 +78,16 @@ If a page grows both navigation AND deep content, split it.
 
 ## Frontmatter
 
+Required on all wiki pages (except index.md and log.md):
+
 ```yaml
 ---
 title: Page Title
-type: hub | canonical | journal | synthesis | note | archive
+type: hub | canonical | note | synthesis | journal | archive
 summary: One-sentence description of what this page covers
-tags: [topic-a, topic-b]      # cross-cutting labels, agent-managed
-sources: []                     # required for canonical
-related: []                     # [[wiki-links]]
+tags: [topic-a, topic-b]
+sources: []          # required for canonical
+related: []          # [[wiki-links]]
 created: YYYY-MM-DD
 updated: YYYY-MM-DD
 ---
@@ -106,158 +95,49 @@ updated: YYYY-MM-DD
 
 ## Tags
 
-Tags provide horizontal navigation across the tree. Create and manage tags
-organically — no predefined taxonomy. Tags emerge from content.
+Tags provide horizontal navigation across the tree. Create and
+manage tags organically — no predefined taxonomy. Tags emerge
+from content.
 
 Special tag: `pinned` — these pages appear at the top of index.md.
 
-## Declaration vs Use (like code)
-
-Think of the knowledge base like a codebase:
-- **Hub** = package index / directory. Entry point that organizes.
-- **Canonical** = main definition / implementation. Where a topic is defined.
-- **Other pages** (note, synthesis, journal) = usage sites. They reference
-  concepts but don't own the definition.
-
-When updating knowledge: find the Canonical (definition site) and update
-there. Don't create a second definition — link to the existing one.
-When navigating: start at Hub (index), drill into Canonical (definition).
-
-## Three Modes of Operation
-
-### Mode 1: Conversation (default)
-The user is thinking, discussing, exploring. The agent responds naturally.
-It may reference the knowledge base when relevant, but does NOT need to
-touch the vault on every message. Most interactions are just conversations.
-
-If a discussion produces a valuable insight, the agent OFFERS to capture
-it — it does not silently write.
-
-### Mode 2: Capture
-Triggered by explicit requests ("remember this", "import this URL") or
-by the agent recognizing something worth recording.
-
-Two sub-types:
-- **Immediate capture**: user explicitly asks, or a clear conclusion emerges
-- **Journal capture**: quick thoughts → append to `wiki/journals/YYYY-MM-DD.md`
-
-### Mode 3: Organize
-Triggered by explicit requests ("clean up", "check health") or by the
-system (`nw lint`, `nw digest`).
-
-Includes: ingest, import, lint, digest (journal→knowledge promotion),
-archive, tree maintenance (Hub creation, index updates).
-
-## Journal → Knowledge Pipeline
-
-Journals are the raw material pool for knowledge. The flow:
-
-```
-Conversation → Journal (raw log, low cost)
-                 ↓
-              Digest (periodic review, extracts insights)
-                 ↓
-           Note / Canonical (structured knowledge)
-```
-
-The `digest` operation reviews recent journals looking for:
-- Conclusions worth promoting to Notes
-- Topics mentioned repeatedly that deserve their own page
-- Connections between conversations not yet linked
-- User preferences or patterns to record
-
 ## Writing Style
 
-- File names: lowercase, hyphenated (`attention-mechanism.md`)
-- Hub pages: short overview, then [[links]] with one-line descriptions
-- Canonical pages: summary → evidence → analysis → ## Related
+- File names: lowercase-hyphenated (e.g. `attention-mechanism.md`)
+- Inverted pyramid: first 1-2 sentences = self-contained summary
 - Every page ends with `## Related` listing [[wiki-links]]
-
-## Workflows
-
-### Ingest a URL
-1. `fetch_url` to get content
-2. `save_source` to archive raw content to sources/
-3. `list_page_summaries` to see what exists
-4. Create synthesis page at `wiki/synthesis/summary-SLUG.md`
-5. Update or create concept pages, add [[links]] and tags
-6. If 3+ pages on a topic and no Hub, create a Hub
-7. Update `wiki/index.md` and `append_log`
-
-### Import local files
-1. `import_files(directory)` — batch imports all .md files
-2. `scan_imports()` — get file digests + vault context for planning
-3. `apply_organize_plan(plan)` — apply organization decisions in bulk
-
-### Query (within conversation)
-1. Search or scan pages relevant to the question
-2. Synthesize answer with [[wiki-link]] citations
-3. Offer to file valuable answers as wiki pages
-
-### Quick capture
-1. Append to today's journal (`wiki/journals/YYYY-MM-DD.md`)
-2. Add tags, note connections
-3. Brief confirmation
-
-### Digest (journal → knowledge)
-1. Scan recent journals
-2. Identify insights worth promoting
-3. Create Note/Canonical pages, or ask user to confirm
-4. Update index and log
-
-### Health check
-1. `vault_stats` for overview
-2. Scan for orphans, missing pages, contradictions
-3. Report findings
-
-### Archive
-1. `archive_page(path, reason)`
-2. Update index.md
-3. `append_log`
-
-### Tree maintenance
-- index.md lists Hubs (not individual pages), under ~1000 tokens
-- Create Hub when 3+ related pages accumulate
-- Each Hub lists child pages with one-line descriptions
-
-## Hard Constraints (system-enforced)
-
-- `sources/` is immutable — writes rejected
-- Frontmatter must have `title` and `type`
-- Canonical must have non-empty `sources`
-- `tags` must be a list
-- Pages are never deleted — use `archive_page`
+- Hub pages: short overview, then [[link]] list with descriptions
+- Canonical pages: summary → evidence → analysis → ## Related
 
 ## Directory Layout
 
 ```
 vault/
-├── sources/          immutable raw materials
+├── sources/          immutable raw materials (read-only)
 ├── wiki/
-│   ├── index.md      navigation root
+│   ├── index.md      navigation root (lists Hubs only)
 │   ├── log.md        operation log
 │   ├── concepts/     hub, canonical, note pages
 │   ├── journals/     daily entries, quick captures
-│   ├── synthesis/    analysis, source summaries
+│   ├── synthesis/    analysis, cross-cutting pages
 │   └── archive/      retired pages
 └── .schema/
-    ├── schema.md        this file — operating manual
-    └── preferences.md   user preferences — how the agent should behave
+    ├── schema.md       this file — wiki structure definition
+    ├── protocols.md    behavioral rules for agents
+    └── preferences.md  user preferences
 ```
 
-## User Preferences
+## Journal → Knowledge Pipeline
 
-`.schema/preferences.md` records how this specific user wants the system to
-work. The agent reads it at startup and follows these preferences.
+Journals are the raw material pool. The promotion flow:
 
-Preferences are different from knowledge — they answer "how should the agent
-behave?" not "what is true about the world?". Examples:
-
-- Response language and style
-- Organization strategy (by topic, by project, by time)
-- Naming and tagging conventions
-- What's worth promoting to canonical vs keeping as notes
-- How proactive the agent should be
+```
+Conversation → Journal (raw capture, low barrier)
+                 ↓
+              Digest (periodic review, extracts insights)
+                 ↓
+           Note / Canonical (structured knowledge)
+```
 """
 
 INITIAL_PROTOCOLS = """\
