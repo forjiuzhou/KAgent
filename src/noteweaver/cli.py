@@ -135,9 +135,14 @@ def _approve_and_execute(
     agent: KnowledgeAgent,
     plan: "Plan | list[dict] | None" = None,
 ) -> None:
-    """Present a pending plan to the user and execute on approval.
+    """Present a session-organize plan to the user and execute on approval.
 
-    Supports both Plan objects (new) and legacy list[dict] (backward compat).
+    Called at the end of a chat session (``_finalize_session``), from
+    ``cmd_organize``, and after ``cmd_ingest`` / ``cmd_lint`` / ``cmd_digest``
+    when pending plans exist.  Normal interactive writes in ``chat()`` bypass
+    this entirely.
+
+    Supports both Plan objects and legacy list[dict] for backward compat.
     """
     if plan is None:
         pending = agent.plan_store.list_pending()
@@ -472,8 +477,8 @@ def _make_agent(vault_path: Path) -> tuple[Vault, KnowledgeAgent]:
 def cmd_ingest(vault_path: Path, url: str) -> None:
     """Ingest a URL into the knowledge base.
 
-    Uses plan→approve: agent fetches the URL, proposes wiki pages and
-    source archival as a plan, user approves, then executes.
+    The agent fetches the URL and writes directly during chat.
+    Any pending organize plans from the session are presented for approval.
     """
     vault, agent = _make_agent(vault_path)
 
@@ -506,8 +511,9 @@ def cmd_lint(vault_path: Path) -> None:
     """Run a health check on the knowledge base.
 
     Phase 1: code-based audit (fast, no LLM).
-    Phase 2: if issues found and an API key is available, LLM generates
-    a remediation plan → user approves → execute.
+    Phase 2: if issues found and an API key is available, LLM writes
+    fixes directly during chat.  Any pending organize plans are
+    presented for approval afterwards.
     """
     import json as _json
 
@@ -583,8 +589,9 @@ def cmd_lint(vault_path: Path) -> None:
 def cmd_digest(vault_path: Path) -> None:
     """Review recent journals and extract insights worth promoting.
 
-    Uses plan→approve: the agent reads journals, proposes promotions as
-    tool calls, user approves, then they execute.
+    The agent reads journals and writes directly during chat (e.g.
+    creating wiki pages from insights).  Any pending organize plans
+    are presented for approval afterwards.
     """
     vault, agent = _make_agent(vault_path)
 

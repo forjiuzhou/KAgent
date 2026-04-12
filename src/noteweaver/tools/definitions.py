@@ -5,12 +5,13 @@ V2 primitive tool set — low-semantic file operations.
 Read tools (always available):
   read_page, search, get_backlinks, list_pages, fetch_url
 
-Write tools (always available, policy gates enforce safety):
+Write tools (always available during chat, policy gates enforce safety):
   write_page, append_section, update_frontmatter, add_related_link
 
 Tool sets:
-  TOOL_SCHEMAS       — all tools (single set, used everywhere)
+  TOOL_SCHEMAS       — all tools (single set, used in both chat and execute_plan)
   OBSERVATION_SCHEMAS — read-only subset (for reference / unattended mode)
+  SUBMIT_PLAN_SCHEMA — session-organize only (used by generate_organize_plan)
 """
 
 from __future__ import annotations
@@ -283,15 +284,19 @@ OBSERVATION_SCHEMAS: list[dict] = [
 ]
 
 # V2: no separate CHAT_TOOL_SCHEMAS — agent always has full tool set.
-# Keep alias for backward compatibility with tests that import it.
+# Alias kept for imports that reference the old name.
 CHAT_TOOL_SCHEMAS: list[dict] = TOOL_SCHEMAS
 
-# Legacy: keep SUBMIT_PLAN_SCHEMA as empty for imports that reference it
+# submit_plan is used only by generate_organize_plan() for session-
+# organize proposals.  It is NOT included in the chat tool set.
 SUBMIT_PLAN_SCHEMA: dict = {
     "type": "function",
     "function": {
         "name": "submit_plan",
-        "description": "(deprecated — V2 uses continuous conversation flow)",
+        "description": (
+            "Propose a batch of changes as a plan (used by session-organize "
+            "flow only — not available during normal chat)."
+        ),
         "parameters": {"type": "object", "properties": {}, "required": []},
     },
 }
