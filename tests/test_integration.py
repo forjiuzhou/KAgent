@@ -97,11 +97,7 @@ class TestChatFlow:
         assert provider.chat_completion.call_count == 2
 
     def test_write_page_flow(self, vault: Vault) -> None:
-        """Agent surveys, then submits a plan to create a page.
-
-        The plan is saved as a Plan object. The page is NOT created
-        until execute_plan is called after user approval.
-        """
+        """V2 chat: survey_topic satisfies policy, then write_page runs in-chat."""
         body_text = (
             "This is a comprehensive test note that covers the fundamentals "
             "of software testing including unit tests, integration tests, "
@@ -115,7 +111,6 @@ class TestChatFlow:
             f"# Test Note\n\n{body_text}\n\n## Related\n"
         )
         provider = MagicMock()
-        # Chat phase: survey + submit_plan
         provider.chat_completion.side_effect = [
             _make_completion(None, [{
                 "id": "tc1",
@@ -124,49 +119,29 @@ class TestChatFlow:
             }]),
             _make_completion(None, [{
                 "id": "tc2",
-                "name": "submit_plan",
-                "arguments": {
-                    "summary": "Create a new note page about software testing at wiki/concepts/test-note.md",
-                    "targets": ["wiki/concepts/test-note.md"],
-                    "rationale": "User requested a note about tests, no existing page covers this",
-                    "intent": "create",
-                    "change_type": "structural",
-                },
-            }]),
-            _make_completion("I've proposed creating a new note about testing."),
-            # Execute phase: write_page
-            _make_completion(None, [{
-                "id": "tc3",
                 "name": "write_page",
                 "arguments": {
                     "path": "wiki/concepts/test-note.md",
                     "content": page_content,
                 },
             }]),
-            _make_completion("Page created successfully."),
+            _make_completion("I've created a new note about testing."),
         ]
         agent = KnowledgeAgent(vault=vault, provider=provider)
 
         responses = list(agent.chat("Create a note about tests"))
         assert any("survey_topic" in r for r in responses)
-        assert any("📋" in r for r in responses)
+        assert any("write_page" in r for r in responses)
+        assert not any("submit_plan" in r for r in responses)
 
-        # Page NOT created yet — only a plan exists
-        assert not (vault.root / "wiki" / "concepts" / "test-note.md").exists()
-
-        pending = agent.plan_store.list_pending()
-        assert len(pending) == 1
-        assert pending[0].intent == "create"
-
-        # Approve and execute
-        from noteweaver.plan import PlanStatus
-        agent.plan_store.update_status(pending[0].id, PlanStatus.APPROVED)
-        result = agent.execute_plan(pending[0].id)
+        assert (vault.root / "wiki" / "concepts" / "test-note.md").exists()
         content = vault.read_file("wiki/concepts/test-note.md")
         assert "Test Note" in content
+        assert agent.plan_store.list_pending() == []
+        assert provider.chat_completion.call_count == 3
 
     def test_append_section_flow(self, vault: Vault) -> None:
-        """Agent reads page, then submits plan to append. Plan is persisted."""
+        """V2 chat: read_page then append_section applies in the same turn."""
         page = (
             "---\ntitle: ML Basics\ntype: note\n"
             "summary: Machine learning basics\ntags: [ml]\n"
@@ -177,7 +152,6 @@ class TestChatFlow:
         vault.write_file("wiki/concepts/ml-basics.md", page)
 
         provider = MagicMock()
-        # Chat phase: read_page + submit_plan
         provider.chat_completion.side_effect = [
             _make_completion(None, [{
                 "id": "tc1",
@@ -186,48 +160,27 @@ class TestChatFlow:
             }]),
             _make_completion(None, [{
                 "id": "tc2",
-                "name": "submit_plan",
+                "name": "append_section",
                 "arguments": {
-                    "summary": "Append unsupervised learning section to ML Basics page",
-                    "targets": ["wiki/concepts/ml-basics.md"],
-                    "rationale": "User wants to add unsupervised learning info",
-                    "intent": "append",
-                    "change_type": "incremental",
-                },
-            }]),
-            _make_completion("I've proposed adding unsupervised learning section."),
-            # Execute phase: capture with target
-            _make_completion(None, [{
-                "id": "tc3",
-                "name": "capture",
-                "arguments": {
-                    "target": "wiki/concepts/ml-basics.md",
-                    "title": "Unsupervised Learning",
+                    "path": "wiki/concepts/ml-basics.md",
+                    "heading": "Unsupervised Learning",
                     "content": "Learn patterns without labels.",
                 },
             }]),
-            _make_completion("Section added."),
+            _make_completion("Added an unsupervised learning section."),
         ]
         agent = KnowledgeAgent(vault=vault, provider=provider)
 
         responses = list(agent.chat("Add info about unsupervised learning to ML basics"))
-        assert any("📋" in r for r in responses)
-
-        # Not yet applied
-        content = vault.read_file("wiki/concepts/ml-basics.md")
-        assert "## Unsupervised Learning" not in content
-
-        # Execute the plan
-        pending = agent.plan_store.list_pending()
-        assert len(pending) == 1
-        from noteweaver.plan import PlanStatus
-        agent.plan_store.update_status(pending[0].id, PlanStatus.APPROVED)
-        agent.execute_plan(pending[0].id)
+        assert any("append_section" in r for r in responses)
+        assert not any("submit_plan" in r for r in responses)
 
         content = vault.read_file("wiki/concepts/ml-basics.md")
         assert "## Unsupervised Learning" in content
         assert "Learn patterns without labels" in content
         assert "## Supervised Learning" in content
+        assert agent.plan_store.list_pending() == []
+        assert provider.chat_completion.call_count == 3
 
     def test_multi_step_with_context_preserved(self, vault: Vault) -> None:
         """Multiple chat turns maintain context."""
