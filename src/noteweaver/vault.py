@@ -178,9 +178,13 @@ not preferences, not suggestions.
 
 ## Change Protocols
 
-- **Propose before write.** In attended mode, describe planned
-  changes in natural language and wait for user confirmation
-  before using write tools.
+- **Small changes: write directly.** Appending a section, adding
+  a link, updating tags or metadata — just do it and tell the user.
+- **Larger changes: propose first.** Creating new pages or
+  restructuring existing content — describe your plan in natural
+  language and let the user confirm before writing.
+- **When uncertain, ask.** If there are trade-offs or the user's
+  intent is ambiguous, propose and ask rather than guess.
 - **Journal is low-barrier.** Journal entries can be written freely
   without full structural compliance — they are raw material.
 - **Never hard-delete.** Durable pages are never deleted, only

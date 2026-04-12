@@ -1,12 +1,14 @@
-"""Plan — first-class persistent object for knowledge base change proposals.
+"""Plan — persistent object for *organize-only* change proposals.
 
-A Plan captures the agent's intention to modify the knowledge base,
-expressed as natural language rather than executable tool calls.
+In V2, normal interactive writes happen directly in ``chat()`` via
+primitive tools (write_page, append_section, etc.).  Plans are used
+exclusively for **session-organize** proposals — batch knowledge
+extraction at the end of a session or via cron digest.
 
 Lifecycle:
-    pending → approved → executed
-    pending → rejected
-    pending → expired  (target files changed, or time limit exceeded)
+    pending → approved → executed    (user approves an organize plan)
+    pending → rejected               (user declines or skips)
+    pending → expired                (target files changed, or TTL exceeded)
 
 Storage: .meta/plans/<plan_id>.json
 """
