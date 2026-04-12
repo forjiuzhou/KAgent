@@ -35,6 +35,8 @@ All in one continuous conversation. No separate Plan/execute phases.
 ```
 agent.py              Agent loop, system prompt (with schema core), context assembly,
                       session memory, continuous chat with all tools
+session.py            Shared session logic: agent construction, finalize_session,
+                      journal writing, digest prompts — used by both cli.py and gateway.py
 plan.py               Plan data model (legacy, kept for backward compatibility)
 tools/definitions.py  9 tool schemas + legacy handlers + dispatch_tool()
                       Single TOOL_SCHEMAS set (read + write, used everywhere)
@@ -75,6 +77,7 @@ adapters/base.py      Abstract IM adapter interface
 | Change schema rules in prompt | `agent.py` → `PROMPT_SCHEMA_CORE` |
 | Change write permission rules | `tools/policy.py` → `check_pre_dispatch()` |
 | Change vault file operations | `vault.py` |
+| Change session finalization logic | `session.py` (shared by CLI + Gateway) |
 | Add a CLI command | `cli.py` → add `cmd_*()` + routing in `main()` |
 | Understand agent traces | `trace.py`, CLI: `nw trace` |
 | Change LLM provider behavior | `adapters/openai_provider.py` or `adapters/anthropic_provider.py` |

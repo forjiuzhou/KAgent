@@ -257,7 +257,7 @@ class TestLongTermMemory:
 class TestFinalization:
     def test_finalize_creates_all_artifacts_when_substantial(self, vault: Vault) -> None:
         """_finalize_session creates transcript + memory always, journal when substantial."""
-        from noteweaver.cli import _finalize_session
+        from noteweaver.session import finalize_session
 
         agent = KnowledgeAgent(vault=vault, provider=MagicMock())
         # Simulate a write operation so the session is considered substantial
@@ -273,7 +273,7 @@ class TestFinalization:
         agent.messages.append({"role": "assistant", "content": "Done!"})
 
         exchanges = [{"user": "create a note", "tools": ["write_page"], "reply": "Done!"}]
-        _finalize_session(vault, agent, exchanges, "chat")
+        finalize_session(vault, agent, exchanges, "chat", run_organize=False)
 
         # Transcript saved
         transcript_dir = vault.meta_dir / "transcripts"
@@ -291,14 +291,14 @@ class TestFinalization:
 
     def test_finalize_skips_journal_for_short_chat(self, vault: Vault) -> None:
         """Short chat with no writes should not produce a journal entry."""
-        from noteweaver.cli import _finalize_session
+        from noteweaver.session import finalize_session
 
         agent = KnowledgeAgent(vault=vault, provider=MagicMock())
         agent.messages.append({"role": "user", "content": "hi"})
         agent.messages.append({"role": "assistant", "content": "hello"})
 
         exchanges = [{"user": "hi", "tools": [], "reply": "hello"}]
-        _finalize_session(vault, agent, exchanges, "chat")
+        finalize_session(vault, agent, exchanges, "chat", run_organize=False)
 
         # Transcript and session memory are always saved
         assert len(list((vault.meta_dir / "transcripts").glob("*.json"))) == 1
@@ -312,14 +312,14 @@ class TestFinalization:
 
     def test_finalize_always_journals_for_system_commands(self, vault: Vault) -> None:
         """System commands (ingest, lint, digest) always produce a journal."""
-        from noteweaver.cli import _finalize_session
+        from noteweaver.session import finalize_session
 
         agent = KnowledgeAgent(vault=vault, provider=MagicMock())
         agent.messages.append({"role": "user", "content": "ingest"})
         agent.messages.append({"role": "assistant", "content": "done"})
 
         exchanges = [{"user": "ingest", "tools": [], "reply": "done"}]
-        _finalize_session(vault, agent, exchanges, "ingest")
+        finalize_session(vault, agent, exchanges, "ingest", run_organize=False)
 
         from datetime import datetime
         today = datetime.now().strftime("%Y-%m-%d")
