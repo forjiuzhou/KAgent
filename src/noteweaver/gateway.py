@@ -122,6 +122,11 @@ class Gateway:
                 log.error("Agent error: %s", e)
                 exchange["reply"] = f"(error: {e})"
                 return f"Error: {e}"
+            finally:
+                try:
+                    self.agent.save_trace()
+                except Exception as e:
+                    log.warning("Failed to save trace: %s", e)
             self._exchanges.append(exchange)
 
             pending_plans = self.agent.plan_store.list_pending()
@@ -191,6 +196,22 @@ class Gateway:
                 log.info("Cron: running digest...")
                 async with self._lock:
                     try:
+                        # Flush journal and transcript BEFORE digest so the
+                        # agent can actually read the user's conversation
+                        # history via wiki/journals/ and .meta/transcripts/.
+                        if self._exchanges:
+                            try:
+                                finalize_session(
+                                    self.vault, self.agent,
+                                    self._exchanges, "chat",
+                                    run_organize=False,
+                                )
+                                self._exchanges = []
+                            except Exception as e:
+                                log.warning(
+                                    "Pre-digest session flush failed: %s", e,
+                                )
+
                         self.agent.set_attended(False)
                         prompt = build_digest_prompt(self.vault)
                         exchange: dict = {"user": "digest", "tools": [], "reply": ""}

@@ -132,5 +132,5 @@ class TestBuildDigestPrompt:
     def test_consistent_base_prompt(self, vault: Vault) -> None:
         prompt = build_digest_prompt(vault)
         assert "Review the recent journal entries" in prompt
-        assert "capture()" in prompt
-        assert "survey_topic()" in prompt
+        assert "write_page()" in prompt
+        assert "search()" in prompt

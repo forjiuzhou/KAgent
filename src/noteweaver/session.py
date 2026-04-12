@@ -335,7 +335,11 @@ def build_digest_prompt(vault: Vault) -> str:
         "1. Insights, conclusions, or decisions worth promoting to a wiki page\n"
         "2. Topics mentioned repeatedly that deserve their own page\n"
         "3. Connections between conversations that aren't yet linked\n\n"
-        "For each finding, use capture() to create wiki pages with the "
-        "key information. Use survey_topic() first to check what exists."
+        "Workflow:\n"
+        "1. Use list_pages('wiki/journals') to find recent journals.\n"
+        "2. Use read_page() to read journal content.\n"
+        "3. Use search() to check if a topic already has a wiki page.\n"
+        "4. Use write_page() to create new wiki pages for key findings.\n"
+        "5. Use add_related_link() to connect related pages."
         + since_hint + transcript_hint
     )
