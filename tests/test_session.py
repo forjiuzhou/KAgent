@@ -134,3 +134,14 @@ class TestBuildDigestPrompt:
         assert "Review the recent journal entries" in prompt
         assert "write_page()" in prompt
         assert "search()" in prompt
+
+    def test_attended_prompt_allows_write_page(self, vault: Vault) -> None:
+        prompt = build_digest_prompt(vault, attended=True)
+        assert "write_page()" in prompt
+        assert "Do NOT use write_page()" not in prompt
+
+    def test_unattended_prompt_forbids_write_page(self, vault: Vault) -> None:
+        prompt = build_digest_prompt(vault, attended=False)
+        assert "Do NOT use write_page()" in prompt
+        assert "Promotion Candidates" in prompt
+        assert "unattended" in prompt.lower()

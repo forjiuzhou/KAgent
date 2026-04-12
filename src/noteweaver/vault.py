@@ -557,22 +557,44 @@ class Vault:
         else:
             self._git_commit(f"Save source {rel_path}")
 
+    _SKIP_DIRS = frozenset({".git", ".meta", ".DS_Store", "__pycache__", "node_modules"})
+    _SKIP_FILES = frozenset({".DS_Store", "Thumbs.db", ".gitignore"})
+
+    @staticmethod
+    def _is_junk_path(rel_path: str) -> bool:
+        """Return True if *rel_path* passes through a directory or filename
+        that should never appear in file listings (nested .git/, .DS_Store,
+        __pycache__, etc.).
+        """
+        parts = rel_path.replace("\\", "/").split("/")
+        for part in parts[:-1]:
+            if part in Vault._SKIP_DIRS:
+                return True
+        if parts[-1] in Vault._SKIP_FILES:
+            return True
+        return False
+
     def list_files(self, rel_dir: str = "wiki", pattern: str = "*.md") -> list[str]:
         """List files matching a glob pattern under a vault subdirectory."""
         base = self._resolve(rel_dir)
         if not base.is_dir():
             return []
-        return sorted(
-            str(p.relative_to(self.root))
-            for p in base.rglob(pattern)
-            if p.is_file()
-        )
+        results = []
+        for p in base.rglob(pattern):
+            if not p.is_file():
+                continue
+            rel = str(p.relative_to(self.root))
+            if self._is_junk_path(rel):
+                continue
+            results.append(rel)
+        return sorted(results)
 
     def list_all_files(self, rel_dir: str = ".", pattern: str = "*") -> list[dict]:
         """List all files under a vault subdirectory with metadata.
 
         Returns dicts with path, size_bytes, and suffix for each file.
-        Excludes .meta/ and .git/ directories.
+        Excludes .git/, .meta/, .DS_Store, and other non-content paths
+        at any nesting depth.
         """
         base = self._resolve(rel_dir)
         if not base.is_dir():
@@ -582,7 +604,7 @@ class Vault:
             if not p.is_file():
                 continue
             rel = str(p.relative_to(self.root))
-            if rel.startswith(".meta/") or rel.startswith(".git/"):
+            if self._is_junk_path(rel):
                 continue
             results.append({
                 "path": rel,

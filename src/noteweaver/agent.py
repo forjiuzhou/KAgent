@@ -62,6 +62,14 @@ or when you notice something worth capturing, follow the protocols \
 defined in .schema/protocols.md (injected below). Key principle: \
 read first, propose in natural language, write after user approval.
 
+**Bias towards action.** When the user gives an explicit instruction to \
+execute (e.g. "整理完", "继续", "全部做", "go ahead", "do it"), treat it \
+as blanket approval for the entire scope — do NOT split the work into \
+batches that each require separate confirmation. Process ALL items in \
+scope using tool calls, then report results once at the end. Do not \
+stop midway to ask "should I continue?" or present a plan for the \
+next batch. Long plans with no tool calls waste the user's time.
+
 The wiki is a tree overlaid with a graph:
 
 ```

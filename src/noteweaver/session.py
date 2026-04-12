@@ -305,11 +305,13 @@ def save_last_digest_date(vault: Vault) -> None:
     path.write_text(datetime.now().strftime("%Y-%m-%d"), encoding="utf-8")
 
 
-def build_digest_prompt(vault: Vault) -> str:
+def build_digest_prompt(vault: Vault, *, attended: bool = True) -> str:
     """Build the digest prompt with since-hint and transcript-hint.
 
-    Used by both ``cmd_digest`` (CLI) and ``_run_cron`` (Gateway) so the
-    agent receives identical instructions regardless of entry point.
+    Used by both ``cmd_digest`` (CLI, attended=True) and ``_run_cron``
+    (Gateway, attended=False).  When *attended* is False, the workflow
+    instructs the agent to record findings in the journal instead of
+    creating wiki pages directly (matching the unattended write policy).
     """
     transcript_dir = vault.meta_dir / "transcripts"
     transcript_hint = ""
@@ -330,16 +332,33 @@ def build_digest_prompt(vault: Vault) -> str:
     if since:
         since_hint = f" Only review journals after {since}."
 
+    if attended:
+        workflow = (
+            "Workflow:\n"
+            "1. Use list_pages('wiki/journals') to find recent journals.\n"
+            "2. Use read_page() to read journal content.\n"
+            "3. Use search() to check if a topic already has a wiki page.\n"
+            "4. Use write_page() to create new wiki pages for key findings.\n"
+            "5. Use add_related_link() to connect related pages."
+        )
+    else:
+        workflow = (
+            "Workflow (unattended — you can only write to wiki/journals/):\n"
+            "1. Use list_pages('wiki/journals') to find recent journals.\n"
+            "2. Use read_page() to read journal content.\n"
+            "3. Use search() to check if a topic already has a wiki page.\n"
+            "4. Use append_section() to add a '#### Promotion Candidates' "
+            "section to today's journal with your findings — include "
+            "proposed page title, summary, tags, and reasoning for each.\n"
+            "5. Do NOT use write_page() on wiki/concepts/ or other content "
+            "paths — those writes will be blocked."
+        )
+
     return (
         "Review the recent journal entries in wiki/journals/. Look for:\n"
         "1. Insights, conclusions, or decisions worth promoting to a wiki page\n"
         "2. Topics mentioned repeatedly that deserve their own page\n"
         "3. Connections between conversations that aren't yet linked\n\n"
-        "Workflow:\n"
-        "1. Use list_pages('wiki/journals') to find recent journals.\n"
-        "2. Use read_page() to read journal content.\n"
-        "3. Use search() to check if a topic already has a wiki page.\n"
-        "4. Use write_page() to create new wiki pages for key findings.\n"
-        "5. Use add_related_link() to connect related pages."
+        + workflow
         + since_hint + transcript_hint
     )

@@ -377,6 +377,38 @@ class TestListAllFiles:
         assert not any(p.startswith(".meta/") for p in paths)
         assert not any(p.startswith(".git/") for p in paths)
 
+    def test_excludes_nested_git_dir(self, vault: Vault) -> None:
+        """list_all_files excludes .git/ inside subdirectories (e.g. sources/typora/.git/)."""
+        nested_git = vault.root / "sources" / "typora" / ".git" / "objects"
+        nested_git.mkdir(parents=True)
+        (nested_git / "abc123").write_bytes(b"\x00")
+        (vault.root / "sources" / "typora" / ".git" / "HEAD").write_text("ref: refs/heads/main")
+        (vault.root / "sources" / "typora" / "real-note.md").write_text("# Real content")
+        files = vault.list_all_files("sources")
+        paths = [f["path"] for f in files]
+        assert not any(".git" in p for p in paths)
+        assert "sources/typora/real-note.md" in paths
+
+    def test_excludes_ds_store(self, vault: Vault) -> None:
+        """list_all_files excludes .DS_Store at any depth."""
+        (vault.root / "sources" / "typora").mkdir(parents=True)
+        (vault.root / "sources" / "typora" / ".DS_Store").write_bytes(b"\x00")
+        (vault.root / "sources" / "typora" / "note.md").write_text("# Note")
+        files = vault.list_all_files("sources")
+        paths = [f["path"] for f in files]
+        assert not any(".DS_Store" in p for p in paths)
+        assert "sources/typora/note.md" in paths
+
+    def test_list_files_excludes_nested_git(self, vault: Vault) -> None:
+        """list_files also skips nested .git/ directories."""
+        nested_git = vault.root / "sources" / "typora" / ".git" / "hooks"
+        nested_git.mkdir(parents=True)
+        (nested_git / "pre-commit.sample").write_text("#!/bin/sh")
+        (vault.root / "sources" / "typora" / "note.md").write_text("# Note")
+        files = vault.list_files("sources/typora", "*.md")
+        assert not any(".git" in f for f in files)
+        assert any("note.md" in f for f in files)
+
 
 class TestReadFrontmattersIncludesAll:
     """read_frontmatters should return ALL files, not just those with YAML frontmatter."""
