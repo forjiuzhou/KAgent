@@ -1236,6 +1236,7 @@ class KnowledgeAgent:
         ]
 
         results: list[str] = []
+        executed_tool_calls: list[dict] = []
         with self.vault.operation("Execute plan"):
             max_steps = 25
             for _ in range(max_steps):
@@ -1277,6 +1278,11 @@ class KnowledgeAgent:
                                 f"{'✗' if is_error else '✓'} {tc.name}: "
                                 f"{tool_result[:120]}"
                             )
+                            if not is_error:
+                                executed_tool_calls.append({
+                                    "name": tc.name,
+                                    "arguments": fn_args,
+                                })
                         except Exception as exc:
                             tool_result = f"Error: {exc}"
                             results.append(f"✗ {tc.name}: {exc}")
@@ -1299,8 +1305,8 @@ class KnowledgeAgent:
                         "content": tool_result,
                     })
 
-            disclosure_report = self._ensure_progressive_disclosure_from_results(
-                results,
+            disclosure_report = self._ensure_progressive_disclosure(
+                executed_tool_calls,
             )
             if disclosure_report:
                 results.extend(disclosure_report)
@@ -1324,44 +1330,6 @@ class KnowledgeAgent:
         )
 
         return report
-
-    def _ensure_progressive_disclosure_from_results(
-        self, results: list[str],
-    ) -> list[str]:
-        """After plan execution, ensure new pages are reachable.
-
-        Extracts written paths from execution results and delegates
-        to _ensure_progressive_disclosure with a compatible format.
-        """
-        pseudo_plan: list[dict] = []
-        for r in results:
-            if not r.startswith("✓"):
-                continue
-            parts = r.split(":", 1)
-            if len(parts) < 2:
-                continue
-            tool_part = parts[0].replace("✓", "").strip()
-            if tool_part in ("write_page", "capture"):
-                rest = parts[1].strip()
-                if "written to " in rest:
-                    path = rest.split("written to ", 1)[1].split(" ")[0].strip()
-                    pseudo_plan.append({
-                        "name": tool_part, "arguments": {"path": path},
-                    })
-                elif "created " in rest and " page at " in rest:
-                    path = rest.split(" page at ", 1)[1].split(" ")[0].strip()
-                    pseudo_plan.append({
-                        "name": tool_part, "arguments": {"path": path},
-                    })
-                elif "appended " in rest and " to " in rest:
-                    path = rest.split(" to ", 1)[1].strip()
-                    pseudo_plan.append({
-                        "name": tool_part, "arguments": {"target": path},
-                    })
-
-        if not pseudo_plan:
-            return []
-        return self._ensure_progressive_disclosure(pseudo_plan)
 
     # ------------------------------------------------------------------
     # Session organize: plan → approve → execute
@@ -1632,8 +1600,8 @@ class KnowledgeAgent:
         Checks that every written page is linked from at least one other
         page (or a Hub).  If not, attempts to:
         1. Add the page to an existing Hub for one of its tags.
-        2. If no Hub matches, check if a Hub should be created (3+ pages
-           share a tag).
+        2. If no Hub matches, create a new Hub for the tag so the page
+           is never left orphaned.
         3. Rebuild index.md to reflect any Hub changes.
 
         Returns a list of report lines for actions taken.
@@ -1702,12 +1670,16 @@ class KnowledgeAgent:
                     hub_tags = hub_info.get("tags") or []
                     if tag in hub_tags:
                         try:
-                            dispatch_tool(self.vault, "add_related_link", {
-                                "path": hub_info["path"],
-                                "title": title,
+                            result = dispatch_tool(self.vault, "organize", {
+                                "target": hub_info["path"],
+                                "action": "link",
+                                "link_to": title,
                             })
-                            report.append(f"✓ 链接: {title} → hub「{hub_title}」")
-                            linked = True
+                            if result.startswith("OK"):
+                                report.append(
+                                    f"✓ 链接: {title} → hub「{hub_title}」"
+                                )
+                                linked = True
                         except Exception:
                             pass
                         break
@@ -1721,7 +1693,7 @@ class KnowledgeAgent:
                         tag in (h.get("tags") or [])
                         for h in hubs.values()
                     )
-                    if len(pages_with_tag) >= 3 and not hub_exists:
+                    if not hub_exists:
                         hub_slug = str(tag).lower().replace(" ", "-")
                         import re as _re
                         hub_slug = _re.sub(r"[^a-z0-9-]", "", hub_slug)
