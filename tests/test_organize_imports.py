@@ -44,13 +44,15 @@ def _write_imported_page(vault: Vault, name: str, content: str) -> str:
 
 class TestToolRegistration:
     def test_organize_in_schemas(self) -> None:
-        names = {s["function"]["name"] for s in TOOL_SCHEMAS}
-        assert "organize" in names
-        assert len(names) == 11
+        schema_names = {s["function"]["name"] for s in TOOL_SCHEMAS}
+        assert "organize" not in schema_names
+        assert "organize" in TOOL_HANDLERS
+        assert len(schema_names) == 9
 
     def test_ingest_in_schemas(self) -> None:
-        names = {s["function"]["name"] for s in TOOL_SCHEMAS}
-        assert "ingest" in names
+        schema_names = {s["function"]["name"] for s in TOOL_SCHEMAS}
+        assert "ingest" not in schema_names
+        assert "ingest" in TOOL_HANDLERS
 
     def test_organize_in_handlers(self) -> None:
         assert "organize" in TOOL_HANDLERS

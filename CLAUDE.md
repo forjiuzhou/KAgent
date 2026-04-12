@@ -16,39 +16,29 @@ No linter is configured. Tests use pytest, temp directories, and mocked LLM prov
 
 Single Python package at `src/noteweaver/` (~5700 LOC). No frameworks — just OpenAI/Anthropic SDKs, tool calling, and file I/O.
 
-### Core loop (Explore → Propose → Execute)
+### Core loop (Continuous conversation flow)
 
 ```
-KnowledgeAgent.chat(user_message)        # EXPLORE + PROPOSE
+KnowledgeAgent.chat(user_message)
   → _build_messages_for_query()          # assemble what LLM sees
-  → LLMProvider.chat_completion()        # only observation tools + submit_plan
+  → LLMProvider.chat_completion()        # ALL tools (read + write)
   → for each tool_call:
-      if submit_plan: create Plan object → persist to .meta/plans/
-      else: dispatch_tool()              # execute read tool
+      dispatch_tool()                    # execute any tool
   → loop up to 25 steps
 
-Caller (CLI/Gateway):
-  → incremental plans: auto-approve → execute_plan()
-  → structural plans: present to user → approve → execute_plan()
-
-KnowledgeAgent.execute_plan(plan_id)     # EXECUTE (separate LLM call)
-  → load Plan from .meta/plans/
-  → check staleness (target mtimes)
-  → new LLM call with EXECUTE_PLAN_PROMPT + write tools
-  → dispatch_tool() for each write tool call
-  → _ensure_progressive_disclosure()
+Agent proposes changes in natural language → user approves → agent writes.
+All in one continuous conversation. No separate Plan/execute phases.
 ```
 
 ### File → Responsibility
 
 ```
-agent.py              Agent loop, system prompt, context assembly, session memory,
-                      execute_plan() for LLM-driven plan execution
-plan.py               Plan data model (Plan, PlanStatus, PlanStore),
-                      persistence in .meta/plans/, staleness check, legacy migration
-tools/definitions.py  11 tool schemas + submit_plan + handlers + dispatch_tool()
-                      CHAT_TOOL_SCHEMAS (read + submit_plan) vs TOOL_SCHEMAS (all)
-tools/policy.py       Pre-dispatch policy, change_type classification
+agent.py              Agent loop, system prompt (with schema core), context assembly,
+                      session memory, continuous chat with all tools
+plan.py               Plan data model (legacy, kept for backward compatibility)
+tools/definitions.py  9 tool schemas + legacy handlers + dispatch_tool()
+                      Single TOOL_SCHEMAS set (read + write, used everywhere)
+tools/policy.py       Pre-dispatch safety gates (read-before-write, etc.)
 vault.py              On-disk vault: read/write files, git batching, FTS, stats
 cli.py                CLI commands (chat, trace, lint, digest, ingest, etc.)
 trace.py              Structured trace collector for observability
@@ -67,13 +57,13 @@ adapters/base.py      Abstract IM adapter interface
 
 ### Key design facts
 
-- **Explore → Propose → Execute.** Chat phase only has read tools + `submit_plan`. Plans are natural-language proposals persisted as first-class objects. Execution is a separate LLM call after user approval.
-- **Plans are persistent.** Stored in `.meta/plans/<plan_id>.json` with id, status, timestamps, staleness tracking. Support incremental (auto-execute) and structural (require approval) change types.
-- **System verifies change_type.** Model suggests incremental/structural, but `classify_change_type()` in policy.py can override (e.g. create intent → always structural).
+- **Continuous conversation flow.** All tools (read + write) available during chat. Agent proposes changes in natural language, writes after user approval. No separate Plan/execute phases.
+- **Schema always in context.** `PROMPT_SCHEMA_CORE` (~800 tokens) is always in the system prompt. Agent always knows wiki rules.
+- **Primitive tools.** 9 tools: 5 read (read_page, search, get_backlinks, list_pages, fetch_url) + 4 write (write_page, append_section, update_frontmatter, add_related_link). Legacy high-semantic tools kept as handlers for backward compat.
 - **Transcript is append-only.** Context compression only in the query view (`_build_messages_for_query`).
 - **Tool results are tiered.** Full → preview → placeholder based on age. See `_apply_tool_result_tiers()`.
-- **Git batching.** All writes in one `execute_plan()` call → one git commit via `_operation_depth`.
-- **Safety in code, not prompt.** Read-before-write, dedup, synthesis links, unattended restrictions → `policy.py`.
+- **Git batching.** All writes in one chat turn → one git commit via `_operation_depth`.
+- **Safety in code, not prompt.** Read-before-write, synthesis link requirements, unattended restrictions → `policy.py`.
 
 ### Where to look
 
@@ -82,10 +72,8 @@ adapters/base.py      Abstract IM adapter interface
 | Add/change a tool | `tools/definitions.py` (schema + handler), `tools/policy.py` (tier) |
 | Change what context LLM sees | `agent.py` → `_build_messages_for_query()` |
 | Change agent behavior/personality | `agent.py` → `SYSTEM_PROMPT` (top of file) |
-| Change execution behavior | `agent.py` → `EXECUTE_PLAN_PROMPT`, `execute_plan()` |
+| Change schema rules in prompt | `agent.py` → `PROMPT_SCHEMA_CORE` |
 | Change write permission rules | `tools/policy.py` → `check_pre_dispatch()` |
-| Change plan data model | `plan.py` → `Plan`, `PlanStore` |
-| Change incremental/structural classification | `tools/policy.py` → `classify_change_type()` |
 | Change vault file operations | `vault.py` |
 | Add a CLI command | `cli.py` → add `cmd_*()` + routing in `main()` |
 | Understand agent traces | `trace.py`, CLI: `nw trace` |
@@ -119,6 +107,7 @@ Adding a new tool requires:
 - `$HOME/.local/bin` must be on PATH for `nw` CLI
 - `nw lint` and `nw digest` need API keys (they run the agent loop)
 - Tests use `auto_git=False` — the real vault auto-initializes a Git repo
-- 11 execution tools + submit_plan exist — `tools/definitions.py` is truth
-- `CHAT_TOOL_SCHEMAS` (read + submit_plan) is used during chat; `TOOL_SCHEMAS` (all) during execution
+- 9 tools in `TOOL_SCHEMAS` — `tools/definitions.py` is truth
+- `CHAT_TOOL_SCHEMAS` == `TOOL_SCHEMAS` in V2 (all tools available during chat)
+- Legacy tools (capture, organize, restructure, ingest, survey_topic) kept as handlers for backward compat
 - DESIGN.md is product philosophy (~1000 lines), not code architecture

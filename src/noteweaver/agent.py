@@ -1,20 +1,19 @@
 """KnowledgeAgent — the core agent loop.
 
-The agent uses an LLM with tool calling to operate on a Vault.
-It can ONLY use the knowledge operation tools defined in tools/definitions.py.
-No shell, no code execution, no arbitrary file access.
+V2 architecture: continuous conversation flow with primitive tools.
 
-Context management architecture:
+Key changes from V1:
+- No Plan mode — agent reads, proposes in natural language, writes after
+  user approval, all in one continuous conversation
+- All tools (read + write) available during chat
+- Schema summary injected into system prompt by default
+- Policy layer enforces safety gates (read-before-write, etc.)
 
+Context management:
 - self.messages (transcript): append-only record of the full conversation.
-  Never modified by compression — the complete history is preserved.
-
-- self._session_summary: structured summary of older conversation turns,
-  generated when the transcript grows too large for the context window.
-
+  Never modified by compression.
+- self._session_summary: structured summary of older conversation turns.
 - _build_messages_for_query(): constructs the view actually sent to the LLM.
-  Applies: system prompt + session memory + session summary + recent messages
-  with tiered tool-result cleanup.  The transcript is never touched.
 """
 
 from __future__ import annotations
@@ -28,21 +27,23 @@ from typing import Generator
 from noteweaver.adapters.provider import LLMProvider
 from noteweaver.vault import Vault
 from noteweaver.tools.definitions import (
-    TOOL_SCHEMAS, CHAT_TOOL_SCHEMAS, dispatch_tool,
+    TOOL_SCHEMAS, dispatch_tool,
 )
 from noteweaver.tools.policy import (
-    PolicyContext, check_pre_dispatch, classify_change_type,
-)
-from noteweaver.plan import (
-    Plan, PlanStatus, PlanStore, generate_plan_id,
+    PolicyContext, check_pre_dispatch,
 )
 from noteweaver.trace import TraceCollector
 
+# Keep plan imports for backward compatibility (tests, CLI)
+from noteweaver.plan import (
+    Plan, PlanStatus, PlanStore, generate_plan_id,
+)
+from noteweaver.tools.policy import classify_change_type
+
 # ======================================================================
-# System prompt — split into static parts for cache efficiency
+# System prompt
 # ======================================================================
 
-# Part 1: Identity and core behavior
 PROMPT_IDENTITY = """\
 You are NoteWeaver, a knowledge management agent and thinking companion.
 
@@ -57,29 +58,20 @@ content with [[wiki-links]]. Most interactions are just conversations.
 
 ### 2. Knowledge Capture
 When the user asks you to record, remember, organize, or import something, \
-or when you notice something worth capturing — you become a **planner**.
-
-Your job is to **explore, understand, then propose** — not to execute \
-changes directly. The system handles precise implementation after your \
-proposal is approved.
+or when you notice something worth capturing:
 
 **Workflow:**
-1. **Survey first** — use observation tools to understand what exists. \
-Call survey_topic, search, or read_page before forming any plan.
-2. **Think about knowledge architecture** — where should this go? \
-Does a relevant page already exist? What connections need to be made? \
-What hubs are involved?
-3. **Submit a plan** — call submit_plan() with a clear description of \
-your proposed changes. Focus on WHAT and WHY, not implementation details.
+1. **Read first** — use read tools to understand what exists. \
+Search, list pages, or read specific pages before proposing any changes.
+2. **Propose in natural language** — describe what you want to change \
+and why. Wait for user confirmation before writing.
+3. **Write after approval** — once the user agrees, execute the changes \
+using the write tools.
 
-**In your plan, consider:**
+**When proposing changes, consider:**
 - Would this be better as an addition to an existing page, or a new page?
 - What connections (related links, hub references) need updating?
-- Is this a small incremental change, or a structural one?
 - Are there any uncertainties the user should weigh in on?
-
-The system automatically handles: frontmatter, related links, \
-operation logging, hub linking, and index updates.
 
 Maintain the tree — every page must be reachable:
 
@@ -88,133 +80,80 @@ index.md  (root — lists Hubs, <1000 tokens)
   → Hub   (topic entry — overview + child page links)
     → Canonical / Note / Synthesis  (content)
 ```
+"""
 
-## Knowledge Structure
+PROMPT_SCHEMA_CORE = """\
+## Wiki Schema (always active)
 
-Types: Hub (navigation) | Canonical (authoritative, needs sources) | \
-Note (WIP, duplicates OK) | Synthesis (analysis) | Journal (time-flow, \
-draft/log) | Archive (retired)
+### Page Types
+- **hub**: Navigation entry for a topic. Lists child pages with descriptions.
+- **canonical**: Authoritative main document. MUST have `sources`. One per topic.
+- **note**: Work-in-progress. Can be revised, merged, promoted. Duplicates OK.
+- **synthesis**: Cross-cutting analysis. Must cite ≥2 sources via [[links]].
+- **journal**: Time-ordered captures, daily logs. Preserve original expression.
+- **archive**: Retired page.
 
-Every page has frontmatter:
+### Frontmatter (required on all wiki pages)
 ```yaml
 ---
 title: Page Title
 type: hub | canonical | note | synthesis | journal | archive
 summary: One-sentence description
-tags: [topic-a]
+tags: [topic-a, topic-b]
 sources: []       # required for canonical
-related: []
 created: YYYY-MM-DD
 updated: YYYY-MM-DD
 ---
 ```
 
-Notes allow duplicates — the agent can merge them later via organize/restructure. \
-This keeps capture friction low.
-
-Inverted pyramid: first 1-2 sentences = self-contained summary. \
-File names: lowercase-hyphenated. Hub pages: overview + [[link]] list. \
-Every page ends with ## Related.
+### Structure Rules
+- File names: lowercase-hyphenated (e.g. attention-mechanism.md)
+- Inverted pyramid: first 1-2 sentences = self-contained summary
+- Every page ends with ## Related listing [[wiki-links]]
+- Hub pages: overview + [[link]] list with descriptions
+- Create Hub when 3+ pages accumulate on a topic
+- index.md lists Hubs only, kept under ~1000 tokens
+- sources/ is immutable — never write to sources/
 """
 
-# Part 2: Tools (static, cacheable)
 PROMPT_TOOLS = """\
 ## Tools
 
-### Observation (read-only, execute immediately)
+### Read Tools (use freely)
 | Tool | Purpose |
 |------|---------|
 | `read_page(path, section?, max_chars?)` | Read a page or specific section. |
 | `search(query, scope?)` | Full-text search. scope: wiki/sources/all. |
-| `survey_topic(topic)` | **Use before planning.** One-shot topic assessment. |
 | `get_backlinks(title)` | Pages linking to a title. |
 | `list_pages(directory?, include_raw?)` | List pages with metadata. |
-| `fetch_url(url)` | Preview a URL's content (doesn't save). |
+| `fetch_url(url)` | Preview a URL's content. |
 
-### Planning
+### Write Tools (use after user approval)
 | Tool | Purpose |
 |------|---------|
-| `submit_plan(summary, targets?, rationale, intent, change_type, open_questions?)` | \
-Submit a change proposal after surveying. |
+| `write_page(path, content)` | Create or overwrite a full page. Read first! |
+| `append_section(path, heading, content)` | Add a section to an existing page. |
+| `update_frontmatter(path, fields)` | Update metadata fields on a page. |
+| `add_related_link(path, link_to)` | Add a [[wiki-link]] to Related section. |
 
-**intent**: append (add to existing page) / create (new page) / \
-organize (metadata, links, archive) / restructure (vault-wide)
-
-**change_type**:
-- `incremental` — low-risk changes to existing content (adding a section, \
-updating links). Executes immediately, user is notified.
-- `structural` — new pages, new hubs, archiving, vault-wide restructuring. \
-Requires explicit user approval before execution.
-
-## Retrieval Strategy
-
-1. **Survey first**: `survey_topic(topic)` for a complete picture before planning.
-2. **Navigate**: `list_pages` or read a Hub page.
-3. **Quick check**: `read_page(path, max_chars=500)` for relevance.
-4. **Deep read**: `read_page(path)` or `read_page(path, section='...')`.
-5. **Search**: `search(query)` searches wiki and sources.
-
-## Planning Checklist
-
-When the user wants to capture knowledge:
-
-**Before proposing (survey)**:
-- `survey_topic(topic)` — what already exists? where should this go?
-- Or `search(query)` + `read_page` if you need specific details.
-
-**In your text response, explain your thinking:**
-- What kind of change this is
-- Why this approach (append vs create, which target page, etc.)
-- What connections will be established
-
-**Then call submit_plan():**
-- summary: clear description of what will change
-- intent: append / create / organize / restructure
-- change_type: incremental (for appending to existing) / structural (for new pages, etc.)
-- open_questions: any uncertainties for the user to resolve
-
-**Quality principles**:
+### Important
+- **Always read before writing.** Read a page before modifying it.
+- **Always search/list before creating.** Check what exists to avoid duplicates.
+- **Propose changes in natural language first.** Describe what you plan to do \
+and wait for the user to agree before using write tools.
 - Prefer updating existing pages over creating new ones.
 - Use the user's language for content.
-- Every change should strengthen the knowledge graph — no orphan pages.
-- First 1-2 sentences of any page = self-contained summary.
+
+## Reading Strategy
+
+1. **Quick scan**: `list_pages` or `read_page(path, max_chars=500)` for relevance.
+2. **Deep read**: `read_page(path)` or `read_page(path, section='...')`.
+3. **Search**: `search(query)` searches wiki and sources.
 
 If vault is empty, welcome the user and suggest what they can do.
 """
 
-# Combined static prompt
-SYSTEM_PROMPT = PROMPT_IDENTITY + "\n" + PROMPT_TOOLS
-
-# Execution prompt — used when executing an approved plan
-EXECUTE_PLAN_PROMPT = """\
-You are NoteWeaver's execution engine. An approved change plan is provided below. \
-Your job is to implement it precisely using the available tools.
-
-## Rules
-
-1. **Implement the approved plan faithfully.** Do not re-evaluate whether \
-the plan is a good idea — it has already been approved by the user.
-2. **Read before writing.** Always read_page() a target before modifying it.
-3. **Minimal changes.** Make the smallest changes that fulfill the plan.
-4. **If the plan conflicts with current vault state** (e.g. target page \
-was deleted, content already exists), STOP and report the conflict — \
-do not silently modify the plan.
-5. **Maintain knowledge structure.** Every new page must be reachable. \
-Add related links. Use proper frontmatter.
-6. Use the user's language for content.
-
-## Approved Plan
-
-{plan_summary}
-
-## Rationale
-
-{plan_rationale}
-
-## Intent
-
-{plan_intent}
-"""
+SYSTEM_PROMPT = PROMPT_IDENTITY + "\n" + PROMPT_SCHEMA_CORE + "\n" + PROMPT_TOOLS
 
 
 # ======================================================================
@@ -254,32 +193,34 @@ def _msg_content(m) -> str:
 class KnowledgeAgent:
     """The core agent that operates on a Vault via LLM tool calling.
 
+    V2 architecture: continuous conversation flow.
+    - All tools (read + write) available during chat
+    - No Plan mode — agent proposes in natural language, writes after approval
+    - Schema summary always in system prompt
+
     Context management is split into three layers:
 
     1. **Transcript** (``self.messages``): complete, append-only conversation
        record.  Never mutated by compression.
     2. **Session summary** (``self._session_summary``): structured compression
-       of older history, generated when the transcript outgrows the context
-       window.
+       of older history.
     3. **Query view** (``_build_messages_for_query``): the actual message list
-       sent to the LLM each turn — assembled from the system prompt, session
-       memory, session summary, and recent messages with tiered tool-result
-       cleanup.
+       sent to the LLM each turn.
     """
 
     # Context budget
     _CHARS_PER_TOKEN = 4
-    _MAX_CONTEXT_CHARS = 48000   # ~12 000 tokens — trigger summary when exceeded
+    _MAX_CONTEXT_CHARS = 48000
 
     # Tool-result management
-    _TOOL_RESULT_MAX = 8000      # hard cap on incoming tool results
-    _TOOL_RESULT_PREVIEW = 500   # preview size for "recent-consumed" tier
-    _RECENT_TURNS_FULL = 1       # completed turns whose tool results stay full
-    _RECENT_TURNS_PREVIEW = 2    # additional turns that get preview treatment
+    _TOOL_RESULT_MAX = 8000
+    _TOOL_RESULT_PREVIEW = 500
+    _RECENT_TURNS_FULL = 1
+    _RECENT_TURNS_PREVIEW = 2
 
     # Summary generation
-    _RECENT_MESSAGES_KEEP = 6    # messages kept after summary boundary
-    _SUMMARY_KEY_POINTS_MAX = 20 # max key-point lines in the summary text
+    _RECENT_MESSAGES_KEEP = 6
+    _SUMMARY_KEY_POINTS_MAX = 20
 
     # Long-term memory
     _MEMORY_FILE_MAX_CHARS = 3000
@@ -306,18 +247,14 @@ class KnowledgeAgent:
             {"role": "system", "content": self._build_system_prompt()}
         ]
         self._session_summary: dict | None = None
-        self._summary_boundary: int = 1  # messages[1:boundary] are summarised
+        self._summary_boundary: int = 1
         self._policy_ctx = PolicyContext()
         self._trace = TraceCollector()
         self._provider_name = provider_name if provider is None else type(provider).__name__
         self.plan_store = PlanStore(vault.meta_dir)
 
     def set_attended(self, attended: bool) -> None:
-        """Mark whether the user is present for this session.
-
-        When unattended (e.g. gateway cron), content-layer writes are
-        blocked by policy — the agent can only write proposals to journals.
-        """
+        """Mark whether the user is present for this session."""
         self._policy_ctx.attended = attended
 
     # ------------------------------------------------------------------
@@ -325,10 +262,10 @@ class KnowledgeAgent:
     # ------------------------------------------------------------------
 
     def _build_system_prompt(self) -> str:
-        """Build system prompt: static core + preferences + long-term memory.
+        """Build system prompt: static core + schema core + preferences + memory.
 
-        Schema is NOT included — the agent reads it on-demand via read_page
-        when detailed conventions are needed.  This saves ~3 000 tokens/turn.
+        V2: Schema summary is always included (~800 tokens). The agent
+        always knows the wiki rules without needing to read_page schema.md.
         """
         prompt = SYSTEM_PROMPT
 
@@ -358,11 +295,7 @@ class KnowledgeAgent:
         return None
 
     def save_session_memory(self) -> Path | None:
-        """Extract and persist session memory for the next session.
-
-        Scans the transcript for pages touched, tools used, and the last
-        topic discussed.  Writes ``.meta/session-memory.md``.
-        """
+        """Extract and persist session memory for the next session."""
         if len(self.messages) <= 2:
             return None
 
@@ -408,7 +341,6 @@ class KnowledgeAgent:
         topic_short = last_user[:200] + ("..." if len(last_user) > 200 else "")
         agent_short = last_agent[:300] + ("..." if len(last_agent) > 300 else "")
 
-        # Build active workset from pages' tags
         active_tags: dict[str, int] = {}
         for p in pages:
             try:
@@ -421,7 +353,6 @@ class KnowledgeAgent:
             except (FileNotFoundError, PermissionError):
                 pass
 
-        # Merge with previous workset (carry forward topics from recent sessions)
         prev_mem = self._load_session_memory()
         prev_topics: list[str] = []
         if prev_mem:
@@ -432,7 +363,6 @@ class KnowledgeAgent:
                         if t.strip()
                     ]
 
-        # Combine: current tags (ranked by frequency) + carried-forward topics
         ranked_tags = sorted(active_tags, key=active_tags.get, reverse=True)
         all_topics = list(dict.fromkeys(ranked_tags + prev_topics))[:10]
 
@@ -457,7 +387,6 @@ class KnowledgeAgent:
             lines.append(f"{', '.join(tools[:15])}")
             lines.append("")
 
-        # Active workset section
         if all_topics or pages:
             lines.append("## Active Workset")
             if all_topics:
@@ -467,7 +396,6 @@ class KnowledgeAgent:
                 lines.append(f"Active pages: {', '.join(wiki_pages[:8])}")
             lines.append("")
 
-        # Carry forward unresolved open questions / follow-ups
         prev_open = self._extract_open_items(prev_mem) if prev_mem else []
         new_open = self._extract_open_items_from_transcript()
         merged_open = list(dict.fromkeys(new_open + prev_open))[:8]
@@ -484,12 +412,7 @@ class KnowledgeAgent:
         return mem_path
 
     def _scan_pending_proposals(self) -> str:
-        """Scan recent journals for Promotion Candidates sections.
-
-        Returns the raw text of any promotion candidate blocks found,
-        or empty string if none.  Only checks the last 3 journal files
-        to keep startup cost low.
-        """
+        """Scan recent journals for Promotion Candidates sections."""
         journals_dir = self.vault.wiki_dir / "journals"
         if not journals_dir.is_dir():
             return ""
@@ -506,7 +429,6 @@ class KnowledgeAgent:
             if idx == -1:
                 continue
             block = content[idx:]
-            # Trim at next ### or end
             for end_marker in ("\n### ", "\n---"):
                 end_idx = block.find(end_marker, len(marker))
                 if end_idx != -1:
@@ -538,12 +460,7 @@ class KnowledgeAgent:
         return items
 
     def _extract_open_items_from_transcript(self) -> list[str]:
-        """Scan transcript for question marks in user messages (heuristic).
-
-        Gathers short versions of user questions that weren't directly
-        answered by a subsequent write operation — i.e. things the user
-        asked that might still be open.
-        """
+        """Scan transcript for question marks in user messages (heuristic)."""
         items: list[str] = []
         for m in self.messages[1:]:
             role = _msg_role(m)
@@ -572,11 +489,7 @@ class KnowledgeAgent:
         return result
 
     def save_transcript(self, directory: Path | None = None) -> Path:
-        """Serialize the full transcript to a JSON file.
-
-        Saves to ``.meta/transcripts/<timestamp>.json``.
-        Returns the written path.
-        """
+        """Serialize the full transcript to a JSON file."""
         if directory is None:
             directory = self.vault.meta_dir / "transcripts"
         directory.mkdir(parents=True, exist_ok=True)
@@ -603,11 +516,7 @@ class KnowledgeAgent:
         return path
 
     def save_trace(self, directory: Path | None = None) -> Path | None:
-        """Save the current trace to a JSONL file.
-
-        Saves to ``.meta/traces/<timestamp>.trace.jsonl``.
-        Returns the path, or None if the trace is empty.
-        """
+        """Save the current trace to a JSONL file."""
         if not self._trace.events:
             return None
         if directory is None:
@@ -615,21 +524,19 @@ class KnowledgeAgent:
         return self._trace.save(directory)
 
     # ------------------------------------------------------------------
-    # Query view builder  (C1 — the core architectural change)
+    # Query view builder
     # ------------------------------------------------------------------
 
     def _build_messages_for_query(self) -> list[dict]:
         """Construct the message list to send to the LLM.
 
-        This is a **read-only projection** of ``self.messages`` — the
-        transcript is never modified.
+        This is a **read-only projection** of ``self.messages``.
 
         Layers applied:
         1. System prompt (with session memory injected if available)
         2. Session summary (replacing compressed history)
         3. Recent messages with tiered tool-result cleanup
         """
-        # 1. System prompt — augment with session memory + pending proposals
         system_content = self.messages[0]["content"]
         session_memory = self._load_session_memory()
         session_memory_injected = False
@@ -654,7 +561,6 @@ class KnowledgeAgent:
                 )
                 pending_proposals_injected = True
 
-        # Inject vault structure overview (vault map)
         try:
             vault_ctx = self.vault.scan_vault_context()
             if vault_ctx and "Total: 0 pages" not in vault_ctx:
@@ -671,7 +577,6 @@ class KnowledgeAgent:
         except Exception:
             pass
 
-        # Inject vault audit summary if available
         audit_path = self.vault.meta_dir / "audit-report.json"
         if audit_path.is_file():
             try:
@@ -687,7 +592,6 @@ class KnowledgeAgent:
 
         result: list[dict] = [{"role": "system", "content": system_content}]
 
-        # 2. Session summary (replaces messages[1:boundary])
         if self._session_summary is not None:
             result.append({
                 "role": "user",
@@ -701,11 +605,9 @@ class KnowledgeAgent:
                 ),
             })
 
-        # 3. Recent messages with tool-result tiers
         recent = self.messages[self._summary_boundary:]
         result.extend(self._apply_tool_result_tiers(recent))
 
-        # Record context assembly in trace
         total_chars = sum(len(_msg_content(m)) for m in result)
         self._trace.record_context_assembly(
             system_prompt_chars=len(system_content),
@@ -721,33 +623,14 @@ class KnowledgeAgent:
         return result
 
     # ------------------------------------------------------------------
-    # Tiered tool-result cleanup  (C3)
+    # Tiered tool-result cleanup
     # ------------------------------------------------------------------
 
     def _apply_tool_result_tiers(self, messages: list[dict]) -> list[dict]:
-        """Return *messages* with tiered tool-result cleanup.
-
-        The input list is **not** modified.
-
-        Tier assignment uses a backward pass: each content-bearing assistant
-        message increments a counter.  Tool results inherit the counter value
-        at their position — the higher the counter, the older the result.
-
-        ===  ====================================
-        N    Treatment
-        ===  ====================================
-        0    Active turn — full content
-        ≤ F  Recent completed — full content
-        ≤ P  Older completed — preview (first ``_TOOL_RESULT_PREVIEW`` chars)
-        > P  Stale — placeholder only
-        ===  ====================================
-
-        where F = ``_RECENT_TURNS_FULL`` and P = F + ``_RECENT_TURNS_PREVIEW``.
-        """
+        """Return *messages* with tiered tool-result cleanup."""
         full_limit = self._RECENT_TURNS_FULL
         preview_limit = full_limit + self._RECENT_TURNS_PREVIEW
 
-        # Backward pass: count content-bearing assistant messages after each pos
         age = [0] * len(messages)
         counter = 0
         for i in range(len(messages) - 1, -1, -1):
@@ -786,16 +669,12 @@ class KnowledgeAgent:
         return out
 
     # ------------------------------------------------------------------
-    # Session summary  (C2 — replaces old _maybe_compress_history)
+    # Session summary
     # ------------------------------------------------------------------
 
     def _update_session_summary(self) -> None:
         """Create or extend the session summary when the projected query
-        view exceeds ``_MAX_CONTEXT_CHARS``.
-
-        Finds a *clean* boundary (a ``user`` message) so the remaining
-        recent messages form a valid conversation continuation.
-        """
+        view exceeds ``_MAX_CONTEXT_CHARS``."""
         system_chars = len(self.messages[0].get("content", ""))
         summary_chars = (
             len(self._session_summary["text"]) if self._session_summary else 0
@@ -810,7 +689,6 @@ class KnowledgeAgent:
         if num_recent <= self._RECENT_MESSAGES_KEEP + 1:
             return
 
-        # Find a clean boundary (user message) near the target position
         target = len(self.messages) - self._RECENT_MESSAGES_KEEP
         new_boundary = None
         for candidate in range(target, self._summary_boundary, -1):
@@ -820,7 +698,6 @@ class KnowledgeAgent:
         if new_boundary is None or new_boundary <= self._summary_boundary:
             return
 
-        # Collect information from messages being compressed
         to_compress = self.messages[self._summary_boundary: new_boundary]
         key_points: list[str] = []
         tools_used: list[str] = []
@@ -860,7 +737,6 @@ class KnowledgeAgent:
                     except (json.JSONDecodeError, TypeError, AttributeError):
                         pass
 
-        # Merge with existing summary
         prev_points: list[str] = []
         prev_tools: list[str] = []
         prev_pages: set[str] = set()
@@ -875,7 +751,6 @@ class KnowledgeAgent:
         all_tools = list(dict.fromkeys(prev_tools + tools_used))
         all_pages = sorted(prev_pages | pages_touched)
 
-        # Build stable, structured summary text
         lines = [
             "[SESSION CONTEXT — Earlier conversation summary]",
             f"This represents earlier exchanges "
@@ -901,7 +776,7 @@ class KnowledgeAgent:
         self._summary_boundary = new_boundary
 
     # ------------------------------------------------------------------
-    # Backward-compatible wrappers (referenced by existing tests/callers)
+    # Backward-compatible wrappers
     # ------------------------------------------------------------------
 
     def _maybe_compress_history(self) -> None:
@@ -909,28 +784,18 @@ class KnowledgeAgent:
         self._update_session_summary()
 
     def _trim_old_tool_results(self) -> None:
-        """No-op — tool-result cleanup now happens in the query view layer.
-
-        Kept so external callers that relied on being able to call this
-        after a turn don't break.  The actual cleanup logic lives in
-        ``_apply_tool_result_tiers`` and is applied every time
-        ``_build_messages_for_query`` runs.
-        """
+        """No-op — tool-result cleanup now happens in the query view layer."""
 
     # ------------------------------------------------------------------
-    # Chat loop
+    # Chat loop (V2: all tools available, no Plan mode)
     # ------------------------------------------------------------------
 
     def chat(self, user_message: str) -> Generator[str, None, None]:
         """Send a user message and yield agent responses.
 
-        During chat, the model can only use observation tools (read_page,
-        search, etc.) and the submit_plan tool.  Write tools are not
-        available — they are used only during plan execution.
-
-        When the model calls submit_plan, the system creates a Plan object.
-        Incremental plans are auto-approved and executed immediately.
-        Structural plans are saved as pending for user review.
+        V2: All tools (read + write) are available during chat.
+        The agent proposes changes in natural language and writes after
+        user approval — all in the same conversation flow.
         """
         self._trace = TraceCollector()
         self._trace.set_session_meta(
@@ -963,7 +828,7 @@ class KnowledgeAgent:
                 completion, raw_message = self.provider.chat_completion(
                     model=self.model,
                     messages=query_messages,
-                    tools=CHAT_TOOL_SCHEMAS,
+                    tools=TOOL_SCHEMAS,
                 )
 
                 self.messages.append(raw_message)
@@ -980,76 +845,54 @@ class KnowledgeAgent:
                     except json.JSONDecodeError:
                         fn_args = {}
 
-                    if tool_call.name == "submit_plan":
-                        plan = self._handle_submit_plan(fn_args)
-                        yield f"  📋 Plan {plan.id}: {fn_args.get('summary', '')[:80]}"
+                    yield f"  ↳ {tool_call.name}({self._summarize_args(fn_args)})"
 
-                        result = self._format_plan_submission_result(plan)
+                    verdict = check_pre_dispatch(
+                        tool_call.name, fn_args, self._policy_ctx,
+                    )
 
-                        self._trace.record_tool_call(
-                            name="submit_plan",
-                            arguments=fn_args,
-                            policy_allowed=True,
-                            policy_warning=None,
-                            result_preview=result,
-                            duration_ms=0,
-                            error=None,
-                        )
-
-                        self.messages.append({
-                            "role": "tool",
-                            "tool_call_id": tool_call.id,
-                            "content": result,
-                        })
+                    t0 = time.monotonic()
+                    error_msg: str | None = None
+                    if not verdict.allowed:
+                        result = f"Policy blocked: {verdict.warning}"
                     else:
-                        yield f"  ↳ {tool_call.name}({self._summarize_args(fn_args)})"
-
-                        verdict = check_pre_dispatch(
-                            tool_call.name, fn_args, self._policy_ctx,
-                        )
-
-                        t0 = time.monotonic()
-                        error_msg: str | None = None
-                        if not verdict.allowed:
-                            result = f"Policy blocked: {verdict.warning}"
-                        else:
-                            try:
-                                result = dispatch_tool(
-                                    self.vault, tool_call.name, fn_args
-                                )
-                            except Exception as exc:
-                                error_msg = f"{type(exc).__name__}: {exc}"
-                                result = (
-                                    f"Error executing {tool_call.name}: {error_msg}"
-                                )
-
-                        duration_ms = (time.monotonic() - t0) * 1000
-
-                        self._trace.record_tool_call(
-                            name=tool_call.name,
-                            arguments=fn_args,
-                            policy_allowed=verdict.allowed,
-                            policy_warning=verdict.warning,
-                            result_preview=result,
-                            duration_ms=duration_ms,
-                            error=error_msg,
-                        )
-
-                        self._policy_ctx.record_tool_call(
-                            tool_call.name, fn_args,
-                        )
-
-                        if len(result) > self._TOOL_RESULT_MAX:
+                        try:
+                            result = dispatch_tool(
+                                self.vault, tool_call.name, fn_args
+                            )
+                        except Exception as exc:
+                            error_msg = f"{type(exc).__name__}: {exc}"
                             result = (
-                                result[: self._TOOL_RESULT_MAX]
-                                + "\n\n... (truncated)"
+                                f"Error executing {tool_call.name}: {error_msg}"
                             )
 
-                        self.messages.append({
-                            "role": "tool",
-                            "tool_call_id": tool_call.id,
-                            "content": result,
-                        })
+                    duration_ms = (time.monotonic() - t0) * 1000
+
+                    self._trace.record_tool_call(
+                        name=tool_call.name,
+                        arguments=fn_args,
+                        policy_allowed=verdict.allowed,
+                        policy_warning=verdict.warning,
+                        result_preview=result,
+                        duration_ms=duration_ms,
+                        error=error_msg,
+                    )
+
+                    self._policy_ctx.record_tool_call(
+                        tool_call.name, fn_args,
+                    )
+
+                    if len(result) > self._TOOL_RESULT_MAX:
+                        result = (
+                            result[: self._TOOL_RESULT_MAX]
+                            + "\n\n... (truncated)"
+                        )
+
+                    self.messages.append({
+                        "role": "tool",
+                        "tool_call_id": tool_call.id,
+                        "content": result,
+                    })
 
             hit_max = True
             yield "(reached maximum steps)"
@@ -1061,77 +904,15 @@ class KnowledgeAgent:
             )
             self._end_operation(short_msg)
 
-    def _handle_submit_plan(self, args: dict) -> Plan:
-        """Create a Plan from submit_plan tool arguments.
-
-        The system reviews the model's change_type classification and
-        may override it based on intent and targets.
-        """
-        from datetime import datetime, timezone
-
-        targets = args.get("targets") or []
-        target_mtimes: dict[str, float] = {}
-        for t in targets:
-            resolved = self.vault._resolve(t)
-            if resolved.is_file():
-                target_mtimes[str(resolved)] = resolved.stat().st_mtime
-
-        model_change_type = args.get("change_type", "structural")
-        intent = args.get("intent", "create")
-        verified_change_type = classify_change_type(
-            intent=intent,
-            targets=targets,
-            model_suggestion=model_change_type,
-            vault=self.vault,
-        )
-
-        plan = Plan(
-            id=generate_plan_id(),
-            status=PlanStatus.PENDING,
-            created_at=datetime.now(timezone.utc).isoformat(timespec="seconds"),
-            updated_at=datetime.now(timezone.utc).isoformat(timespec="seconds"),
-            summary=args.get("summary", ""),
-            targets=targets,
-            rationale=args.get("rationale", ""),
-            intent=intent,
-            change_type=verified_change_type,
-            open_questions=args.get("open_questions") or [],
-            target_mtimes=target_mtimes,
-        )
-
-        self.plan_store.save(plan)
-        return plan
-
-    def _format_plan_submission_result(self, plan: Plan) -> str:
-        status_msg = {
-            "incremental": (
-                f"Proposal {plan.id} created (incremental — will execute "
-                "immediately after this response). "
-            ),
-            "structural": (
-                f"Proposal {plan.id} created (structural — awaiting user "
-                "approval before execution). "
-            ),
-        }
-        base = status_msg.get(plan.change_type, f"Proposal {plan.id} created. ")
-        if plan.open_questions:
-            base += "Open questions: " + "; ".join(plan.open_questions)
-        return base
-
     # ------------------------------------------------------------------
     # Journal generation (LLM-assisted)
     # ------------------------------------------------------------------
 
     def generate_journal_summary(self) -> dict:
-        """Use one LLM call to generate structured journal slots.
-
-        Returns a dict with keys: insights, decisions, open_questions, follow_ups.
-        Falls back to empty slots if the LLM call fails.
-        """
+        """Use one LLM call to generate structured journal slots."""
         if len(self.messages) <= 2:
             return {"insights": [], "decisions": [], "open_questions": [], "follow_ups": []}
 
-        # Build a compact conversation digest for the LLM
         digest_parts: list[str] = []
         for m in self.messages[1:]:
             role = _msg_role(m)
@@ -1193,16 +974,92 @@ class KnowledgeAgent:
         return sections
 
     # ------------------------------------------------------------------
-    # Plan execution
+    # Plan execution (legacy — kept for backward compatibility)
     # ------------------------------------------------------------------
 
-    def execute_plan(self, plan_id: str) -> str:
-        """Execute an approved plan via a new LLM call.
+    EXECUTE_PLAN_PROMPT = """\
+You are NoteWeaver's execution engine. An approved change plan is provided below. \
+Your job is to implement it precisely using the available tools.
 
-        The execution LLM has access to write tools and is instructed
-        to implement the plan faithfully without re-evaluating it.
-        Returns a human-readable execution report.
-        """
+## Rules
+
+1. **Implement the approved plan faithfully.** Do not re-evaluate whether \
+the plan is a good idea — it has already been approved by the user.
+2. **Read before writing.** Always read_page() a target before modifying it.
+3. **Minimal changes.** Make the smallest changes that fulfill the plan.
+4. **If the plan conflicts with current vault state** (e.g. target page \
+was deleted, content already exists), STOP and report the conflict — \
+do not silently modify the plan.
+5. **Maintain knowledge structure.** Every new page must be reachable. \
+Add related links. Use proper frontmatter.
+6. Use the user's language for content.
+
+## Approved Plan
+
+{plan_summary}
+
+## Rationale
+
+{plan_rationale}
+
+## Intent
+
+{plan_intent}
+"""
+
+    def _handle_submit_plan(self, args: dict) -> Plan:
+        """Create a Plan from submit_plan tool arguments. Legacy."""
+        targets = args.get("targets") or []
+        target_mtimes: dict[str, float] = {}
+        for t in targets:
+            resolved = self.vault._resolve(t)
+            if resolved.is_file():
+                target_mtimes[str(resolved)] = resolved.stat().st_mtime
+
+        model_change_type = args.get("change_type", "structural")
+        intent = args.get("intent", "create")
+        verified_change_type = classify_change_type(
+            intent=intent,
+            targets=targets,
+            model_suggestion=model_change_type,
+            vault=self.vault,
+        )
+
+        plan = Plan(
+            id=generate_plan_id(),
+            status=PlanStatus.PENDING,
+            created_at=datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            updated_at=datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            summary=args.get("summary", ""),
+            targets=targets,
+            rationale=args.get("rationale", ""),
+            intent=intent,
+            change_type=verified_change_type,
+            open_questions=args.get("open_questions") or [],
+            target_mtimes=target_mtimes,
+        )
+
+        self.plan_store.save(plan)
+        return plan
+
+    def _format_plan_submission_result(self, plan: Plan) -> str:
+        status_msg = {
+            "incremental": (
+                f"Proposal {plan.id} created (incremental — will execute "
+                "immediately after this response). "
+            ),
+            "structural": (
+                f"Proposal {plan.id} created (structural — awaiting user "
+                "approval before execution). "
+            ),
+        }
+        base = status_msg.get(plan.change_type, f"Proposal {plan.id} created. ")
+        if plan.open_questions:
+            base += "Open questions: " + "; ".join(plan.open_questions)
+        return base
+
+    def execute_plan(self, plan_id: str) -> str:
+        """Execute an approved plan via a new LLM call. Legacy."""
         plan = self.plan_store.load(plan_id)
         if plan is None:
             return f"Plan {plan_id} not found."
@@ -1218,7 +1075,7 @@ class KnowledgeAgent:
             )
 
         vault_ctx = self.vault.scan_vault_context()
-        exec_prompt = EXECUTE_PLAN_PROMPT.format(
+        exec_prompt = self.EXECUTE_PLAN_PROMPT.format(
             plan_summary=plan.summary,
             plan_rationale=plan.rationale,
             plan_intent=plan.intent,
@@ -1332,7 +1189,7 @@ class KnowledgeAgent:
         return report
 
     # ------------------------------------------------------------------
-    # Session organize: plan → approve → execute
+    # Session organize (legacy)
     # ------------------------------------------------------------------
 
     _ORGANIZE_CHAR_THRESHOLD = 3000
@@ -1356,12 +1213,7 @@ class KnowledgeAgent:
     )
 
     def _build_conversation_digest(self, since_boundary: int | None = None) -> str:
-        """Build a compact digest of recent conversation for organize planning.
-
-        Extracts user messages, assistant replies, and tool call summaries
-        from ``self.messages[since_boundary:]``, respecting a character
-        budget of ``_ORGANIZE_DIGEST_MAX``.
-        """
+        """Build a compact digest of recent conversation for organize planning."""
         boundary = since_boundary if since_boundary is not None else self._last_organize_boundary
         recent = self.messages[boundary:]
 
@@ -1421,11 +1273,7 @@ class KnowledgeAgent:
         return recent_chars >= self._ORGANIZE_CHAR_THRESHOLD
 
     def generate_organize_plan(self) -> Plan | None:
-        """Use one LLM call to generate an organize plan as a Plan object.
-
-        Returns a Plan if there's something worth capturing, else None.
-        The plan is persisted via PlanStore.
-        """
+        """Use one LLM call to generate an organize plan as a Plan object."""
         if len(self.messages) <= 2:
             return None
 
@@ -1514,13 +1362,8 @@ class KnowledgeAgent:
     def execute_organize_plan(
         self, plan_or_actions: "Plan | list[dict] | None" = None,
     ) -> str:
-        """Execute a plan — supports both Plan objects and legacy list[dict].
-
-        For Plan objects, delegates to execute_plan().
-        For legacy list[dict], executes directly (backward compatibility).
-        """
+        """Execute a plan — supports both Plan objects and legacy list[dict]."""
         if plan_or_actions is None:
-            # Try new plan store first, then legacy
             pending = self.plan_store.list_pending()
             if pending:
                 plan_obj = pending[0]
@@ -1544,10 +1387,7 @@ class KnowledgeAgent:
         return "没有待执行的整理计划。"
 
     def _execute_legacy_plan(self, actions: list[dict]) -> str:
-        """Execute a legacy-format plan (list of {name, arguments} dicts).
-
-        Kept for backward compatibility with old pending-organize.json files.
-        """
+        """Execute a legacy-format plan (list of {name, arguments} dicts)."""
         if not actions:
             return "没有待执行的整理计划。"
 
@@ -1595,17 +1435,7 @@ class KnowledgeAgent:
         )
 
     def _ensure_progressive_disclosure(self, plan: list[dict]) -> list[str]:
-        """After executing a plan, ensure new/modified pages are reachable.
-
-        Checks that every written page is linked from at least one other
-        page (or a Hub).  If not, attempts to:
-        1. Add the page to an existing Hub for one of its tags.
-        2. If no Hub matches, create a new Hub for the tag so the page
-           is never left orphaned.
-        3. Rebuild index.md to reflect any Hub changes.
-
-        Returns a list of report lines for actions taken.
-        """
+        """After executing writes, ensure new/modified pages are reachable."""
         from noteweaver.frontmatter import extract_frontmatter
 
         written_paths = set()
@@ -1688,7 +1518,6 @@ class KnowledgeAgent:
 
             if not linked:
                 for tag in tags:
-                    pages_with_tag = tag_pages.get(tag, [])
                     hub_exists = any(
                         tag in (h.get("tags") or [])
                         for h in hubs.values()

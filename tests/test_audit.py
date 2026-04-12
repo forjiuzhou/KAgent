@@ -728,42 +728,52 @@ class TestWriteInterception:
         assert any("index" in r.lower() for r in responses)
         assert len(agent.plan_store.list_pending()) == 0
 
-    def test_submit_plan_creates_pending_plan(self, vault: Vault) -> None:
-        from noteweaver.adapters.provider import CompletionResult, ToolCall
+    def test_write_page_runs_during_chat(self, vault: Vault) -> None:
+        """V2: write tools run in chat (no submit_plan / pending plans)."""
+        new_path = "wiki/concepts/test.md"
+        new_content = _page("Test Page", tags=["note"], summary="From chat")
         provider = MagicMock()
         provider.chat_completion.side_effect = [
             (CompletionResult(content=None, tool_calls=[
-                ToolCall(id="tc1", name="submit_plan",
-                         arguments=json.dumps({
-                             "summary": "Create a test page at wiki/concepts/test.md",
-                             "targets": ["wiki/concepts/test.md"],
-                             "rationale": "User requested a test page",
-                             "intent": "create",
-                             "change_type": "structural",
-                         })),
+                ToolCall(
+                    id="tc1",
+                    name="list_pages",
+                    arguments=json.dumps({"directory": "wiki/concepts"}),
+                ),
             ]), {"role": "assistant", "tool_calls": [
                 {"id": "tc1", "type": "function",
-                 "function": {"name": "submit_plan", "arguments": json.dumps({
-                     "summary": "Create a test page",
-                     "targets": ["wiki/concepts/test.md"],
-                     "rationale": "User requested",
-                     "intent": "create",
-                     "change_type": "structural",
-                 })}}
+                 "function": {
+                     "name": "list_pages",
+                     "arguments": json.dumps({"directory": "wiki/concepts"}),
+                 }},
             ]}),
-            (CompletionResult(content="I've proposed creating the page."),
-             {"role": "assistant", "content": "I've proposed creating the page."}),
+            (CompletionResult(content=None, tool_calls=[
+                ToolCall(
+                    id="tc2",
+                    name="write_page",
+                    arguments=json.dumps({"path": new_path, "content": new_content}),
+                ),
+            ]), {"role": "assistant", "tool_calls": [
+                {"id": "tc2", "type": "function",
+                 "function": {
+                     "name": "write_page",
+                     "arguments": json.dumps({"path": new_path, "content": new_content}),
+                 }},
+            ]}),
+            (CompletionResult(content="Created the test page."),
+             {"role": "assistant", "content": "Created the test page."}),
         ]
         agent = KnowledgeAgent(vault=vault, provider=provider)
         responses = list(agent.chat("Create a test page"))
-        assert any("📋" in r for r in responses)
-        assert not (vault.root / "wiki" / "concepts" / "test.md").exists()
-        pending = agent.plan_store.list_pending()
-        assert len(pending) == 1
-        assert pending[0].intent == "create"
+        assert any("↳ write_page" in r for r in responses)
+        assert (vault.root / new_path).is_file()
+        assert "Test Page" in vault.read_file(new_path)
+        assert len(agent.plan_store.list_pending()) == 0
 
-    def test_mixed_read_and_plan_in_session(self, vault: Vault) -> None:
-        from noteweaver.adapters.provider import CompletionResult, ToolCall
+    def test_mixed_read_and_write_in_session(self, vault: Vault) -> None:
+        """V2: same session can read then write without a plan step."""
+        new_path = "wiki/concepts/chat-note.md"
+        new_content = _page("Chat Note", tags=["note"], summary="After read")
         provider = MagicMock()
         provider.chat_completion.side_effect = [
             (CompletionResult(content=None, tool_calls=[
@@ -774,30 +784,26 @@ class TestWriteInterception:
                  "function": {"name": "read_page", "arguments": json.dumps({"path": "wiki/index.md"})}}
             ]}),
             (CompletionResult(content=None, tool_calls=[
-                ToolCall(id="tc2", name="submit_plan",
-                         arguments=json.dumps({
-                             "summary": "Quick capture",
-                             "rationale": "User wants to record this",
-                             "intent": "append",
-                             "change_type": "incremental",
-                         })),
+                ToolCall(
+                    id="tc2",
+                    name="write_page",
+                    arguments=json.dumps({"path": new_path, "content": new_content}),
+                ),
             ]), {"role": "assistant", "tool_calls": [
                 {"id": "tc2", "type": "function",
-                 "function": {"name": "submit_plan", "arguments": json.dumps({
-                     "summary": "Quick capture",
-                     "rationale": "User wants to record this",
-                     "intent": "append",
-                     "change_type": "incremental",
-                 })}}
+                 "function": {
+                     "name": "write_page",
+                     "arguments": json.dumps({"path": new_path, "content": new_content}),
+                 }},
             ]}),
             (CompletionResult(content="Done."), {"role": "assistant", "content": "Done."}),
         ]
         agent = KnowledgeAgent(vault=vault, provider=provider)
         responses = list(agent.chat("Do something"))
-        assert any("↳" in r for r in responses)
-        assert any("📋" in r for r in responses)
-        pending = agent.plan_store.list_pending()
-        assert len(pending) == 1
+        assert any("↳ read_page" in r for r in responses)
+        assert any("↳ write_page" in r for r in responses)
+        assert (vault.root / new_path).is_file()
+        assert len(agent.plan_store.list_pending()) == 0
 
     def test_no_writes_no_plan(self, vault: Vault) -> None:
         from noteweaver.adapters.provider import CompletionResult
@@ -812,19 +818,25 @@ class TestWriteInterception:
 
 
 class TestToolSchemas:
-    def test_chat_schemas_contain_only_read_and_plan(self) -> None:
-        from noteweaver.tools.definitions import CHAT_TOOL_SCHEMAS, _OBSERVATION_TOOL_NAMES
-        names = {s["function"]["name"] for s in CHAT_TOOL_SCHEMAS}
-        expected_obs = _OBSERVATION_TOOL_NAMES
-        assert expected_obs.issubset(names)
-        assert "submit_plan" in names
-        assert "write_page" not in names
-        assert "capture" not in names
+    def test_chat_schemas_match_full_tool_set(self) -> None:
+        """V2: CHAT_TOOL_SCHEMAS is the same as TOOL_SCHEMAS (read + write in chat)."""
+        from noteweaver.tools.definitions import (
+            CHAT_TOOL_SCHEMAS,
+            TOOL_SCHEMAS,
+            _OBSERVATION_TOOL_NAMES,
+        )
+        chat_names = {s["function"]["name"] for s in CHAT_TOOL_SCHEMAS}
+        full_names = {s["function"]["name"] for s in TOOL_SCHEMAS}
+        assert chat_names == full_names
+        assert _OBSERVATION_TOOL_NAMES.issubset(chat_names)
+        for name in ("read_page", "write_page", "append_section",
+                     "update_frontmatter", "add_related_link"):
+            assert name in chat_names
 
     def test_full_schemas_contain_write_tools(self) -> None:
         from noteweaver.tools.definitions import TOOL_SCHEMAS
         names = {s["function"]["name"] for s in TOOL_SCHEMAS}
-        for tool in ["write_page", "capture", "ingest", "organize", "restructure"]:
+        for tool in ["write_page", "append_section", "update_frontmatter", "add_related_link"]:
             assert tool in names, f"{tool} should be in TOOL_SCHEMAS"
 
 
@@ -1136,11 +1148,12 @@ class TestStaleImportHint:
         result = dispatch_tool(vault, "list_pages", {"directory": "wiki/concepts"})
         assert "still tagged [imported]" not in result
 
-    def test_imported_shows_hint(self, vault: Vault) -> None:
+    def test_imported_tag_listed(self, vault: Vault) -> None:
         from noteweaver.tools.definitions import dispatch_tool
         vault.write_file("wiki/concepts/imp.md", _page("Imp", tags=["imported"]))
         result = dispatch_tool(vault, "list_pages", {"directory": "wiki/concepts"})
-        assert "1 file(s) still tagged [imported]" in result
+        assert "imported" in result
+        assert "Imp" in result
 
 
 # ======================================================================
@@ -1187,32 +1200,99 @@ class TestTitleUniquenessGuidance:
 
 
 class TestMergeTagsInterception:
-    def test_merge_tags_submitted_as_plan(self, vault: Vault) -> None:
-        from noteweaver.adapters.provider import CompletionResult, ToolCall
+    def test_tag_merge_uses_update_frontmatter_in_chat(self, vault: Vault) -> None:
+        """V2: tag renames use write tools in chat (no submit_plan)."""
+        vault.write_file(
+            "wiki/concepts/one.md",
+            _page("One", tags=["ml"], summary="First"),
+        )
+        vault.write_file(
+            "wiki/concepts/two.md",
+            _page("Two", tags=["ml"], summary="Second"),
+        )
         provider = MagicMock()
-        plan_args = json.dumps({
-            "summary": "Merge tag 'ml' into 'machine-learning' across all pages",
-            "rationale": "Standardize tag naming",
-            "intent": "restructure",
-            "change_type": "structural",
-        })
         provider.chat_completion.side_effect = [
             (CompletionResult(content=None, tool_calls=[
-                ToolCall(id="tc1", name="submit_plan", arguments=plan_args),
+                ToolCall(
+                    id="tc1",
+                    name="list_pages",
+                    arguments=json.dumps({"directory": "wiki/concepts"}),
+                ),
             ]), {"role": "assistant", "tool_calls": [
                 {"id": "tc1", "type": "function",
-                 "function": {"name": "submit_plan", "arguments": plan_args}}
+                 "function": {
+                     "name": "list_pages",
+                     "arguments": json.dumps({"directory": "wiki/concepts"}),
+                 }},
             ]}),
-            (CompletionResult(content="I'll merge the tags after your approval."),
-             {"role": "assistant", "content": "I'll merge the tags after your approval."}),
+            (CompletionResult(content=None, tool_calls=[
+                ToolCall(
+                    id="tc2",
+                    name="read_page",
+                    arguments=json.dumps({"path": "wiki/concepts/one.md"}),
+                ),
+                ToolCall(
+                    id="tc3",
+                    name="read_page",
+                    arguments=json.dumps({"path": "wiki/concepts/two.md"}),
+                ),
+            ]), {"role": "assistant", "tool_calls": [
+                {"id": "tc2", "type": "function",
+                 "function": {
+                     "name": "read_page",
+                     "arguments": json.dumps({"path": "wiki/concepts/one.md"}),
+                 }},
+                {"id": "tc3", "type": "function",
+                 "function": {
+                     "name": "read_page",
+                     "arguments": json.dumps({"path": "wiki/concepts/two.md"}),
+                 }},
+            ]}),
+            (CompletionResult(content=None, tool_calls=[
+                ToolCall(
+                    id="tc4",
+                    name="update_frontmatter",
+                    arguments=json.dumps({
+                        "path": "wiki/concepts/one.md",
+                        "fields": {"tags": ["machine-learning"]},
+                    }),
+                ),
+                ToolCall(
+                    id="tc5",
+                    name="update_frontmatter",
+                    arguments=json.dumps({
+                        "path": "wiki/concepts/two.md",
+                        "fields": {"tags": ["machine-learning"]},
+                    }),
+                ),
+            ]), {"role": "assistant", "tool_calls": [
+                {"id": "tc4", "type": "function",
+                 "function": {
+                     "name": "update_frontmatter",
+                     "arguments": json.dumps({
+                         "path": "wiki/concepts/one.md",
+                         "fields": {"tags": ["machine-learning"]},
+                     }),
+                 }},
+                {"id": "tc5", "type": "function",
+                 "function": {
+                     "name": "update_frontmatter",
+                     "arguments": json.dumps({
+                         "path": "wiki/concepts/two.md",
+                         "fields": {"tags": ["machine-learning"]},
+                     }),
+                 }},
+            ]}),
+            (CompletionResult(content="Merged ml into machine-learning."),
+             {"role": "assistant", "content": "Merged ml into machine-learning."}),
         ]
         agent = KnowledgeAgent(vault=vault, provider=provider)
         responses = list(agent.chat("Merge ml into machine-learning"))
-        assert any("📋" in r for r in responses)
-        pending = agent.plan_store.list_pending()
-        assert len(pending) == 1
-        assert pending[0].intent == "restructure"
-        assert pending[0].change_type == "structural"
+        assert any("↳ update_frontmatter" in r for r in responses)
+        assert len(agent.plan_store.list_pending()) == 0
+        assert "machine-learning" in vault.read_file("wiki/concepts/one.md")
+        assert "machine-learning" in vault.read_file("wiki/concepts/two.md")
+        assert "tags: [ml]" not in vault.read_file("wiki/concepts/one.md")
 
     def test_format_plan_for_restructure(self, vault: Vault) -> None:
         from noteweaver.plan import Plan, PlanStatus

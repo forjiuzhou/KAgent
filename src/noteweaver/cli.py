@@ -53,7 +53,8 @@ def cmd_init(vault_path: Path) -> None:
 
 
 _WRITE_TOOLS = frozenset({
-    "write_page", "capture", "ingest", "organize", "restructure",
+    "write_page", "append_section", "update_frontmatter", "add_related_link",
+    "capture", "ingest", "organize", "restructure",
 })
 
 _MIN_EXCHANGES_FOR_JOURNAL = 3
@@ -280,23 +281,6 @@ def cmd_chat(vault_path: Path) -> None:
             console.print(f"[red]Error: {e}[/red]")
             exchange["reply"] = f"(error: {e})"
         exchanges.append(exchange)
-
-        # Check for pending structural plans that need approval
-        pending_plans = agent.plan_store.list_pending()
-        structural = [
-            p for p in pending_plans if p.change_type == "structural"
-        ]
-        for plan_obj in structural:
-            _approve_and_execute(agent, plan_obj)
-
-        # Auto-execute incremental plans
-        incremental = [
-            p for p in pending_plans if p.change_type == "incremental"
-        ]
-        for plan_obj in incremental:
-            agent.plan_store.update_status(plan_obj.id, PlanStatus.APPROVED)
-            result = agent.execute_plan(plan_obj.id)
-            console.print(f"\n[dim]{result}[/dim]")
 
     _finalize_session(vault, agent, exchanges, "chat")
 

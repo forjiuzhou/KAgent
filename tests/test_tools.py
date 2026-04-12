@@ -32,10 +32,11 @@ class TestToolSchemas:
     def test_every_schema_has_a_handler(self) -> None:
         schema_names = {s["function"]["name"] for s in TOOL_SCHEMAS}
         handler_names = set(TOOL_HANDLERS.keys())
-        assert schema_names == handler_names
+        # Handlers may include legacy tools not exposed in current schemas.
+        assert schema_names <= handler_names
 
     def test_schema_count(self) -> None:
-        assert len(TOOL_SCHEMAS) == 11
+        assert len(TOOL_SCHEMAS) == 9
 
 
 class TestDispatch:
