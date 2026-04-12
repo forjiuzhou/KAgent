@@ -267,6 +267,43 @@ TOOL_SCHEMAS: list[dict] = [
             },
         },
     },
+    # ------------------------------------------------------------------
+    # Batch tools
+    # ------------------------------------------------------------------
+    {
+        "type": "function",
+        "function": {
+            "name": "import_source_directory",
+            "description": (
+                "Batch-import all .md files from a sources/ subdirectory "
+                "into wiki/. Filters out .git/, .DS_Store, and other junk "
+                "files automatically. Skips files that already have a "
+                "matching wiki page (by title) when skip_existing=true. "
+                "Use this for bulk imports — no per-file approval needed."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "directory": {
+                        "type": "string",
+                        "description": (
+                            "Source directory to import, e.g. 'sources/typora'. "
+                            "Must be under sources/."
+                        ),
+                    },
+                    "skip_existing": {
+                        "type": "boolean",
+                        "description": (
+                            "Skip files whose title already exists in wiki/. "
+                            "Default: true"
+                        ),
+                        "default": True,
+                    },
+                },
+                "required": ["directory"],
+            },
+        },
+    },
 ]
 
 
@@ -938,7 +975,51 @@ def _ingest_file(vault: Vault, file_path: str, save_raw: bool) -> str:
 
 def _ingest_directory(vault: Vault, directory: str, do_organize: bool) -> str:
     result = vault.import_directory(directory)
-    return result
+    if "error" in result:
+        return f"Error: {result['error']}"
+    return _format_import_result(result)
+
+
+def _format_import_result(result: dict) -> str:
+    """Format the structured dict from vault.import_directory() for tool output."""
+    lines = [
+        f"Imported {result['imported']}/{result['total_md_files']} files "
+        f"from {result['source']}"
+    ]
+    if result.get("skipped"):
+        lines[0] += f" (skipped {result['skipped']} existing)"
+    if result.get("errored"):
+        lines[0] += f" (errors: {result['errored']})"
+
+    for d in result.get("details", [])[:30]:
+        if d["status"] == "imported":
+            lines.append(f"  ✓ {d['file']} → {d['dest']}")
+        elif d["status"] == "skipped":
+            lines.append(f"  ⏭ {d['file']} ({d.get('reason', '')})")
+        else:
+            lines.append(f"  ✗ {d['file']} ({d.get('msg', '')})")
+
+    remaining = len(result.get("details", [])) - 30
+    if remaining > 0:
+        lines.append(f"  ... and {remaining} more")
+    return "\n".join(lines)
+
+
+def handle_import_source_directory(
+    vault: Vault, directory: str, skip_existing: bool = True,
+) -> str:
+    """Batch-import all .md files from a sources/ subdirectory into wiki/."""
+    if not directory.startswith("sources/"):
+        return (
+            f"Error: directory must be under sources/. Got: {directory}\n"
+            "Use list_pages(directory, include_raw=true) to browse, then "
+            "import_source_directory('sources/...') to import."
+        )
+
+    result = vault.import_directory(directory, skip_existing=skip_existing)
+    if "error" in result:
+        return f"Error: {result['error']}"
+    return _format_import_result(result)
 
 
 def handle_organize(
@@ -1255,6 +1336,7 @@ TOOL_HANDLERS: dict[str, Any] = {
     "append_section": handle_append_section,
     "update_frontmatter": handle_update_frontmatter,
     "add_related_link": handle_add_related_link,
+    "import_source_directory": handle_import_source_directory,
     # Legacy handlers (not in TOOL_SCHEMAS but still dispatchable for tests)
     "survey_topic": handle_survey_topic,
     "capture": handle_capture,

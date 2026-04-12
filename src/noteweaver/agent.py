@@ -98,6 +98,7 @@ PROMPT_TOOLS = """\
 | `append_section(path, heading, content)` | Add a section to an existing page. |
 | `update_frontmatter(path, fields)` | Update metadata fields on a page. |
 | `add_related_link(path, link_to)` | Add a [[wiki-link]] to Related section. |
+| `import_source_directory(directory, skip_existing?)` | Batch-import all .md from a sources/ subdirectory. No per-file approval needed. |
 
 ### Reading Strategy (progressive disclosure)
 

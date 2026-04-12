@@ -62,7 +62,7 @@ class TestPromptStructure:
     def test_tools_has_all_tools(self) -> None:
         from noteweaver.tools.definitions import TOOL_SCHEMAS, CHAT_TOOL_SCHEMAS
 
-        assert len(TOOL_SCHEMAS) == 9
+        assert len(TOOL_SCHEMAS) == 10
         for tool in [
             "read_page",
             "search",
@@ -73,6 +73,7 @@ class TestPromptStructure:
             "append_section",
             "update_frontmatter",
             "add_related_link",
+            "import_source_directory",
         ]:
             assert tool in PROMPT_TOOLS, f"Missing tool: {tool}"
         chat_names = {s["function"]["name"] for s in CHAT_TOOL_SCHEMAS}

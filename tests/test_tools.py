@@ -36,7 +36,7 @@ class TestToolSchemas:
         assert schema_names <= handler_names
 
     def test_schema_count(self) -> None:
-        assert len(TOOL_SCHEMAS) == 9
+        assert len(TOOL_SCHEMAS) == 10
 
 
 class TestDispatch:
@@ -495,3 +495,67 @@ class TestDispatch:
             {"path": "wiki/index.md", "content": big_index},
         )
         assert "Warning" in result
+
+
+class TestImportSourceDirectory:
+    def test_basic_import(self, vault: Vault) -> None:
+        src = vault.root / "sources" / "notes"
+        src.mkdir(parents=True)
+        (src / "a.md").write_text("# First note")
+        (src / "b.md").write_text("# Second note")
+        result = dispatch_tool(
+            vault, "import_source_directory",
+            {"directory": "sources/notes"},
+        )
+        assert "Imported 2/2" in result
+        assert vault.list_files("wiki/concepts", "*.md")
+
+    def test_skips_existing_by_default(self, vault: Vault) -> None:
+        vault.write_file(
+            "wiki/concepts/old.md",
+            "---\ntitle: Old\ntype: note\nsummary: s\ntags: []\n"
+            "created: 2020-01-01\nupdated: 2020-01-01\n---\n# Old\n",
+        )
+        src = vault.root / "sources" / "dup"
+        src.mkdir(parents=True)
+        (src / "old.md").write_text(
+            "---\ntitle: Old\ntype: note\nsummary: s\ntags: []\n"
+            "created: 2020-01-01\nupdated: 2020-01-01\n---\n# Old\n"
+        )
+        (src / "new.md").write_text("# New note")
+        result = dispatch_tool(
+            vault, "import_source_directory",
+            {"directory": "sources/dup"},
+        )
+        assert "Imported 1/2" in result
+        assert "skipped 1 existing" in result
+
+    def test_filters_nested_git(self, vault: Vault) -> None:
+        src = vault.root / "sources" / "repo"
+        src.mkdir(parents=True)
+        (src / "real.md").write_text("# Real")
+        git_dir = src / ".git" / "hooks"
+        git_dir.mkdir(parents=True)
+        (git_dir / "pre-commit.sample").write_text("#!/bin/sh")
+        # also add a .md inside .git to be tricky
+        (src / ".git" / "readme.md").write_text("# git internals")
+        result = dispatch_tool(
+            vault, "import_source_directory",
+            {"directory": "sources/repo"},
+        )
+        assert "Imported 1/1" in result
+
+    def test_rejects_non_sources_dir(self, vault: Vault) -> None:
+        result = dispatch_tool(
+            vault, "import_source_directory",
+            {"directory": "wiki/concepts"},
+        )
+        assert "Error" in result
+        assert "sources/" in result
+
+    def test_import_in_schema(self) -> None:
+        names = [s["function"]["name"] for s in TOOL_SCHEMAS]
+        assert "import_source_directory" in names
+
+    def test_import_in_handlers(self) -> None:
+        assert "import_source_directory" in TOOL_HANDLERS

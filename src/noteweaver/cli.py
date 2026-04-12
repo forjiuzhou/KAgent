@@ -418,7 +418,20 @@ def cmd_import(vault_path: Path, source_path: str) -> None:
 
     console.print(f"[bold]Importing from:[/bold] {source_path}")
     result = vault.import_directory(source_path)
-    console.print(result)
+    if "error" in result:
+        console.print(f"[red]{result['error']}[/red]")
+        sys.exit(1)
+    console.print(
+        f"[green]✓[/green] Imported {result['imported']}/{result['total_md_files']} files"
+        f" (skipped {result.get('skipped', 0)}, errors {result.get('errored', 0)})"
+    )
+    for d in result.get("details", [])[:20]:
+        if d["status"] == "imported":
+            console.print(f"  ✓ {d['file']} → {d['dest']}")
+        elif d["status"] == "skipped":
+            console.print(f"  ⏭ {d['file']} ({d.get('reason', '')})")
+        else:
+            console.print(f"  ✗ {d['file']} ({d.get('msg', '')})")
 
 
 def cmd_rebuild_index(vault_path: Path) -> None:

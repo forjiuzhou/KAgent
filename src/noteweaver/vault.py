@@ -1686,12 +1686,16 @@ class Vault:
         )
         return "\n".join(report_lines)
 
-    def import_directory(self, source_dir: str) -> str:
-        """Import .md files from an external directory into the vault.
+    def import_directory(self, source_dir: str, *, skip_existing: bool = False) -> dict:
+        """Import .md files from a directory into the vault.
 
         Accepts both absolute paths (/home/user/notes) and vault-relative
-        paths (sources/typora).  Uses an operation context so all writes
-        produce a single git commit.
+        paths (sources/typora).  Filters out nested .git/, .DS_Store, and
+        other junk files.  Uses an operation context so all writes produce
+        a single git commit.
+
+        Returns a structured dict with imported/skipped/errored counts and
+        per-file details.
         """
         from noteweaver.frontmatter import extract_frontmatter
 
@@ -1700,27 +1704,51 @@ class Vault:
             candidate = self.root / source_dir
         src = candidate.resolve()
         if not src.is_dir():
-            return f"Error: not a directory: {source_dir}"
+            return {"error": f"Not a directory: {source_dir}"}
 
-        md_files = sorted(src.rglob("*.md"))
+        md_files = []
+        for f in sorted(src.rglob("*.md")):
+            try:
+                rel_to_root = str(f.relative_to(self.root))
+            except ValueError:
+                rel_to_root = str(f)
+            if not self._is_junk_path(rel_to_root):
+                md_files.append(f)
+
         if not md_files:
-            return f"No .md files found in {source_dir}"
+            return {"error": f"No .md files found in {source_dir}"}
+
+        existing_titles: set[str] = set()
+        if skip_existing:
+            for fm_data in self.read_frontmatters("wiki"):
+                t = fm_data.get("title", "")
+                if t:
+                    existing_titles.add(t.lower().strip())
 
         today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
         imported = 0
-        results = []
+        skipped = 0
+        errored = 0
+        details: list[dict] = []
 
         with self.operation(f"Import {len(md_files)} files from {source_dir}"):
             for f in md_files:
                 try:
                     content = f.read_text(encoding="utf-8", errors="replace")
                 except Exception as e:
-                    results.append(f"  Error reading {f.name}: {e}")
+                    errored += 1
+                    details.append({"file": f.name, "status": "error", "msg": str(e)})
                     continue
 
                 fm = extract_frontmatter(content)
                 rel_name = f.name
                 page_type = fm.get("type") if fm else None
+                title = (fm.get("title") if fm else None) or f.stem
+
+                if skip_existing and title.lower().strip() in existing_titles:
+                    skipped += 1
+                    details.append({"file": f.name, "status": "skipped", "reason": "already exists"})
+                    continue
 
                 if page_type == "synthesis":
                     dest = f"wiki/synthesis/{rel_name}"
@@ -1729,9 +1757,9 @@ class Vault:
                 elif page_type in ("hub", "canonical", "note"):
                     dest = f"wiki/concepts/{rel_name}"
                 else:
-                    title = f.stem.replace("-", " ").replace("_", " ").title()
+                    disp_title = f.stem.replace("-", " ").replace("_", " ").title()
                     header = (
-                        f"---\ntitle: {title}\ntype: note\n"
+                        f"---\ntitle: {disp_title}\ntype: note\n"
                         f"summary: Imported from {f.name}\n"
                         f"tags: [imported]\ncreated: {today}\nupdated: {today}\n---\n\n"
                     )
@@ -1741,18 +1769,22 @@ class Vault:
                 try:
                     self.write_file(dest, content)
                     imported += 1
-                    results.append(f"  ✓ {f.name} → {dest}")
+                    details.append({"file": f.name, "status": "imported", "dest": dest})
                 except Exception as e:
-                    results.append(f"  Error writing {f.name}: {e}")
+                    errored += 1
+                    details.append({"file": f.name, "status": "error", "msg": str(e)})
 
             self.rebuild_index()
             self.append_log("import", f"Imported {imported} files from {source_dir}")
 
-        summary = f"Imported {imported}/{len(md_files)} files from {source_dir}\n"
-        summary += "\n".join(results[:20])
-        if len(results) > 20:
-            summary += f"\n  ... and {len(results) - 20} more"
-        return summary
+        return {
+            "source": source_dir,
+            "total_md_files": len(md_files),
+            "imported": imported,
+            "skipped": skipped,
+            "errored": errored,
+            "details": details,
+        }
 
     def append_log(self, entry_type: str, title: str, details: str = "") -> None:
         """Append an entry to wiki/log.md."""

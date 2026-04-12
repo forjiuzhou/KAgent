@@ -58,6 +58,9 @@ _WIKI_LINK_RE = re.compile(r"\[\[([^\]]+)\]\]")
 
 def classify_write_target(tool_name: str, path: str) -> WriteTarget:
     """Classify what a write operation is targeting."""
+    if tool_name == "import_source_directory":
+        return WriteTarget.CONTENT
+
     if path.startswith(".meta/"):
         return WriteTarget.RUNTIME
 
@@ -105,6 +108,7 @@ TOOL_TIERS: dict[str, RiskTier] = {
     "append_section": RiskTier.MEDIUM_WRITE,
     "update_frontmatter": RiskTier.MEDIUM_WRITE,
     "add_related_link": RiskTier.LOW_WRITE,
+    "import_source_directory": RiskTier.HIGH_WRITE,
     # Legacy tools (kept for backward compatibility)
     "survey_topic": RiskTier.READ,
     "capture": RiskTier.MEDIUM_WRITE,
@@ -191,7 +195,7 @@ def check_pre_dispatch(
     if tier == RiskTier.READ:
         return PolicyVerdict(allowed=True)
 
-    path = args.get("path", "") or args.get("target", "") or ""
+    path = args.get("path", "") or args.get("target", "") or args.get("directory", "") or ""
     target = classify_write_target(name, path)
 
     if target in (WriteTarget.RUNTIME, WriteTarget.STRUCTURE):

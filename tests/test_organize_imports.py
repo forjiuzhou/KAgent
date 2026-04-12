@@ -47,7 +47,7 @@ class TestToolRegistration:
         schema_names = {s["function"]["name"] for s in TOOL_SCHEMAS}
         assert "organize" not in schema_names
         assert "organize" in TOOL_HANDLERS
-        assert len(schema_names) == 9
+        assert len(schema_names) == 10
 
     def test_ingest_in_schemas(self) -> None:
         schema_names = {s["function"]["name"] for s in TOOL_SCHEMAS}
@@ -415,7 +415,7 @@ class TestEndToEnd:
         )
 
         import_result = vault.import_directory(str(source_dir))
-        assert "3/3" in import_result
+        assert import_result["imported"] == 3
 
         scan_result = vault.scan_imports()
         assert "Imported files to organize: 3" in scan_result

@@ -208,7 +208,7 @@ class TestImportDirectory:
             "# Cross-cutting Analysis\n\nBody with [[Link A]] and [[Link B]].\n"
         )
         result = vault.import_directory(str(import_dir))
-        assert "Imported 1" in result
+        assert result["imported"] == 1
         synthesis_files = vault.list_files("wiki/synthesis")
         assert any("my-synthesis.md" in f for f in synthesis_files)
         concept_files = vault.list_files("wiki/concepts")
@@ -221,7 +221,7 @@ class TestImportDirectory:
             "---\ntitle: A Note\ntype: note\nsummary: s\ntags: []\n---\n# Note"
         )
         result = vault.import_directory(str(import_dir))
-        assert "Imported 1" in result
+        assert result["imported"] == 1
         assert any("my-note.md" in f for f in vault.list_files("wiki/concepts"))
 
     def test_import_journal_to_journals(self, vault: Vault, tmp_path: Path) -> None:
@@ -232,7 +232,7 @@ class TestImportDirectory:
             "summary: Daily\ntags: [journal]\n---\n# 2025-01-01"
         )
         result = vault.import_directory(str(import_dir))
-        assert "Imported 1" in result
+        assert result["imported"] == 1
         assert any("2025-01-01.md" in f for f in vault.list_files("wiki/journals"))
 
     def test_import_bare_file_wrapped_as_note(self, vault: Vault, tmp_path: Path) -> None:
@@ -240,7 +240,7 @@ class TestImportDirectory:
         import_dir.mkdir()
         (import_dir / "raw-stuff.md").write_text("# Just some markdown\nNo frontmatter.")
         result = vault.import_directory(str(import_dir))
-        assert "Imported 1" in result
+        assert result["imported"] == 1
         assert any("raw-stuff.md" in f for f in vault.list_files("wiki/concepts"))
 
 
@@ -318,7 +318,7 @@ class TestImportFromVaultRelativePath:
         (src / "note1.md").write_text("# Plain markdown without frontmatter")
         (src / "note2.md").write_text("# Another plain note")
         result = vault.import_directory("sources/typora")
-        assert "Imported 2" in result
+        assert result["imported"] == 2
         assert vault.list_files("wiki/concepts")
 
     def test_import_from_sources_absolute_still_works(self, vault: Vault, tmp_path: Path) -> None:
@@ -327,7 +327,7 @@ class TestImportFromVaultRelativePath:
         ext.mkdir()
         (ext / "ext.md").write_text("# External note")
         result = vault.import_directory(str(ext))
-        assert "Imported 1" in result
+        assert result["imported"] == 1
 
 
 class TestScanVaultContextSources:
