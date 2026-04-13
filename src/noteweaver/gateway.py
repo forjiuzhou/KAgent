@@ -72,17 +72,75 @@ class Gateway:
         "好", "好的", "可以", "执行", "yes", "y", "ok", "确认",
     })
 
+    _SKILL_COMMANDS: dict[str, tuple[str, dict]] = {
+        "/import-sources": ("import_sources", {}),
+        "/import_sources": ("import_sources", {}),
+        "/organize":       ("organize_wiki", {}),
+        "/organize-wiki":  ("organize_wiki", {}),
+        "/organize_wiki":  ("organize_wiki", {}),
+    }
+
+    def _run_skill_sync(self, skill_name: str, **kwargs) -> str:
+        """Run a skill synchronously and return a formatted reply string."""
+        exchange: dict = {"user": f"/{skill_name}", "tools": [], "reply": ""}
+        reply_parts: list[str] = []
+        tool_parts: list[str] = []
+
+        try:
+            for chunk in self.agent.run_skill(skill_name, **kwargs):
+                if chunk.startswith("  📋 ") or chunk.startswith("  ↳ "):
+                    tool_parts.append(chunk.strip())
+                    exchange["tools"].append(chunk.strip())
+                elif chunk.startswith(f"[{skill_name}]"):
+                    reply_parts.append(chunk)
+                else:
+                    reply_parts.append(chunk)
+                    exchange["reply"] = chunk
+        except Exception as e:
+            log.error("Skill %s failed: %s", skill_name, e)
+            exchange["reply"] = f"(error: {e})"
+            return f"Skill {skill_name} failed: {e}"
+        finally:
+            try:
+                self.agent.save_trace()
+            except Exception as e:
+                log.warning("Failed to save trace: %s", e)
+
+        self._exchanges.append(exchange)
+
+        reply = "\n\n".join(reply_parts) if reply_parts else f"Skill {skill_name} completed."
+        if tool_parts:
+            tools_summary = "\n".join(f"• {t}" for t in tool_parts[:10])
+            reply = f"_{tools_summary}_\n\n{reply}"
+        return reply
+
     async def _handle_message(self, msg: IncomingMessage) -> str:
         """Route an incoming message to the Agent and return the reply.
 
-        V2: the agent writes directly during chat() — no plans are created
-        from normal conversation.  The ``_pending_plan_id`` path only
-        activates when an *organize* plan is generated at session boundaries
-        (e.g. cron digest calling ``generate_organize_plan``).
+        Supports slash commands for skills (e.g. ``/import-sources``,
+        ``/organize``) and plan approval keywords.
+
+        Normal messages go through ``agent.chat()`` — the agent writes
+        directly during chat, no plans are created.  The ``_pending_plan_id``
+        path only activates when an *organize* plan is generated at session
+        boundaries (e.g. cron digest calling ``generate_organize_plan``).
         """
         self._active_chat_ids.add(msg.chat_id)
         async with self._lock:
-            if self._pending_plan_id and msg.text.strip().lower() in self._APPROVE_KEYWORDS:
+            text_stripped = msg.text.strip()
+            text_lower = text_stripped.lower()
+
+            # --- Skill slash commands ---
+            cmd_word = text_lower.split()[0] if text_lower else ""
+            if cmd_word in self._SKILL_COMMANDS:
+                skill_name, skill_kwargs = self._SKILL_COMMANDS[cmd_word]
+                parts = text_stripped.split(maxsplit=1)
+                if len(parts) > 1 and skill_name == "import_sources":
+                    skill_kwargs = {**skill_kwargs, "source_dir": parts[1]}
+                log.info("Skill command: %s (skill=%s)", cmd_word, skill_name)
+                return self._run_skill_sync(skill_name, **skill_kwargs)
+
+            if self._pending_plan_id and text_lower in self._APPROVE_KEYWORDS:
                 try:
                     plan = self.agent.plan_store.load(self._pending_plan_id)
                     if plan and plan.status == PlanStatus.PENDING:
@@ -232,17 +290,30 @@ class Gateway:
                         self.agent.set_attended(True)
                 last_digest = now
 
-            # --- Audit (pure code, no LLM, no lock needed) ---
+            # --- Audit + organize_wiki skill ---
             if now - last_lint >= lint_interval:
                 log.info("Cron: running vault audit...")
                 try:
                     report = self.vault.audit_vault()
                     self.vault.save_audit_report(report)
-                    if any(report.get(k) for k in report if k != "summary"):
+                    has_issues = any(report.get(k) for k in report if k != "summary")
+                    if has_issues:
                         self._pending_notifications.append(
                             f"🔍 *Vault Audit*\n\n{report['summary']}"
                         )
                     log.info("Audit result: %s", report.get("summary", ""))
+
+                    if has_issues:
+                        log.info("Cron: running organize_wiki skill...")
+                        async with self._lock:
+                            try:
+                                self.agent.set_attended(False)
+                                result = self._run_skill_sync("organize_wiki")
+                                log.info("organize_wiki result: %s", result[:200])
+                            except Exception as e:
+                                log.error("Cron organize_wiki failed: %s", e)
+                            finally:
+                                self.agent.set_attended(True)
                 except Exception as e:
                     log.error("Cron audit failed: %s", e)
                 last_lint = now

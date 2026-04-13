@@ -401,3 +401,57 @@ class TestSkillBase:
         ctx = SkillContext(vault=vault, agent=agent)
         assert ctx.attended is True
         assert ctx.dry_run is False
+
+
+# ======================================================================
+# Gateway skill command routing
+# ======================================================================
+
+
+class TestGatewaySkillCommands:
+    """Test that Gateway recognises skill slash commands."""
+
+    def test_skill_commands_map_exists(self) -> None:
+        from noteweaver.gateway import Gateway
+        assert "/import-sources" in Gateway._SKILL_COMMANDS
+        assert "/organize" in Gateway._SKILL_COMMANDS
+
+    def test_run_skill_sync(self, vault: Vault) -> None:
+        """Gateway._run_skill_sync should call agent.run_skill."""
+        from noteweaver.gateway import Gateway
+
+        vault.root.joinpath("sources", "web").mkdir(parents=True, exist_ok=True)
+        (vault.root / "sources" / "web" / "note.md").write_text(
+            "# A note", encoding="utf-8",
+        )
+
+        mock_provider = MagicMock()
+        mock_provider.chat_completion.return_value = _make_completion(
+            "Imported everything."
+        )
+
+        gw = Gateway.__new__(Gateway)
+        gw.vault = vault
+        from noteweaver.agent import KnowledgeAgent
+        gw.agent = KnowledgeAgent(vault=vault, provider=mock_provider)
+        gw._exchanges = []
+
+        result = gw._run_skill_sync("import_sources")
+        assert isinstance(result, str)
+        assert len(result) > 0
+
+    def test_run_skill_sync_nothing_to_do(self, vault: Vault) -> None:
+        """When skill.prepare returns None, run_skill returns quickly."""
+        from noteweaver.gateway import Gateway
+
+        mock_provider = MagicMock()
+        gw = Gateway.__new__(Gateway)
+        gw.vault = vault
+        from noteweaver.agent import KnowledgeAgent
+        gw.agent = KnowledgeAgent(vault=vault, provider=mock_provider)
+        gw._exchanges = []
+
+        result = gw._run_skill_sync("import_sources")
+        assert isinstance(result, str)
+        # Provider should NOT have been called — nothing to import
+        assert not mock_provider.chat_completion.called
