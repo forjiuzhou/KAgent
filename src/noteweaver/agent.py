@@ -26,6 +26,18 @@ from pathlib import Path
 from typing import Generator
 
 from noteweaver.adapters.provider import LLMProvider
+from noteweaver.constants import (
+    CHARS_PER_TOKEN,
+    MAX_CONTEXT_CHARS,
+    TOOL_RESULT_MAX_CHARS,
+    TOOL_RESULT_PREVIEW_CHARS,
+    RECENT_TURNS_FULL,
+    RECENT_TURNS_PREVIEW,
+    RECENT_MESSAGES_KEEP,
+    SUMMARY_KEY_POINTS_MAX,
+    MEMORY_FILE_MAX_CHARS,
+    AGENT_MAX_STEPS,
+)
 from noteweaver.vault import Vault
 from noteweaver.tools.definitions import (
     TOOL_SCHEMAS, dispatch_tool,
@@ -205,22 +217,18 @@ class KnowledgeAgent:
        sent to the LLM each turn.
     """
 
-    # Context budget
-    _CHARS_PER_TOKEN = 4
-    _MAX_CONTEXT_CHARS = 48000
+    _CHARS_PER_TOKEN = CHARS_PER_TOKEN
+    _MAX_CONTEXT_CHARS = MAX_CONTEXT_CHARS
 
-    # Tool-result management
-    _TOOL_RESULT_MAX = 8000
-    _TOOL_RESULT_PREVIEW = 500
-    _RECENT_TURNS_FULL = 1
-    _RECENT_TURNS_PREVIEW = 2
+    _TOOL_RESULT_MAX = TOOL_RESULT_MAX_CHARS
+    _TOOL_RESULT_PREVIEW = TOOL_RESULT_PREVIEW_CHARS
+    _RECENT_TURNS_FULL = RECENT_TURNS_FULL
+    _RECENT_TURNS_PREVIEW = RECENT_TURNS_PREVIEW
 
-    # Summary generation
-    _RECENT_MESSAGES_KEEP = 6
-    _SUMMARY_KEY_POINTS_MAX = 20
+    _RECENT_MESSAGES_KEEP = RECENT_MESSAGES_KEEP
+    _SUMMARY_KEY_POINTS_MAX = SUMMARY_KEY_POINTS_MAX
 
-    # Long-term memory
-    _MEMORY_FILE_MAX_CHARS = 3000
+    _MEMORY_FILE_MAX_CHARS = MEMORY_FILE_MAX_CHARS
 
     def __init__(
         self,
@@ -834,7 +842,7 @@ class KnowledgeAgent:
         hit_max = False
 
         try:
-            max_steps = 25
+            max_steps = AGENT_MAX_STEPS
             for _ in range(max_steps):
                 steps_taken += 1
                 query_messages = self._build_messages_for_query()
@@ -1201,7 +1209,7 @@ Add related links. Use proper frontmatter.
         results: list[str] = []
         executed_tool_calls: list[dict] = []
         with self.vault.operation("Execute plan"):
-            max_steps = 25
+            max_steps = AGENT_MAX_STEPS
             for _ in range(max_steps):
                 try:
                     completion, _ = self.provider.chat_completion(

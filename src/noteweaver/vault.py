@@ -22,9 +22,14 @@ import re
 from datetime import datetime, timezone
 from pathlib import Path
 
-log = logging.getLogger(__name__)
+from noteweaver.constants import (
+    WIKI_DIRS,
+    STRUCTURE_PATHS,
+    SKIP_DIRS,
+    SKIP_FILES,
+)
 
-WIKI_DIRS = ["concepts", "journals", "synthesis", "archive"]
+log = logging.getLogger(__name__)
 
 INITIAL_SCHEMA = """\
 ---
@@ -415,7 +420,7 @@ class Vault:
         path = self._resolve(rel_path)
         return path.read_text(encoding="utf-8")
 
-    _SKIP_UPDATED = frozenset({"wiki/index.md", "wiki/log.md"})
+    _SKIP_UPDATED = STRUCTURE_PATHS
     _UPDATED_RE = re.compile(r"^(updated:\s*)\S+", re.MULTILINE)
 
     def _touch_updated(self, content: str) -> str:
@@ -557,8 +562,8 @@ class Vault:
         else:
             self._git_commit(f"Save source {rel_path}")
 
-    _SKIP_DIRS = frozenset({".git", ".meta", ".DS_Store", "__pycache__", "node_modules"})
-    _SKIP_FILES = frozenset({".DS_Store", "Thumbs.db", ".gitignore"})
+    _SKIP_DIRS = SKIP_DIRS
+    _SKIP_FILES = SKIP_FILES
 
     @staticmethod
     def _is_junk_path(rel_path: str) -> bool:
@@ -1203,7 +1208,7 @@ class Vault:
         - Sources overview
         - Total page count
         """
-        _SKIP_PATHS = {"wiki/index.md", "wiki/log.md"}
+        _SKIP_PATHS = STRUCTURE_PATHS
         all_summaries = self.read_frontmatters("wiki")
         existing_tags: set[str] = set()
         hubs: list[dict] = []

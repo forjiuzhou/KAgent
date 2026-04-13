@@ -14,26 +14,17 @@ import logging
 import time
 from typing import Callable, TypeVar
 
+from noteweaver.constants import (
+    MAX_RETRIES,
+    INITIAL_BACKOFF,
+    BACKOFF_MULTIPLIER,
+    MAX_BACKOFF,
+    RETRYABLE_STATUS_CODES as _RETRYABLE_STATUS_CODES,
+)
+
 log = logging.getLogger(__name__)
 
 T = TypeVar("T")
-
-# Default retry configuration
-MAX_RETRIES = 4
-INITIAL_BACKOFF = 1.0     # seconds
-BACKOFF_MULTIPLIER = 2.0
-MAX_BACKOFF = 32.0
-
-# HTTP status codes worth retrying
-_RETRYABLE_STATUS_CODES = {
-    408,  # Request Timeout
-    429,  # Rate Limited
-    500,  # Internal Server Error
-    502,  # Bad Gateway
-    503,  # Service Unavailable
-    504,  # Gateway Timeout
-    529,  # Anthropic overloaded
-}
 
 # Exception class names that indicate retryable conditions
 _RETRYABLE_ERROR_NAMES = {
