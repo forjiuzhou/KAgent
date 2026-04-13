@@ -16,6 +16,10 @@ No linter is configured. Tests use pytest, temp directories, and mocked LLM prov
 
 Single Python package at `src/noteweaver/` (~5700 LOC). No frameworks — just OpenAI/Anthropic SDKs, tool calling, and file I/O.
 
+**Primary interface: Gateway** (long-running chat agent via Telegram/IM).
+CLI is a secondary interface for power users.
+All features must work through `agent.chat()` — gateway just passes user messages to it.
+
 ### Core loop (Continuous conversation flow)
 
 ```
@@ -24,10 +28,13 @@ KnowledgeAgent.chat(user_message)
   → LLMProvider.chat_completion()        # ALL tools (read + write)
   → for each tool_call:
       dispatch_tool()                    # execute any tool
+  → if LLM output contains <<skill:name>>:
+      skill.prepare() → skill.execute()  # multi-step workflow
   → loop up to 25 steps
 
 Agent proposes changes in natural language → user approves → agent writes.
 All in one continuous conversation. No separate Plan/execute phases.
+Skills are triggered by the LLM when it recognises skill-level intent.
 ```
 
 ### File → Responsibility
@@ -64,11 +71,12 @@ adapters/base.py      Abstract IM adapter interface
 
 ### Key design facts
 
-- **Three layers: tools → skills → CLI.** Tools are atomic operations (9 primitives). Skills are multi-step workflows that orchestrate tools via LLM prompts. CLI commands are user-facing entry points.
+- **Gateway is the primary interface.** The long-running chat agent (Telegram/IM) is the main way users interact with NoteWeaver. CLI is secondary. All features must work through `agent.chat()`.
+- **Three layers: tools → skills → chat.** Tools are atomic operations (9 primitives). Skills are multi-step workflows triggered by the LLM when it recognises skill-level intent (via `<<skill:name>>` markers in the system prompt). CLI commands wrap `agent.chat()` or `agent.run_skill()`.
 - **Continuous conversation flow.** All tools (read + write) available during chat. Agent proposes changes in natural language, writes after user approval. No separate Plan/execute phases.
 - **Schema always in context.** Schema files from `.schema/` are injected into the system prompt. Agent always knows wiki rules.
 - **Primitive tools.** 9 tools: 5 read (read_page, search, get_backlinks, list_pages, fetch_url) + 4 write (write_page, append_section, update_frontmatter, add_related_link).
-- **Skills.** Multi-step workflows above tools: `import_sources` (bulk-import from sources/), `organize_wiki` (audit + remediate). Skills have a deterministic prepare phase and an LLM-driven execute phase. Legacy high-semantic handlers (ingest, organize, restructure) are deprecated in favor of skills.
+- **Skills are LLM-triggered.** The system prompt tells the LLM about available skills. When the LLM determines the user's intent matches a skill, it emits `<<skill:name(args)>>` in its response. The `chat()` loop intercepts this, runs `prepare()` then `execute()`, and injects results back. Skills: `import_sources` (bulk-import from sources/), `organize_wiki` (audit + remediate). Legacy high-semantic handlers (ingest, organize, restructure) are deprecated.
 - **Transcript is append-only.** Context compression only in the query view (`_build_messages_for_query`).
 - **Tool results are tiered.** Full → preview → placeholder based on age. See `_apply_tool_result_tiers()`.
 - **Git batching.** All writes in one chat turn → one git commit via `_operation_depth`.

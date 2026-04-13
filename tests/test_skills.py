@@ -408,50 +408,100 @@ class TestSkillBase:
 # ======================================================================
 
 
-class TestGatewaySkillCommands:
-    """Test that Gateway recognises skill slash commands."""
+class TestSkillTriggerParsing:
+    """Test the <<skill:name(args)>> marker parsing."""
 
-    def test_skill_commands_map_exists(self) -> None:
-        from noteweaver.gateway import Gateway
-        assert "/import-sources" in Gateway._SKILL_COMMANDS
-        assert "/organize" in Gateway._SKILL_COMMANDS
+    def test_parse_simple_trigger(self) -> None:
+        text = "好的，我来帮你导入。<<skill:import_sources>>"
+        result = KnowledgeAgent._parse_skill_trigger(text)
+        assert result is not None
+        assert result["name"] == "import_sources"
+        assert result["kwargs"] == {}
 
-    def test_run_skill_sync(self, vault: Vault) -> None:
-        """Gateway._run_skill_sync should call agent.run_skill."""
-        from noteweaver.gateway import Gateway
+    def test_parse_trigger_with_args(self) -> None:
+        text = "<<skill:import_sources(source_dir=sources/papers)>>"
+        result = KnowledgeAgent._parse_skill_trigger(text)
+        assert result is not None
+        assert result["name"] == "import_sources"
+        assert result["kwargs"] == {"source_dir": "sources/papers"}
 
-        vault.root.joinpath("sources", "web").mkdir(parents=True, exist_ok=True)
-        (vault.root / "sources" / "web" / "note.md").write_text(
-            "# A note", encoding="utf-8",
-        )
+    def test_parse_trigger_multiple_args(self) -> None:
+        text = "<<skill:organize_wiki(focus=orphan_pages, dry_run=true)>>"
+        result = KnowledgeAgent._parse_skill_trigger(text)
+        assert result is not None
+        assert result["name"] == "organize_wiki"
+        assert result["kwargs"]["focus"] == "orphan_pages"
+
+    def test_parse_no_trigger(self) -> None:
+        text = "这是一段普通的回复，没有 skill 触发。"
+        result = KnowledgeAgent._parse_skill_trigger(text)
+        assert result is None
+
+    def test_strip_marker(self) -> None:
+        text = "好的，我来帮你导入。<<skill:import_sources(source_dir=sources)>>"
+        clean = KnowledgeAgent._strip_skill_marker(text)
+        assert "<<skill:" not in clean
+        assert "好的，我来帮你导入。" == clean
+
+    def test_strip_marker_no_marker(self) -> None:
+        text = "普通回复"
+        assert KnowledgeAgent._strip_skill_marker(text) == "普通回复"
+
+
+class TestSkillTriggerInChat:
+    """Test that chat() intercepts skill triggers from LLM output."""
+
+    def test_chat_triggers_skill(self, vault: Vault) -> None:
+        """When LLM emits a skill marker, chat() should run the skill."""
+        sources_dir = vault.root / "sources" / "web"
+        sources_dir.mkdir(parents=True, exist_ok=True)
+        (sources_dir / "article.md").write_text("# Test Article", encoding="utf-8")
 
         mock_provider = MagicMock()
+        agent = KnowledgeAgent(vault=vault, provider=mock_provider)
+
+        # First call: LLM emits skill trigger
+        # Second call (from skill.execute → agent.chat): LLM does the work
+        mock_provider.chat_completion.side_effect = [
+            _make_completion(
+                "好的，我来帮你导入。<<skill:import_sources(source_dir=sources)>>"
+            ),
+            _make_completion("所有文件已导入完成。"),
+        ]
+
+        chunks = list(agent.chat("帮我把sources里的文件导入"))
+
+        # Should have called provider twice: once for the initial chat,
+        # once for the skill execution
+        assert mock_provider.chat_completion.call_count == 2
+
+        # Chunks should include the clean text (without marker) and skill output
+        all_text = " ".join(chunks)
+        assert "<<skill:" not in all_text
+
+    def test_chat_no_skill_trigger(self, vault: Vault) -> None:
+        """Normal chat without skill trigger should work as before."""
+        mock_provider = MagicMock()
+        agent = KnowledgeAgent(vault=vault, provider=mock_provider)
+
         mock_provider.chat_completion.return_value = _make_completion(
-            "Imported everything."
+            "这是一个普通回复。"
         )
 
-        gw = Gateway.__new__(Gateway)
-        gw.vault = vault
-        from noteweaver.agent import KnowledgeAgent
-        gw.agent = KnowledgeAgent(vault=vault, provider=mock_provider)
-        gw._exchanges = []
+        chunks = list(agent.chat("你好"))
+        assert len(chunks) == 1
+        assert chunks[0] == "这是一个普通回复。"
+        assert mock_provider.chat_completion.call_count == 1
 
-        result = gw._run_skill_sync("import_sources")
-        assert isinstance(result, str)
-        assert len(result) > 0
-
-    def test_run_skill_sync_nothing_to_do(self, vault: Vault) -> None:
-        """When skill.prepare returns None, run_skill returns quickly."""
-        from noteweaver.gateway import Gateway
-
+    def test_chat_skill_nothing_to_do(self, vault: Vault) -> None:
+        """Skill trigger with nothing to do should report that."""
         mock_provider = MagicMock()
-        gw = Gateway.__new__(Gateway)
-        gw.vault = vault
-        from noteweaver.agent import KnowledgeAgent
-        gw.agent = KnowledgeAgent(vault=vault, provider=mock_provider)
-        gw._exchanges = []
+        agent = KnowledgeAgent(vault=vault, provider=mock_provider)
 
-        result = gw._run_skill_sync("import_sources")
-        assert isinstance(result, str)
-        # Provider should NOT have been called — nothing to import
-        assert not mock_provider.chat_completion.called
+        mock_provider.chat_completion.return_value = _make_completion(
+            "我来检查一下。<<skill:import_sources>>"
+        )
+
+        chunks = list(agent.chat("导入文件"))
+        all_text = " ".join(chunks)
+        assert "Nothing to do" in all_text

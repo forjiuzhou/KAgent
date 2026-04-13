@@ -17,16 +17,20 @@ LLM-powered commands (need API key): `nw chat`, `nw lint`, `nw digest`, `nw inge
 
 ## Architecture Map
 
-NoteWeaver is a single Python package at `src/noteweaver/` (~5700 LOC). There are no frameworks — just OpenAI/Anthropic SDKs, tool calling, and file I/O.
+NoteWeaver is a single Python package at `src/noteweaver/` (~5700 LOC). No frameworks — just OpenAI/Anthropic SDKs, tool calling, and file I/O.
+
+**Primary interface: Gateway** (long-running chat agent via Telegram/IM). CLI is a secondary interface for power users. All features must work through `agent.chat()` — gateway just passes user messages to it.
 
 ### Data flow
 
 ```
-User input (CLI / Telegram / Gateway)
+User input (Telegram / CLI)
   → KnowledgeAgent.chat()             ← continuous conversation
     → _build_messages_for_query()     ← context assembly (schema always included)
     → LLMProvider.chat_completion()   ← ALL tools (read + write)
     → dispatch_tool()                 ← execute any tool
+    → if LLM emits <<skill:name>>:
+        skill.prepare() → execute()   ← multi-step workflow via tools
     → loop up to 25 steps
   → Agent proposes in natural language → user approves → agent writes
   → save_transcript() + save_trace() + save_session_memory()
@@ -87,7 +91,7 @@ User input (CLI / Telegram / Gateway)
 
 2. **Schema always in context.** `PROMPT_SCHEMA_CORE` (~800 tokens) is always in the system prompt. Agent always knows wiki rules without needing to read schema.md.
 
-3. **Three layers: tools → skills → CLI.** 9 primitive tools (5 read + 4 write) are the atomic operations. Skills (`skills/`) are multi-step workflows that orchestrate tools via LLM prompts (e.g. `import_sources`, `organize_wiki`). CLI commands are user-facing entry points. Legacy handlers (capture, organize, etc.) are deprecated in favor of skills.
+3. **Three layers: tools → skills → chat.** 9 primitive tools (5 read + 4 write) are the atomic operations. Skills (`skills/`) are multi-step workflows triggered by the LLM when it recognises skill-level intent — the LLM emits `<<skill:name>>` markers, the chat loop intercepts and executes. Gateway is the primary interface; CLI wraps `agent.chat()` or `agent.run_skill()`. Legacy handlers (capture, organize, etc.) are deprecated in favor of skills.
 
 4. **Transcript is append-only.** `self.messages` is never mutated. Context compression happens only in the query view (`_build_messages_for_query()`).
 
