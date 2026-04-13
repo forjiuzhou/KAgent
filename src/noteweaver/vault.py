@@ -335,6 +335,8 @@ class Vault:
             INITIAL_PROTOCOLS.format(date=today),
         )
 
+        self._seed_default_skills()
+
         # Write .gitignore for .meta/ (derived data, not versioned)
         self._write_if_missing(
             self.root / ".gitignore",
@@ -344,6 +346,73 @@ class Vault:
         self._git_init()
         self._git_commit("Vault initialized")
         self.rebuild_search_index()
+
+    def _seed_default_skills(self) -> None:
+        """Copy bundled SKILL.md files into .schema/skills/ if missing."""
+        import importlib.resources
+        bundled_root = importlib.resources.files("noteweaver") / ".schema_default" / "skills"
+        skills_dir = self.schema_dir / "skills"
+        skills_dir.mkdir(parents=True, exist_ok=True)
+
+        try:
+            for entry in bundled_root.iterdir():
+                if not entry.is_dir():
+                    continue
+                skill_md = entry / "SKILL.md"
+                if not skill_md.is_file():
+                    continue
+                target_dir = skills_dir / entry.name
+                target_dir.mkdir(parents=True, exist_ok=True)
+                target_file = target_dir / "SKILL.md"
+                if not target_file.exists():
+                    target_file.write_text(
+                        skill_md.read_text(encoding="utf-8"),
+                        encoding="utf-8",
+                    )
+        except (TypeError, FileNotFoundError):
+            pass
+
+    def load_skills(self) -> list[dict]:
+        """Scan .schema/skills/ for SKILL.md files and return metadata.
+
+        Returns a list of dicts with keys: name, description, location.
+        """
+        import yaml as _yaml
+
+        skills_dir = self.schema_dir / "skills"
+        if not skills_dir.is_dir():
+            return []
+
+        results = []
+        for entry in sorted(skills_dir.iterdir()):
+            if not entry.is_dir():
+                continue
+            skill_file = entry / "SKILL.md"
+            if not skill_file.is_file():
+                continue
+            content = skill_file.read_text(encoding="utf-8")
+            if not content.startswith("---"):
+                continue
+            end = content.find("---", 3)
+            if end == -1:
+                continue
+            try:
+                fm = _yaml.safe_load(content[3:end])
+            except Exception:
+                continue
+            if not isinstance(fm, dict):
+                continue
+            name = fm.get("name", entry.name)
+            description = fm.get("description", "")
+            if not description:
+                continue
+            rel_path = f".schema/skills/{entry.name}/SKILL.md"
+            results.append({
+                "name": name,
+                "description": description,
+                "location": rel_path,
+            })
+        return results
 
     # ------------------------------------------------------------------
     # Search index

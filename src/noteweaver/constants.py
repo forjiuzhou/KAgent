@@ -91,6 +91,7 @@ RETRYABLE_STATUS_CODES = frozenset({
 
 OBSERVATION_TOOL_NAMES = frozenset({
     "read_page", "search", "get_backlinks", "list_pages", "fetch_url",
+    "spawn_subagent",
 })
 
 WRITE_TOOL_NAMES = frozenset({
