@@ -19,6 +19,7 @@ Context management:
 from __future__ import annotations
 
 import json
+import re
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -112,7 +113,44 @@ Use the user's language for content. \
 If vault is empty, welcome the user and suggest what they can do.
 """
 
-SYSTEM_PROMPT = PROMPT_IDENTITY + "\n" + PROMPT_TOOLS
+PROMPT_SKILLS = """\
+## Skills
+
+Skills are multi-step workflows for tasks that go beyond single tool calls. \
+When the user asks for something that matches a skill, trigger it with the \
+marker format below. Do NOT try to do these tasks manually with individual \
+tool calls — skills handle the full workflow (scanning, reading, writing, \
+linking) automatically.
+
+| Skill | When to trigger | What it does |
+|-------|----------------|--------------|
+| `import_sources` | User asks to import/process files from sources/, or mentions a folder of files to bring into the wiki | Scans source files, reads each one, creates structured wiki pages with frontmatter, and links them |
+| `organize_wiki` | User asks to clean up, organize, fix, or audit the wiki | Audits vault health, then fixes issues: metadata, links, hubs, orphans, tags |
+
+### How to trigger
+
+When you determine a skill should run, include this marker in your response:
+
+```
+<<skill:skill_name(param=value)>>
+```
+
+Examples:
+- `<<skill:import_sources(source_dir=sources)>>` — import all files from sources/
+- `<<skill:import_sources(source_dir=sources/papers)>>` — import from a subdirectory
+- `<<skill:organize_wiki>>` — audit and fix wiki issues
+
+The system will intercept the marker, run the skill's prepare phase to scan \
+the scope, then execute the full workflow. You can include the marker \
+alongside a natural language message to the user, e.g.:
+
+"好的，我来帮你导入 sources 里的文件。<<skill:import_sources(source_dir=sources)>>"
+
+After the skill completes, you'll receive the results and can report back \
+to the user.
+"""
+
+SYSTEM_PROMPT = PROMPT_IDENTITY + "\n" + PROMPT_TOOLS + "\n" + PROMPT_SKILLS
 
 
 # ======================================================================
@@ -867,7 +905,21 @@ class KnowledgeAgent:
                         self._trace.record_agent_reply(
                             content=completion.content,
                         )
-                        yield completion.content
+
+                        skill_trigger = self._parse_skill_trigger(
+                            completion.content,
+                        )
+                        if skill_trigger:
+                            clean_text = self._strip_skill_marker(
+                                completion.content,
+                            )
+                            if clean_text.strip():
+                                yield clean_text
+                            yield from self._execute_skill_trigger(
+                                skill_trigger,
+                            )
+                        else:
+                            yield completion.content
                     return
 
                 for tool_call in completion.tool_calls:
@@ -1646,6 +1698,126 @@ Add related links. Use proper frontmatter.
         path = self.vault.meta_dir / "pending-organize.json"
         if path.is_file():
             path.unlink()
+
+    # ------------------------------------------------------------------
+    # Skill execution
+    # ------------------------------------------------------------------
+
+    def run_skill(
+        self,
+        skill_name: str,
+        **kwargs,
+    ) -> Generator[str, None, "SkillResult"]:
+        """Run a named skill, yielding progress strings.
+
+        Skills are multi-step workflows that sit above atomic tools.
+        They use ``agent.chat()`` internally with carefully crafted
+        prompts, so the agent's tool dispatch and policy layer still
+        apply.
+
+        Returns the final ``SkillResult`` from the generator.
+        """
+        from noteweaver.skills import get_skill, SkillContext, SkillResult
+
+        skill = get_skill(skill_name)
+        if skill is None:
+            return SkillResult(
+                skill_name=skill_name,
+                success=False,
+                summary=f"Unknown skill: {skill_name}",
+            )
+
+        ctx = SkillContext(
+            vault=self.vault,
+            agent=self,
+            attended=self._policy_ctx.attended,
+            dry_run=kwargs.pop("dry_run", False),
+        )
+
+        return (yield from skill.run(ctx, **kwargs))
+
+    # ------------------------------------------------------------------
+    # Skill trigger parsing (called from chat loop)
+    # ------------------------------------------------------------------
+
+    _SKILL_TRIGGER_RE = re.compile(
+        r"<<skill:(\w+)(?:\(([^)]*)\))?>>"
+    )
+
+    @classmethod
+    def _parse_skill_trigger(cls, text: str) -> dict | None:
+        """Extract a skill trigger from LLM output text.
+
+        Returns ``{"name": "...", "kwargs": {...}}`` or None.
+        Marker format: ``<<skill:name(key=value, ...)>>``
+        """
+        m = cls._SKILL_TRIGGER_RE.search(text)
+        if not m:
+            return None
+        name = m.group(1)
+        kwargs: dict = {}
+        if m.group(2):
+            for pair in m.group(2).split(","):
+                pair = pair.strip()
+                if "=" in pair:
+                    k, v = pair.split("=", 1)
+                    kwargs[k.strip()] = v.strip()
+        return {"name": name, "kwargs": kwargs}
+
+    @classmethod
+    def _strip_skill_marker(cls, text: str) -> str:
+        """Remove skill trigger markers from text for user display."""
+        return cls._SKILL_TRIGGER_RE.sub("", text).strip()
+
+    def _execute_skill_trigger(
+        self, trigger: dict,
+    ) -> Generator[str, None, None]:
+        """Run a skill triggered by the LLM and yield progress."""
+        from noteweaver.skills import get_skill, SkillContext
+
+        skill_name = trigger["name"]
+        skill_kwargs = trigger.get("kwargs", {})
+        skill = get_skill(skill_name)
+
+        if skill is None:
+            self.messages.append({
+                "role": "user",
+                "content": f"[System: unknown skill '{skill_name}']",
+            })
+            return
+
+        ctx = SkillContext(
+            vault=self.vault,
+            agent=self,
+            attended=self._policy_ctx.attended,
+        )
+
+        scope = skill.prepare(ctx, **skill_kwargs)
+        if scope is None:
+            self.messages.append({
+                "role": "user",
+                "content": f"[Skill {skill_name}: nothing to do]",
+            })
+            yield f"[{skill_name}] Nothing to do."
+            return
+
+        yield f"[{skill_name}] {scope}"
+
+        result = None
+        gen = skill.execute(ctx, **skill_kwargs)
+        try:
+            while True:
+                chunk = next(gen)
+                yield chunk
+        except StopIteration as e:
+            result = e.value
+
+        if result:
+            summary = f"[Skill {skill_name} completed: {result.summary}]"
+            self.messages.append({
+                "role": "user",
+                "content": summary,
+            })
 
     # ------------------------------------------------------------------
     # Sizing helpers

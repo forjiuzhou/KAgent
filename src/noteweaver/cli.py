@@ -251,9 +251,13 @@ def cmd_ingest(vault_path: Path, url: str) -> None:
 
     console.print(f"[bold]Ingesting:[/bold] {url}")
     prompt = (
-        f"Ingest this URL into the knowledge base: {url}\n"
-        "Use ingest(source='{url}', source_type='url') to fetch and save it, "
-        "then use capture() to record key information as wiki pages."
+        f"Ingest this URL into the knowledge base: {url}\n\n"
+        "Steps:\n"
+        "1. Use fetch_url(url) to retrieve and preview the content.\n"
+        "2. Use search() to check if this topic already exists in the wiki.\n"
+        "3. Use write_page() to create a new wiki page, or append_section() "
+        "to add to an existing page. Include proper YAML frontmatter.\n"
+        "4. Use add_related_link() to connect the new page to related pages."
     ).format(url=url)
     exchange: dict = {"user": f"ingest {url}", "tools": [], "reply": ""}
     try:
@@ -277,10 +281,10 @@ def cmd_ingest(vault_path: Path, url: str) -> None:
 def cmd_lint(vault_path: Path) -> None:
     """Run a health check on the knowledge base.
 
-    Phase 1: code-based audit (fast, no LLM).
-    Phase 2: if issues found and an API key is available, LLM writes
-    fixes directly during chat.  Any pending organize plans are
-    presented for approval afterwards.
+    Phase 1: code-based audit (fast, no LLM) — always runs.
+    Phase 2: if issues found and an API key is available, runs the
+    ``organize_wiki`` skill which uses the agent to fix issues via
+    primitive tools.
     """
     import json as _json
 
@@ -320,22 +324,18 @@ def cmd_lint(vault_path: Path) -> None:
     cfg = Config.load(vault_path)
     has_issues = "0 issues" not in report.get("summary", "")
     if has_issues and cfg.api_key:
-        console.print("[bold]Generating remediation plan...[/bold]\n")
+        console.print("[bold]Running organize_wiki skill...[/bold]\n")
         _, agent = _make_agent(vault_path)
 
-        prompt = (
-            f"Vault audit found these issues:\n\n"
-            f"{_json.dumps(report, indent=2, ensure_ascii=False)}\n\n"
-            "Fix these issues. Use organize() for page-level fixes (metadata, "
-            "links, archive). Use restructure() for vault-wide fixes (rebuild "
-            "hubs, merge tags). Use capture() to create missing pages."
-        )
         exchange: dict = {"user": "lint", "tools": [], "reply": ""}
         try:
-            for chunk in agent.chat(prompt):
+            result = None
+            for chunk in agent.run_skill("organize_wiki"):
                 if chunk.startswith("  📋 ") or chunk.startswith("  ↳ "):
                     console.print(f"[tool]{chunk}[/tool]")
                     exchange["tools"].append(chunk.strip())
+                elif chunk.startswith("[organize_wiki]"):
+                    console.print(f"[info]{chunk}[/info]")
                 else:
                     exchange["reply"] = chunk
                     console.print()
@@ -343,7 +343,7 @@ def cmd_lint(vault_path: Path) -> None:
 
             for plan_obj in agent.plan_store.list_pending():
                 _approve_and_execute(agent, plan_obj)
-            if not agent.plan_store.list_all(limit=1) and exchange["reply"]:
+            if exchange["reply"]:
                 vault.append_log("lint", "Health check completed", exchange["reply"][:500])
             _cli_finalize_session(vault, agent, [exchange], "lint")
         except Exception as e:
@@ -410,7 +410,10 @@ def cmd_organize(vault_path: Path) -> None:
 
 
 def cmd_import(vault_path: Path, source_path: str) -> None:
-    """Import existing markdown files into the vault."""
+    """Import existing markdown files into the vault (deterministic, no LLM).
+
+    For LLM-assisted import with structuring, use ``nw import-sources``.
+    """
     vault = Vault(vault_path)
     if not vault.exists():
         console.print("[red]No vault found.[/red] Run `nw init` first.")
@@ -419,6 +422,41 @@ def cmd_import(vault_path: Path, source_path: str) -> None:
     console.print(f"[bold]Importing from:[/bold] {source_path}")
     result = vault.import_directory(source_path)
     console.print(result)
+
+
+def cmd_import_sources(vault_path: Path, source_dir: str = "sources") -> None:
+    """LLM-assisted import: read source files and create structured wiki pages.
+
+    Uses the ``import_sources`` skill — scans sources/ for unprocessed
+    files and drives the agent to create wiki pages with proper
+    frontmatter, structure, and cross-links.
+    """
+    vault, agent = _make_agent(vault_path)
+
+    console.print(
+        f"[bold]Running import_sources skill[/bold] "
+        f"(source: {source_dir}/)\n"
+    )
+
+    exchange: dict = {"user": f"import-sources {source_dir}", "tools": [], "reply": ""}
+    try:
+        for chunk in agent.run_skill("import_sources", source_dir=source_dir):
+            if chunk.startswith("  📋 ") or chunk.startswith("  ↳ "):
+                console.print(f"[tool]{chunk}[/tool]")
+                exchange["tools"].append(chunk.strip())
+            elif chunk.startswith("[import_sources]"):
+                console.print(f"[info]{chunk}[/info]")
+            else:
+                exchange["reply"] = chunk
+                console.print()
+                console.print(Markdown(chunk))
+
+        for plan_obj in agent.plan_store.list_pending():
+            _approve_and_execute(agent, plan_obj)
+        _cli_finalize_session(vault, agent, [exchange], "ingest")
+    except Exception as e:
+        console.print(f"[red]Error: {e}[/red]")
+        sys.exit(1)
 
 
 def cmd_rebuild_index(vault_path: Path) -> None:
@@ -596,6 +634,10 @@ def main() -> None:
             sys.exit(1)
         vault_path = resolve_vault_path()
         cmd_import(vault_path, args[1])
+    elif args[0] == "import-sources":
+        vault_path = resolve_vault_path()
+        source_dir = args[1] if len(args) > 1 else "sources"
+        cmd_import_sources(vault_path, source_dir)
     elif args[0] in ("rebuild-index", "rebuild"):
         vault_path = resolve_vault_path()
         cmd_rebuild_index(vault_path)
@@ -617,9 +659,10 @@ def main() -> None:
                 "  [bold]nw init[/bold]              Initialize a new vault\n"
                 "  [bold]nw chat[/bold]              Chat with the agent (default)\n"
                 "  [bold]nw ingest <url>[/bold]      Import a web article\n"
-                "  [bold]nw import <path>[/bold]     Import existing md files\n"
+                "  [bold]nw import <path>[/bold]     Import existing md files (no LLM)\n"
+                "  [bold]nw import-sources[/bold]    LLM-assisted import from sources/\n"
                 "  [bold]nw organize[/bold]          Organize recent conversation knowledge\n"
-                "  [bold]nw lint[/bold]              Health-check the knowledge base\n"
+                "  [bold]nw lint[/bold]              Health-check + auto-fix (skill: organize_wiki)\n"
                 "  [bold]nw digest[/bold]            Extract insights from recent journals\n"
                 "  [bold]nw rebuild-index[/bold]     Rebuild index.md and search index\n"
                 "  [bold]nw status[/bold]            Show vault status\n"

@@ -75,10 +75,14 @@ class Gateway:
     async def _handle_message(self, msg: IncomingMessage) -> str:
         """Route an incoming message to the Agent and return the reply.
 
-        V2: the agent writes directly during chat() — no plans are created
-        from normal conversation.  The ``_pending_plan_id`` path only
-        activates when an *organize* plan is generated at session boundaries
-        (e.g. cron digest calling ``generate_organize_plan``).
+        All messages go through ``agent.chat()``.  The LLM knows about
+        skills via the system prompt and triggers them with markers like
+        ``<<skill:import_sources>>``.  The chat loop detects and executes
+        these automatically — no slash commands needed.
+
+        The ``_pending_plan_id`` path only activates when an *organize*
+        plan is generated at session boundaries (e.g. cron digest calling
+        ``generate_organize_plan``).
         """
         self._active_chat_ids.add(msg.chat_id)
         async with self._lock:
@@ -232,17 +236,30 @@ class Gateway:
                         self.agent.set_attended(True)
                 last_digest = now
 
-            # --- Audit (pure code, no LLM, no lock needed) ---
+            # --- Audit + organize_wiki skill ---
             if now - last_lint >= lint_interval:
                 log.info("Cron: running vault audit...")
                 try:
                     report = self.vault.audit_vault()
                     self.vault.save_audit_report(report)
-                    if any(report.get(k) for k in report if k != "summary"):
+                    has_issues = any(report.get(k) for k in report if k != "summary")
+                    if has_issues:
                         self._pending_notifications.append(
                             f"🔍 *Vault Audit*\n\n{report['summary']}"
                         )
                     log.info("Audit result: %s", report.get("summary", ""))
+
+                    if has_issues:
+                        log.info("Cron: running organize_wiki skill...")
+                        async with self._lock:
+                            try:
+                                self.agent.set_attended(False)
+                                for chunk in self.agent.run_skill("organize_wiki"):
+                                    pass  # consume generator; cron has no UI
+                            except Exception as e:
+                                log.error("Cron organize_wiki failed: %s", e)
+                            finally:
+                                self.agent.set_attended(True)
                 except Exception as e:
                     log.error("Cron audit failed: %s", e)
                 last_lint = now

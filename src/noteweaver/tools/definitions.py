@@ -686,7 +686,15 @@ def handle_add_related_link(
 
 
 # ======================================================================
-# Legacy handler stubs (for backward compatibility with tests)
+# Legacy handler stubs
+#
+# DEPRECATED: These handlers pre-date the skills layer.  New code should
+# use skills (src/noteweaver/skills/) for multi-step workflows:
+#   - import_sources skill replaces ingest(directory) / capture
+#   - organize_wiki skill replaces organize / restructure / audit
+#
+# Handlers are kept for backward compatibility with tests and the
+# plan execution machinery (execute_organize_plan).
 # ======================================================================
 
 def handle_survey_topic(vault: Vault, topic: str) -> str:
