@@ -104,6 +104,8 @@ TOOL_TIERS: dict[str, RiskTier] = {
     "append_section": RiskTier.MEDIUM_WRITE,
     "update_frontmatter": RiskTier.MEDIUM_WRITE,
     "add_related_link": RiskTier.LOW_WRITE,
+    # Sub-agent tool
+    "spawn_subagent": RiskTier.READ,
     # Legacy tools (kept for backward compatibility)
     "survey_topic": RiskTier.READ,
     "capture": RiskTier.MEDIUM_WRITE,

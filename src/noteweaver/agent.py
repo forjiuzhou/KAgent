@@ -125,44 +125,36 @@ Use the user's language for content. \
 If vault is empty, welcome the user and suggest what they can do.
 """
 
-PROMPT_SKILLS = """\
-## Skills
+PROMPT_SKILLS_HEADER = """\
+## Skills (mandatory)
 
-Skills are multi-step workflows for tasks that go beyond single tool calls. \
-When the user asks for something that matches a skill, trigger it with the \
-marker format below. Do NOT try to do these tasks manually with individual \
-tool calls — skills handle the full workflow (scanning, reading, writing, \
-linking) automatically.
-
-| Skill | When to trigger | What it does |
-|-------|----------------|--------------|
-| `import_sources` | User asks to import/process files from sources/, or mentions a folder of files to bring into the wiki | Scans source files, reads each one, creates structured wiki pages with frontmatter, and links them |
-| `organize_wiki` | User asks to clean up, organize, fix, or audit the wiki | Audits vault health, then fixes issues: metadata, links, hubs, orphans, tags |
-
-### How to trigger
-
-When you determine a skill should run, include this marker in your response:
-
-```
-<<skill:skill_name(param=value)>>
-```
-
-Examples:
-- `<<skill:import_sources(source_dir=sources)>>` — import all files from sources/
-- `<<skill:import_sources(source_dir=sources/papers)>>` — import from a subdirectory
-- `<<skill:organize_wiki>>` — audit and fix wiki issues
-
-The system will intercept the marker, run the skill's prepare phase to scan \
-the scope, then execute the full workflow. You can include the marker \
-alongside a natural language message to the user, e.g.:
-
-"好的，我来帮你导入 sources 里的文件。<<skill:import_sources(source_dir=sources)>>"
-
-After the skill completes, you'll receive the results and can report back \
-to the user.
+Before replying: scan <available_skills> <description> entries.
+- If exactly one skill clearly applies: read its SKILL.md at <location> \
+with `read_page`, then follow its instructions.
+- If multiple could apply: choose the most specific one, then read/follow it.
+- If none clearly apply: do not read any SKILL.md.
+Constraints: never read more than one skill up front; only read after selecting.
 """
 
-SYSTEM_PROMPT = PROMPT_IDENTITY + "\n" + PROMPT_TOOLS + "\n" + PROMPT_SKILLS
+SYSTEM_PROMPT_BASE = PROMPT_IDENTITY + "\n" + PROMPT_TOOLS
+
+
+def _format_available_skills(skills: list[dict]) -> str:
+    """Format skill metadata as XML for system prompt injection."""
+    if not skills:
+        return ""
+    lines = [
+        PROMPT_SKILLS_HEADER,
+        "<available_skills>",
+    ]
+    for s in skills:
+        lines.append("  <skill>")
+        lines.append(f"    <name>{s['name']}</name>")
+        lines.append(f"    <description>{s['description']}</description>")
+        lines.append(f"    <location>{s['location']}</location>")
+        lines.append("  </skill>")
+    lines.append("</available_skills>")
+    return "\n".join(lines)
 
 
 # ======================================================================
@@ -270,13 +262,14 @@ class KnowledgeAgent:
         """Build system prompt from static core + .schema/ files.
 
         Injection order:
-        1. SYSTEM_PROMPT (identity + tools) — hardcoded
+        1. SYSTEM_PROMPT_BASE (identity + tools) — hardcoded
         2. .schema/schema.md — wiki structure definition
         3. .schema/protocols.md — behavioral constraints
         4. .schema/preferences.md — user preferences
         5. .schema/memory.md — long-term knowledge base memory
+        6. <available_skills> — from .schema/skills/*/SKILL.md
         """
-        prompt = SYSTEM_PROMPT
+        prompt = SYSTEM_PROMPT_BASE
 
         schema_path = self.vault.schema_dir / "schema.md"
         if schema_path.is_file():
@@ -298,6 +291,10 @@ class KnowledgeAgent:
             mem_content = memory_path.read_text(encoding="utf-8")
             if len(mem_content) <= self._MEMORY_FILE_MAX_CHARS:
                 prompt += f"\n\n## Knowledge Base Memory\n\n{mem_content}"
+
+        skills = self.vault.load_skills()
+        if skills:
+            prompt += "\n\n" + _format_available_skills(skills)
 
         return prompt
 
@@ -913,21 +910,7 @@ class KnowledgeAgent:
                         self._trace.record_agent_reply(
                             content=completion.content,
                         )
-
-                        skill_trigger = self._parse_skill_trigger(
-                            completion.content,
-                        )
-                        if skill_trigger:
-                            clean_text = self._strip_skill_marker(
-                                completion.content,
-                            )
-                            if clean_text.strip():
-                                yield clean_text
-                            yield from self._execute_skill_trigger(
-                                skill_trigger,
-                            )
-                        else:
-                            yield completion.content
+                        yield completion.content
                     return
 
                 for tool_call in completion.tool_calls:
@@ -946,6 +929,16 @@ class KnowledgeAgent:
                     error_msg: str | None = None
                     if not verdict.allowed:
                         result = f"Policy blocked: {verdict.warning}"
+                    elif tool_call.name == "spawn_subagent":
+                        try:
+                            result = self._handle_spawn_subagent(
+                                fn_args.get("task", ""),
+                            )
+                        except Exception as exc:
+                            error_msg = f"{type(exc).__name__}: {exc}"
+                            result = (
+                                f"Error executing spawn_subagent: {error_msg}"
+                            )
                     else:
                         try:
                             result = dispatch_tool(
@@ -1708,7 +1701,41 @@ Add related links. Use proper frontmatter.
             path.unlink()
 
     # ------------------------------------------------------------------
-    # Skill execution
+    # Sub-agent execution
+    # ------------------------------------------------------------------
+
+    def _handle_spawn_subagent(self, task: str) -> str:
+        """Spawn an independent sub-agent with clean context.
+
+        Creates a new KnowledgeAgent sharing the same vault and provider
+        but with a fresh message history.  The sub-agent runs the task
+        to completion and returns a summary.
+        """
+        if not task.strip():
+            return "Error: task description is required for spawn_subagent."
+
+        sub_agent = KnowledgeAgent(
+            vault=self.vault,
+            model=self.model,
+            provider=self.provider,
+        )
+
+        reply_parts: list[str] = []
+        tool_count = 0
+        for chunk in sub_agent.chat(task):
+            if chunk.startswith("  ↳ "):
+                tool_count += 1
+            elif not chunk.startswith("  📋 "):
+                reply_parts.append(chunk)
+
+        final_reply = "\n\n".join(reply_parts) if reply_parts else "(no response)"
+        return (
+            f"Sub-agent completed ({tool_count} tool calls).\n\n"
+            f"Result:\n{final_reply}"
+        )
+
+    # ------------------------------------------------------------------
+    # Skill execution (legacy — kept for backward compatibility)
     # ------------------------------------------------------------------
 
     def run_skill(
@@ -1745,88 +1772,6 @@ Add related links. Use proper frontmatter.
         return (yield from skill.run(ctx, **kwargs))
 
     # ------------------------------------------------------------------
-    # Skill trigger parsing (called from chat loop)
-    # ------------------------------------------------------------------
-
-    _SKILL_TRIGGER_RE = re.compile(
-        r"<<skill:(\w+)(?:\(([^)]*)\))?>>"
-    )
-
-    @classmethod
-    def _parse_skill_trigger(cls, text: str) -> dict | None:
-        """Extract a skill trigger from LLM output text.
-
-        Returns ``{"name": "...", "kwargs": {...}}`` or None.
-        Marker format: ``<<skill:name(key=value, ...)>>``
-        """
-        m = cls._SKILL_TRIGGER_RE.search(text)
-        if not m:
-            return None
-        name = m.group(1)
-        kwargs: dict = {}
-        if m.group(2):
-            for pair in m.group(2).split(","):
-                pair = pair.strip()
-                if "=" in pair:
-                    k, v = pair.split("=", 1)
-                    kwargs[k.strip()] = v.strip()
-        return {"name": name, "kwargs": kwargs}
-
-    @classmethod
-    def _strip_skill_marker(cls, text: str) -> str:
-        """Remove skill trigger markers from text for user display."""
-        return cls._SKILL_TRIGGER_RE.sub("", text).strip()
-
-    def _execute_skill_trigger(
-        self, trigger: dict,
-    ) -> Generator[str, None, None]:
-        """Run a skill triggered by the LLM and yield progress."""
-        from noteweaver.skills import get_skill, SkillContext
-
-        skill_name = trigger["name"]
-        skill_kwargs = trigger.get("kwargs", {})
-        skill = get_skill(skill_name)
-
-        if skill is None:
-            self.messages.append({
-                "role": "user",
-                "content": f"[System: unknown skill '{skill_name}']",
-            })
-            return
-
-        ctx = SkillContext(
-            vault=self.vault,
-            agent=self,
-            attended=self._policy_ctx.attended,
-        )
-
-        scope = skill.prepare(ctx, **skill_kwargs)
-        if scope is None:
-            self.messages.append({
-                "role": "user",
-                "content": f"[Skill {skill_name}: nothing to do]",
-            })
-            yield f"[{skill_name}] Nothing to do."
-            return
-
-        yield f"[{skill_name}] {scope}"
-
-        result = None
-        gen = skill.execute(ctx, **skill_kwargs)
-        try:
-            while True:
-                chunk = next(gen)
-                yield chunk
-        except StopIteration as e:
-            result = e.value
-
-        if result:
-            summary = f"[Skill {skill_name} completed: {result.summary}]"
-            self.messages.append({
-                "role": "user",
-                "content": summary,
-            })
-
     # ------------------------------------------------------------------
     # Sizing helpers
     # ------------------------------------------------------------------

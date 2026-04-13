@@ -274,6 +274,38 @@ TOOL_SCHEMAS: list[dict] = [
             },
         },
     },
+    # ------------------------------------------------------------------
+    # Sub-agent tool
+    # ------------------------------------------------------------------
+    {
+        "type": "function",
+        "function": {
+            "name": "spawn_subagent",
+            "description": (
+                "Spawn an independent sub-agent to handle a self-contained "
+                "task. The sub-agent gets its own context window and step "
+                "budget — use this for heavy subtasks like processing a "
+                "topic cluster during import, or fixing a batch of wiki "
+                "issues. The sub-agent has access to the same vault and "
+                "tools. Returns the sub-agent's final summary when done."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "task": {
+                        "type": "string",
+                        "description": (
+                            "A detailed task description for the sub-agent. "
+                            "Include all necessary context: file paths, "
+                            "current wiki structure, what to create/update, "
+                            "and any constraints."
+                        ),
+                    },
+                },
+                "required": ["task"],
+            },
+        },
+    },
 ]
 
 
@@ -1270,6 +1302,10 @@ TOOL_HANDLERS: dict[str, Any] = {
     "append_section": handle_append_section,
     "update_frontmatter": handle_update_frontmatter,
     "add_related_link": handle_add_related_link,
+    # spawn_subagent is intercepted by agent.chat() — stub for dispatch_tool
+    "spawn_subagent": lambda vault, task="": (
+        "Error: spawn_subagent must be called from agent.chat() context"
+    ),
     # Legacy handlers (not in TOOL_SCHEMAS but still dispatchable for tests)
     "survey_topic": handle_survey_topic,
     "capture": handle_capture,

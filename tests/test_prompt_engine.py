@@ -9,7 +9,7 @@ from noteweaver.agent import (
     KnowledgeAgent,
     PROMPT_IDENTITY,
     PROMPT_TOOLS,
-    SYSTEM_PROMPT,
+    SYSTEM_PROMPT_BASE,
 )
 from noteweaver.vault import Vault
 
@@ -62,7 +62,7 @@ class TestPromptStructure:
     def test_tools_has_all_tools(self) -> None:
         from noteweaver.tools.definitions import TOOL_SCHEMAS, CHAT_TOOL_SCHEMAS
 
-        assert len(TOOL_SCHEMAS) == 9
+        assert len(TOOL_SCHEMAS) == 10
         for tool in [
             "read_page",
             "search",
@@ -99,7 +99,7 @@ class TestPromptStructure:
         assert "Use Chinese" in system_msg
 
     def test_prompt_token_budget(self) -> None:
-        assert len(SYSTEM_PROMPT) < 7500, f"System prompt too large: {len(SYSTEM_PROMPT)} chars"
+        assert len(SYSTEM_PROMPT_BASE) < 7500, f"System prompt base too large: {len(SYSTEM_PROMPT_BASE)} chars"
 
     def test_protocols_in_system_prompt(self, vault: Vault) -> None:
         mock_provider = MagicMock()
