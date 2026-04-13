@@ -23,6 +23,13 @@ from typing import Any
 
 import yaml
 
+from noteweaver.constants import (
+    OBSERVATION_TOOL_NAMES as _OBSERVATION_TOOL_NAMES,
+    FETCH_URL_TIMEOUT,
+    FETCH_URL_MAX_CHARS,
+    INDEX_TOKEN_BUDGET,
+    SEARCH_RESULT_LIMIT,
+)
 from noteweaver.vault import Vault
 from noteweaver.frontmatter import validate_frontmatter, extract_frontmatter
 
@@ -274,9 +281,8 @@ TOOL_SCHEMAS: list[dict] = [
 # Tool subsets
 # ------------------------------------------------------------------
 
-_OBSERVATION_TOOL_NAMES = frozenset({
-    "read_page", "search", "get_backlinks", "list_pages", "fetch_url",
-})
+
+
 
 OBSERVATION_SCHEMAS: list[dict] = [
     s for s in TOOL_SCHEMAS
@@ -541,7 +547,7 @@ def handle_fetch_url(vault: Vault, url: str) -> str:
             ),
         }
         resp = httpx.get(
-            url, follow_redirects=True, timeout=30, headers=headers
+            url, follow_redirects=True, timeout=FETCH_URL_TIMEOUT, headers=headers
         )
         resp.raise_for_status()
 
@@ -554,7 +560,7 @@ def handle_fetch_url(vault: Vault, url: str) -> str:
         html_content = doc.summary()
         md_content = markdownify(html_content, heading_style="ATX", strip=["img"])
 
-        max_chars = 15000
+        max_chars = FETCH_URL_MAX_CHARS
         truncated = ""
         if len(md_content) > max_chars:
             md_content = md_content[:max_chars]
@@ -570,7 +576,8 @@ def handle_fetch_url(vault: Vault, url: str) -> str:
 # Write tool handlers
 # ------------------------------------------------------------------
 
-INDEX_TOKEN_BUDGET = 4000
+
+
 
 
 def handle_write_page(vault: Vault, path: str, content: str) -> str:

@@ -22,12 +22,8 @@ from noteweaver.vault import Vault
 log = logging.getLogger(__name__)
 
 
-_WRITE_TOOLS = frozenset({
-    "write_page", "append_section", "update_frontmatter", "add_related_link",
-    "capture", "ingest", "organize", "restructure",
-})
-
-_MIN_EXCHANGES_FOR_JOURNAL = 3
+from noteweaver.constants import WRITE_TOOL_NAMES as _WRITE_TOOLS
+from noteweaver.constants import MIN_EXCHANGES_FOR_JOURNAL as _MIN_EXCHANGES_FOR_JOURNAL
 
 
 def make_agent(vault_path: Path) -> tuple[Vault, KnowledgeAgent, Config]:

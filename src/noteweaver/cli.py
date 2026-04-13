@@ -14,6 +14,7 @@ from rich.theme import Theme
 from prompt_toolkit import PromptSession
 from prompt_toolkit.history import FileHistory
 
+from noteweaver.constants import APPROVE_KEYWORDS, REJECT_KEYWORDS, EXIT_KEYWORDS
 from noteweaver.vault import Vault
 from noteweaver.agent import KnowledgeAgent
 from noteweaver.config import Config
@@ -112,12 +113,12 @@ def _approve_and_execute(
             agent.plan_store.update_status(plan.id, PlanStatus.REJECTED)
             return
 
-        if not answer or answer in ("n", "no", "否"):
+        if not answer or answer in REJECT_KEYWORDS:
             agent.plan_store.update_status(plan.id, PlanStatus.REJECTED)
             console.print("[info]已跳过。[/info]")
             return
 
-        if answer in ("y", "yes", "是", "好", "好的"):
+        if answer in APPROVE_KEYWORDS:
             agent.plan_store.update_status(plan.id, PlanStatus.APPROVED)
             result = agent.execute_plan(plan.id)
             console.print(f"\n[dim]{result}[/dim]")
@@ -141,12 +142,12 @@ def _approve_and_execute(
             agent._clear_pending_plan()
             return
 
-        if not answer or answer in ("n", "no", "否"):
+        if not answer or answer in REJECT_KEYWORDS:
             agent._clear_pending_plan()
             console.print("[info]已跳过。[/info]")
             return
 
-        if answer in ("y", "yes", "是", "好", "好的"):
+        if answer in APPROVE_KEYWORDS:
             result = agent.execute_organize_plan(plan)
             console.print(f"\n[dim]{result}[/dim]")
             return
@@ -196,7 +197,7 @@ def cmd_chat(vault_path: Path) -> None:
 
         if not user_input:
             continue
-        if user_input.lower() in ("exit", "quit", "/exit", "/quit"):
+        if user_input.lower() in EXIT_KEYWORDS:
             console.print("[info]Bye.[/info]")
             break
         if user_input.strip() == "/organize":

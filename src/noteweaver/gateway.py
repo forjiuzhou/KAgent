@@ -20,6 +20,7 @@ import os
 from pathlib import Path
 
 from noteweaver.adapters.base import BaseAdapter, IncomingMessage, OutgoingMessage
+from noteweaver.constants import APPROVE_KEYWORDS, GATEWAY_SAVE_INTERVAL, GATEWAY_CRON_POLL_SECONDS
 from noteweaver.plan import PlanStatus
 from noteweaver.session import (
     make_agent,
@@ -40,7 +41,7 @@ class Gateway:
         self.adapters: list[BaseAdapter] = []
         self._lock = asyncio.Lock()
         self._message_count = 0
-        self._SAVE_INTERVAL = 10
+        self._SAVE_INTERVAL = GATEWAY_SAVE_INTERVAL
         self._active_chat_ids: set[str] = set()
         self._pending_notifications: list[str] = []
         self._notify_hour = int(os.environ.get("NW_NOTIFY_HOUR", "9"))
@@ -68,9 +69,7 @@ class Gateway:
                 "No IM adapters configured. Set NW_TELEGRAM_TOKEN to enable Telegram."
             )
 
-    _APPROVE_KEYWORDS = frozenset({
-        "好", "好的", "可以", "执行", "yes", "y", "ok", "确认",
-    })
+    _APPROVE_KEYWORDS = APPROVE_KEYWORDS
 
     async def _handle_message(self, msg: IncomingMessage) -> str:
         """Route an incoming message to the Agent and return the reply.
@@ -192,7 +191,7 @@ class Gateway:
         last_notify_date = ""
 
         while True:
-            await asyncio.sleep(300)  # check every 5 minutes
+            await asyncio.sleep(GATEWAY_CRON_POLL_SECONDS)
             import time
             now = time.time()
 

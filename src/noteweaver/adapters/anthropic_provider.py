@@ -11,6 +11,7 @@ from typing import Any
 
 from noteweaver.adapters.provider import LLMProvider, CompletionResult, ToolCall
 from noteweaver.adapters.retry import with_retry
+from noteweaver.constants import ANTHROPIC_MAX_TOKENS, ANTHROPIC_SIMPLE_MAX_TOKENS
 
 
 def _openai_tools_to_anthropic(tools: list[dict]) -> list[dict]:
@@ -142,7 +143,7 @@ class AnthropicProvider(LLMProvider):
 
         kwargs: dict[str, Any] = {
             "model": model,
-            "max_tokens": 4096,
+            "max_tokens": ANTHROPIC_MAX_TOKENS,
             "messages": conversation,
             "tools": anthropic_tools,
         }
@@ -175,7 +176,7 @@ class AnthropicProvider(LLMProvider):
         system, conversation = _build_anthropic_messages(messages)
         kwargs: dict[str, Any] = {
             "model": model,
-            "max_tokens": 2048,
+            "max_tokens": ANTHROPIC_SIMPLE_MAX_TOKENS,
             "messages": conversation,
         }
         if system:

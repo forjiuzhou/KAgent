@@ -12,9 +12,8 @@ from pathlib import Path
 
 import yaml
 
-VALID_TYPES = {"source", "journal", "hub", "canonical", "archive", "note", "synthesis", "preference"}
-
-EXEMPT_PATHS = {"wiki/index.md", "wiki/log.md"}
+from noteweaver.constants import VALID_PAGE_TYPES as VALID_TYPES
+from noteweaver.constants import STRUCTURE_PATHS as EXEMPT_PATHS
 
 FRONTMATTER_PATTERN = re.compile(r"^---\s*\n(.*?)\n---\s*\n", re.DOTALL)
 

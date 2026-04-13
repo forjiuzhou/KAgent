@@ -31,6 +31,12 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import TYPE_CHECKING
 
+from noteweaver.constants import (
+    STRUCTURE_PATHS as _STRUCTURE_PATHS,
+    PREFERENCES_PATH as _PREFERENCES_PATH,
+    MIN_SYNTHESIS_LINKS,
+)
+
 if TYPE_CHECKING:
     from noteweaver.vault import Vault
 
@@ -45,13 +51,6 @@ class WriteTarget(Enum):
     JOURNAL = "journal"
     CONTENT = "content"
     SOURCE = "source"
-
-
-_STRUCTURE_PATHS = frozenset({"wiki/index.md", "wiki/log.md"})
-
-_PREFERENCES_PATH = ".schema/preferences.md"
-
-MIN_SYNTHESIS_LINKS = 2
 
 _WIKI_LINK_RE = re.compile(r"\[\[([^\]]+)\]\]")
 
