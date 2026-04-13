@@ -13,16 +13,6 @@ from __future__ import annotations
 # User interaction keywords
 # ======================================================================
 
-APPROVE_KEYWORDS = frozenset({
-    "y", "yes", "ok",
-    "好", "好的", "可以", "是", "执行", "确认",
-})
-
-REJECT_KEYWORDS = frozenset({
-    "n", "no",
-    "否",
-})
-
 EXIT_KEYWORDS = frozenset({
     "exit", "quit", "/exit", "/quit",
 })

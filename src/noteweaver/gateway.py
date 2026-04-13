@@ -20,7 +20,7 @@ import os
 from pathlib import Path
 
 from noteweaver.adapters.base import BaseAdapter, IncomingMessage, OutgoingMessage
-from noteweaver.constants import APPROVE_KEYWORDS, GATEWAY_SAVE_INTERVAL, GATEWAY_CRON_POLL_SECONDS
+from noteweaver.constants import GATEWAY_SAVE_INTERVAL, GATEWAY_CRON_POLL_SECONDS
 from noteweaver.plan import PlanStatus
 from noteweaver.session import (
     make_agent,
@@ -69,7 +69,35 @@ class Gateway:
                 "No IM adapters configured. Set NW_TELEGRAM_TOKEN to enable Telegram."
             )
 
-    _APPROVE_KEYWORDS = APPROVE_KEYWORDS
+    def _classify_plan_response(self, user_text: str) -> str:
+        """Use the LLM to classify whether the user approves or rejects a plan.
+
+        Returns "approve", "reject", or "unclear".
+        """
+        messages = [
+            {
+                "role": "system",
+                "content": (
+                    "You are a tiny intent classifier. The user was shown a "
+                    "proposed change plan and asked whether to execute it. "
+                    "Based on their reply, respond with EXACTLY one word:\n"
+                    "  approve  — if the user agrees/confirms\n"
+                    "  reject   — if the user declines/refuses\n"
+                    "  unclear  — if you genuinely cannot tell\n"
+                    "No other output."
+                ),
+            },
+            {"role": "user", "content": user_text},
+        ]
+        try:
+            raw = self.agent.provider.simple_completion(self.agent.model, messages)
+            if raw:
+                word = raw.strip().lower().split()[0]
+                if word in ("approve", "reject", "unclear"):
+                    return word
+        except Exception as e:
+            log.warning("Plan intent classification failed, treating as reject: %s", e)
+        return "reject"
 
     async def _handle_message(self, msg: IncomingMessage) -> str:
         """Route an incoming message to the Agent and return the reply.
@@ -85,30 +113,31 @@ class Gateway:
         """
         self._active_chat_ids.add(msg.chat_id)
         async with self._lock:
-            if self._pending_plan_id and msg.text.strip().lower() in self._APPROVE_KEYWORDS:
-                try:
+            if self._pending_plan_id:
+                intent = self._classify_plan_response(msg.text)
+                if intent == "approve":
+                    try:
+                        plan = self.agent.plan_store.load(self._pending_plan_id)
+                        if plan and plan.status == PlanStatus.PENDING:
+                            self.agent.plan_store.update_status(
+                                plan.id, PlanStatus.APPROVED,
+                            )
+                            result = self.agent.execute_plan(plan.id)
+                            self._pending_plan_id = None
+                            return f"✅ {result}"
+                        self._pending_plan_id = None
+                        return "该提案已不存在或已处理。"
+                    except Exception as e:
+                        self._pending_plan_id = None
+                        log.error("Plan execution failed: %s", e)
+                        return f"执行失败: {e}"
+                else:
                     plan = self.agent.plan_store.load(self._pending_plan_id)
                     if plan and plan.status == PlanStatus.PENDING:
                         self.agent.plan_store.update_status(
-                            plan.id, PlanStatus.APPROVED,
+                            plan.id, PlanStatus.REJECTED,
                         )
-                        result = self.agent.execute_plan(plan.id)
-                        self._pending_plan_id = None
-                        return f"✅ {result}"
                     self._pending_plan_id = None
-                    return "该提案已不存在或已处理。"
-                except Exception as e:
-                    self._pending_plan_id = None
-                    log.error("Plan execution failed: %s", e)
-                    return f"执行失败: {e}"
-
-            if self._pending_plan_id:
-                plan = self.agent.plan_store.load(self._pending_plan_id)
-                if plan and plan.status == PlanStatus.PENDING:
-                    self.agent.plan_store.update_status(
-                        plan.id, PlanStatus.REJECTED,
-                    )
-                self._pending_plan_id = None
 
             exchange: dict = {"user": msg.text, "tools": [], "reply": ""}
             reply_parts = []
@@ -138,7 +167,7 @@ class Gateway:
                 summary = self.agent.format_plan(plan)
                 reply_parts.append(
                     f"\n\n---\n\n📋 *整理提案* [{plan.id}]\n\n{summary}\n\n"
-                    "回复「好的」执行，或发送其他消息跳过。"
+                    "要执行吗？回复确认或拒绝即可。"
                 )
 
             self._message_count += 1
