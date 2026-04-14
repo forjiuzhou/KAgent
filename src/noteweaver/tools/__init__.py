@@ -1,1 +1,1 @@
-"""Knowledge operation tools — the agent's entire capability boundary."""
+"""tools/ — tool schemas, handlers, and dispatch for LLM function calling."""
