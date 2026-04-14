@@ -1,149 +1,101 @@
 # AGENTS.md
 
-Instructions for coding agents (Cursor, Codex, Claude Code, etc.) working on the NoteWeaver codebase.
+Instructions for coding agents (Cursor, Codex, Claude Code, etc.) working on NoteWeaver.
 
 ## Quick Reference
 
-```
-python3 -m pytest tests/ -v          # run all tests (~0.5s, no API keys needed)
+```bash
 pip install -e .                     # install in dev mode
-pip install -e ".[anthropic]"        # include Anthropic support
-pip install -e ".[all]"              # all optional deps
+pip install -e ".[all]"              # all optional deps (anthropic, telegram, feishu)
+python3 -m pytest tests/ -v          # run all tests (~10s, no API keys needed)
 ```
 
 Offline CLI commands (no API key): `nw init`, `nw status`, `nw rebuild-index`, `nw import <path>`, `nw trace`, `nw help`
 
 LLM-powered commands (need API key): `nw chat`, `nw lint`, `nw digest`, `nw ingest <url>`, `nw import-sources`, `nw gateway`
 
-## Architecture Map
-
-NoteWeaver is a single Python package at `src/noteweaver/` (~5700 LOC). No frameworks — just OpenAI/Anthropic SDKs, tool calling, and file I/O.
-
-**Primary interface: Gateway** (long-running chat agent via Telegram/IM). CLI is a secondary interface for power users. All features must work through `agent.chat()` — gateway just passes user messages to it.
-
-### Data flow
+## Repo Layout
 
 ```
-User input (Telegram / CLI)
-  → KnowledgeAgent.chat()             ← continuous conversation
-    → _build_messages_for_query()     ← context assembly (schema always included)
-    → LLMProvider.chat_completion()   ← ALL tools (read + write)
-    → dispatch_tool()                 ← execute any tool
-    → if LLM emits <<skill:name>>:
-        skill.prepare() → execute()   ← multi-step workflow via tools
-    → loop up to 25 steps
-  → Agent proposes in natural language → user approves → agent writes
-  → save_transcript() + save_trace() + save_session_memory()
+src/noteweaver/            Python package (~9300 LOC)
+├── agent/                 Core agent loop, system prompt, context assembly
+│   ├── core.py              KnowledgeAgent class — chat(), context, memory, planning
+│   └── prompts.py           System prompt constants + provider factory
+├── vault/                 On-disk knowledge vault
+│   ├── core.py              Vault class — file I/O, init, tags, resolve
+│   ├── seeds.py             Seed templates (INITIAL_SCHEMA etc.)
+│   ├── git.py               Git init/commit, OperationContext
+│   ├── indexing.py          Search index, backlinks, FTS
+│   ├── audit.py             Health audit, metrics, tag similarity
+│   ├── context.py           LLM-facing context builders
+│   └── organize.py          Import organization, rebuild_index
+├── tools/                 Tool schemas, handlers, dispatch
+│   ├── schemas.py           10 tool schemas (TOOL_SCHEMAS)
+│   ├── handlers_read.py     5 read tool handlers
+│   ├── handlers_write.py    4 write tool handlers
+│   ├── legacy.py            Deprecated legacy handlers
+│   ├── dispatch.py          TOOL_HANDLERS registry + dispatch_tool()
+│   ├── definitions.py       Re-export layer (backward compat)
+│   └── policy.py            Pre-dispatch safety gates
+├── skills/                Multi-step workflows above tools
+├── adapters/              LLM providers (OpenAI, Anthropic) + IM (Telegram)
+├── cli.py                 CLI commands + main()
+├── session.py             Shared session logic (agent construction, finalization)
+├── gateway.py             Long-running Telegram gateway + cron
+├── trace.py               Structured trace for observability
+├── config.py              Config from .meta/config.yaml + env vars
+├── plan.py                Plan data model (legacy)
+├── search.py              SQLite FTS5 full-text search
+├── backlinks.py           Wiki-link extraction + backlink index
+├── frontmatter.py         YAML frontmatter validation
+└── constants.py           Shared constants
+
+tests/                     648 tests, all offline, ~10s
+references/                Read-only reference projects (DO NOT MODIFY)
+deploy/                    Docker/systemd deployment scripts
+DESIGN.md                  Product philosophy (~1000 lines, not code architecture)
 ```
 
-### Module map
+## Architecture (5-line summary)
 
-| Module | LOC | Role | Key types/functions |
-|--------|-----|------|---------------------|
-| `agent.py` | ~1200 | Agent loop, context assembly, system prompt, run_skill() | `KnowledgeAgent`, `chat()`, `run_skill()`, `SYSTEM_PROMPT` |
-| `session.py` | ~280 | Shared session logic (agent construction, finalization, journal, digest prompts) — used by both cli.py and gateway.py | `make_agent()`, `finalize_session()`, `build_digest_prompt()` |
-| `plan.py` | ~200 | Plan data model (legacy, kept for backward compat) | `Plan`, `PlanStatus`, `PlanStore` |
-| `tools/definitions.py` | ~1100 | 9 tool schemas + legacy handlers + dispatch | `TOOL_SCHEMAS`, `TOOL_HANDLERS`, `dispatch_tool()` |
-| `skills/__init__.py` | ~40 | Skill registry | `get_skill()`, `list_skills()`, `SKILL_REGISTRY` |
-| `skills/base.py` | ~100 | Skill ABC + context/result types | `Skill`, `SkillContext`, `SkillResult` |
-| `skills/import_sources.py` | ~130 | Bulk-import source files into wiki | `ImportSources` |
-| `skills/organize_wiki.py` | ~120 | Audit + remediate wiki health | `OrganizeWiki` |
-| `vault.py` | 882 | On-disk vault: reads, writes, git batching, FTS, stats | `Vault`, `write_file()`, `read_file()`, `init()`, `rebuild_search_index()` |
-| `cli.py` | ~500 | CLI commands, interactive plan approval, UI | `cmd_chat()`, `cmd_trace()`, `_approve_and_execute()`, `main()` |
-| `tools/policy.py` | ~300 | Pre-dispatch safety gates (read-before-write, etc.) | `check_pre_dispatch()`, `PolicyContext` |
-| `trace.py` | 334 | Structured trace for agent observability | `TraceCollector`, `record_tool_call()`, `render_human()` |
-| `gateway.py` | ~200 | Long-running gateway (Telegram + cron digest/lint) | `run_gateway()`, `Gateway` |
-| `adapters/anthropic_provider.py` | 206 | Anthropic Messages API adapter | `AnthropicProvider` |
-| `adapters/retry.py` | 127 | Exponential backoff for LLM calls | `with_retry()` |
-| `config.py` | 127 | Config from `.meta/config.yaml` + env vars | `Config.load()` |
-| `adapters/telegram_adapter.py` | 120 | Telegram bot adapter | `TelegramAdapter` |
-| `search.py` | 115 | SQLite FTS5 full-text search | `SearchIndex` |
-| `frontmatter.py` | 108 | YAML frontmatter validation | `validate_frontmatter()`, `extract_frontmatter()` |
-| `backlinks.py` | 106 | Wiki-link extraction and backlink index | `BacklinkIndex` |
-| `adapters/provider.py` | 54 | Abstract LLM provider interface | `LLMProvider`, `CompletionResult` |
-| `adapters/openai_provider.py` | 54 | OpenAI SDK adapter | `OpenAIProvider` |
-| `adapters/base.py` | 40 | Abstract IM adapter interface | `IMAdapter` |
+**Primary interface: Gateway** (Telegram) — user messages go to `agent.chat()`.
+CLI is secondary. All features work through `agent.chat()`.
+**Three layers**: 9 primitive tools → skills (multi-step workflows) → chat.
+Agent proposes changes in natural language → user approves → agent writes.
+Schema from `.schema/` is always in the system prompt.
 
-### Where things happen
+## Boundary Rules
 
-| "I want to change..." | Look at... |
-|------------------------|------------|
-| What tools the agent has | `tools/definitions.py` — `TOOL_SCHEMAS` (all tools, single set) |
-| Add a multi-step workflow | `skills/` — subclass `Skill`, register in `__init__.py` |
-| How the agent converses and writes | `agent.py` — `SYSTEM_PROMPT`, `chat()` |
-| What schema rules the agent knows | `agent.py` — `.schema/schema.md` injection |
-| What the agent is allowed to do | `tools/policy.py` — `check_pre_dispatch()` |
-| What context the LLM sees | `agent.py` — `_build_messages_for_query()` |
-| How long conversations are compressed | `agent.py` — `_update_session_summary()` + `_apply_tool_result_tiers()` |
-| How files are read/written on disk | `vault.py` — `read_file()`, `write_file()` |
-| How git commits happen | `vault.py` — `_end_operation()`, `_git_commit()` |
-| How search works | `search.py` — `SearchIndex` (SQLite FTS5) |
-| The CLI command routing | `cli.py` — `main()` at the bottom |
-| How sessions are saved on exit | `session.py` — `finalize_session()` (shared by CLI + Gateway) |
-| How agents are constructed | `session.py` — `make_agent()` (shared by CLI + Gateway) |
-| Agent run traces (observability) | `trace.py` — `TraceCollector`; CLI: `nw trace` |
-| How Anthropic messages are shaped | `adapters/anthropic_provider.py` — `_to_anthropic_messages()` |
-| Gateway cron logic | `gateway.py` — `_periodic_tasks()` |
+- **`references/` is read-only.** Contains source code of successful projects for architecture reference. **Never modify files under `references/`.** Two projects:
+  - `references/claude-code/` — Claude Code source snapshot (TypeScript, ~1900 files)
+  - `references/openclaw/` — OpenClaw project (TypeScript, IM agent framework)
 
-### Key design decisions to know
+- **Progressive disclosure for docs**: only read the AGENTS.md for the boundary you are touching.
+  - Touching `vault/` → read `src/noteweaver/vault/AGENTS.md`
+  - Touching `agent/` → read `src/noteweaver/agent/AGENTS.md`
+  - Touching `tools/` → read `src/noteweaver/tools/AGENTS.md`
+  - For everything else → this file is sufficient.
 
-1. **Continuous conversation flow.** All tools (read + write) available during chat. Agent proposes changes in natural language, writes after user approval. No separate Plan/execute phases.
+## Where to Look
 
-2. **Schema always in context.** `PROMPT_SCHEMA_CORE` (~800 tokens) is always in the system prompt. Agent always knows wiki rules without needing to read schema.md.
+| Task | Primary file(s) |
+|------|-----------------|
+| Add/change a tool | `tools/schemas.py` + `tools/handlers_read.py` or `handlers_write.py` + `tools/dispatch.py` + `tools/policy.py` |
+| Add a skill | `skills/` — new file + register in `skills/__init__.py` |
+| Change what context LLM sees | `agent/core.py` → `_build_messages_for_query()` |
+| Change agent behavior | `agent/prompts.py` → prompt constants |
+| Change write permission rules | `tools/policy.py` → `check_pre_dispatch()` |
+| Change vault file operations | `vault/core.py` |
+| Change session finalization | `session.py` |
+| Add a CLI command | `cli.py` → add `cmd_*()` + routing in `main()` |
+| Change vault audit | `vault/audit.py` |
+| Change LLM context builders | `vault/context.py` |
+| Change git behavior | `vault/git.py` |
 
-3. **Three layers: tools → skills → chat.** 9 primitive tools (5 read + 4 write) are the atomic operations. Skills (`skills/`) are multi-step workflows triggered by the LLM when it recognises skill-level intent — the LLM emits `<<skill:name>>` markers, the chat loop intercepts and executes. Gateway is the primary interface; CLI wraps `agent.chat()` or `agent.run_skill()`. Legacy handlers (capture, organize, etc.) are deprecated in favor of skills.
+## Test Patterns
 
-4. **Transcript is append-only.** `self.messages` is never mutated. Context compression happens only in the query view (`_build_messages_for_query()`).
+All tests use `auto_git=False` vaults and mocked LLM providers:
 
-5. **Tool results are tiered.** Recent tool results stay full, older ones get previewed, stale ones become placeholders. See `_apply_tool_result_tiers()`.
-
-6. **Git batching.** All writes within a single chat turn are batched into one git commit via `_operation_depth` tracking in `Vault`.
-
-7. **Policy enforces safety rules in code, not in the prompt.** Read-before-write, synthesis link requirements, unattended mode restrictions — all in `policy.py`.
-
-## Test Map
-
-Tests are in `tests/`. All use pytest, create temp vaults with `auto_git=False`, and mock the LLM provider. No API keys needed.
-
-| Test file | Tests | What it covers |
-|-----------|-------|----------------|
-| `test_skills.py` | Skill registry, prepare/execute/dry-run, agent.run_skill() |
-| `test_vault.py` | Vault init, read/write, directory structure, stats, import |
-| `test_tools.py` | Tool handler execution (dispatch_tool for each tool) |
-| `test_fine_grained_tools.py` | append_section, append_to_section, update_frontmatter, add_related_link |
-| `test_plan.py` | Plan data model, PlanStore CRUD, staleness check, classify_change_type |
-| `test_policy.py` | Policy context tracking, tier classification, pre-dispatch checks |
-| `test_attended_policy.py` | Attended-mode gates: read-before-write, dedup, synthesis links |
-| `test_content_gates.py` | Content-layer write restrictions (unattended, source protection) |
-| `test_context_management.py` | Transcript save/load, session memory, journal generation |
-| `test_prompt_engine.py` | System prompt structure, size budgets, content verification |
-| `test_provider.py` | Provider factory, message shaping, Anthropic conversion |
-| `test_integration.py` | End-to-end agent flows with mocked LLM |
-| `test_trace.py` | Trace collector, JSONL persistence, rendering, agent integration |
-| `test_retry_and_journal.py` | Retry logic, journal summary extraction |
-| `test_search.py` | FTS5 index build, search queries |
-| `test_backlinks.py` | Wiki-link extraction, backlink graph |
-| `test_frontmatter.py` | YAML frontmatter validation rules |
-| `test_workset.py` | Session memory workset merging |
-| `test_promote_insight.py` | Journal → wiki promotion tool |
-| `test_git.py` | Git auto-commit integration |
-| `test_telegram_adapter.py` | Telegram adapter basics |
-| `test_session.py` | Shared session logic (make_agent, finalize, digest prompts) |
-
-**Pattern for adding a new tool:**
-1. Add schema to `TOOL_SCHEMAS` and handler to `TOOL_HANDLERS` in `tools/definitions.py`
-2. If it's a read tool, also add to `_OBSERVATION_TOOL_NAMES`
-3. Add policy tier in `TOOL_TIERS` in `tools/policy.py`
-4. Add tests in `test_tools.py` (or a new file for complex tools)
-5. If the tool writes, add policy tests in `test_attended_policy.py`
-
-**Pattern for adding a new skill:**
-1. New file in `skills/` subclassing `Skill` — implement `name`, `description`, `prepare()`, `execute()`
-2. Register in `skills/__init__.py` → `SKILL_REGISTRY`
-3. Add tests in `test_skills.py`
-4. Add CLI command in `cli.py` if it should be user-invocable
-
-**Pattern for adding a test:**
 ```python
 @pytest.fixture
 def vault(tmp_path: Path) -> Vault:
@@ -157,28 +109,25 @@ def agent(vault: Vault) -> KnowledgeAgent:
     return KnowledgeAgent(vault=vault, provider=mock_provider)
 ```
 
+**Adding a new tool**: schema in `tools/schemas.py` → handler in `handlers_read/write.py` → register in `tools/dispatch.py` → tier in `tools/policy.py` → tests in `test_tools.py`
+
+**Adding a new skill**: new file in `skills/` → register in `skills/__init__.py` → tests in `test_skills.py`
+
+## Key Design Facts
+
+- **Continuous conversation flow.** All tools (read + write) available during chat. No separate plan/execute phases.
+- **Schema always in context.** `.schema/schema.md` injected into system prompt.
+- **Transcript is append-only.** `self.messages` never mutated. Compression only in query view.
+- **Tool results are tiered.** Full → preview → placeholder based on age.
+- **Git batching.** All writes in one chat turn → one git commit via `_operation_depth`.
+- **Safety in code, not prompt.** Read-before-write etc. enforced in `tools/policy.py`.
+
 ## Gotchas
 
-- `$HOME/.local/bin` must be on `PATH` for the `nw` CLI entry point to work
-- `nw lint` and `nw digest` use the LLM agent loop — they need an API key even though they sound like static checks
-- The vault auto-initializes a Git repo on `nw init`; tests use `auto_git=False` to skip this
-- The agent has 9 tools (5 read + 4 write) — `tools/definitions.py` is the source of truth
-- All tools available during chat (`CHAT_TOOL_SCHEMAS` == `TOOL_SCHEMAS` in V2)
-- Legacy tools (capture, organize, restructure, ingest, survey_topic) still dispatchable but not in schemas — deprecated in favor of skills
-- Skills (`skills/`) are the proper way to do multi-step workflows; use `agent.run_skill()` or CLI `nw import-sources` / `nw lint`
-- Feishu adapter is referenced in CLI help but not implemented; only Telegram works
-- DESIGN.md is a product design document (~1000 lines), not a code architecture doc — don't rely on it for code navigation
-- No project-level linter is configured (no ruff/flake8/mypy/pylint in `pyproject.toml`)
-
-## Trace / Observability
-
-Agent runs produce structured traces at `.meta/traces/*.trace.jsonl`. Use `nw trace` to list and view them. Each trace records:
-
-- **context_assembly**: what the LLM saw (system prompt size, session memory, summary state, token estimates)
-- **tool_call**: every tool dispatch (name, args, policy verdict, duration, result preview, errors)
-- **turn_end**: step count, total duration, max-steps detection
-
-To analyze a trace with an external coding agent:
-```bash
-nw trace --raw <file>   # outputs JSONL to stdout — paste into Claude/Codex conversation
-```
+- `$HOME/.local/bin` must be on PATH for `nw` CLI
+- `nw lint` and `nw digest` need API keys (they run the agent loop)
+- Tests use `auto_git=False` — real vault auto-inits Git
+- 10 tools in TOOL_SCHEMAS (9 + spawn_subagent) — `tools/schemas.py` is truth
+- Legacy tools (capture, organize, restructure, ingest, survey_topic) in `tools/legacy.py` — deprecated
+- Skills are in `skills/` — use `agent.run_skill("name")` or CLI `nw import-sources` / `nw lint`
+- DESIGN.md is product philosophy, not code architecture
