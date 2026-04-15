@@ -91,7 +91,7 @@ RETRYABLE_STATUS_CODES = frozenset({
 
 OBSERVATION_TOOL_NAMES = frozenset({
     "read_page", "search", "get_backlinks", "list_pages", "fetch_url",
-    "spawn_subagent",
+    "spawn_subagent", "audit_vault",
 })
 
 WRITE_TOOL_NAMES = frozenset({
@@ -126,3 +126,11 @@ MIN_EXCHANGES_FOR_JOURNAL = 3
 
 GATEWAY_SAVE_INTERVAL = 10
 GATEWAY_CRON_POLL_SECONDS = 300
+
+# ======================================================================
+# Job system
+# ======================================================================
+
+JOB_DEFAULT_MAX_ITERATIONS = 30
+JOB_STALL_THRESHOLD = 3
+JOB_DIR = ".meta/jobs"

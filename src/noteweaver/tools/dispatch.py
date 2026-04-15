@@ -11,6 +11,7 @@ from noteweaver.tools.handlers_read import (
     handle_get_backlinks,
     handle_list_pages,
     handle_fetch_url,
+    handle_audit_vault,
 )
 from noteweaver.tools.handlers_write import (
     handle_write_page,
@@ -35,6 +36,7 @@ TOOL_HANDLERS: dict[str, Any] = {
     "get_backlinks": handle_get_backlinks,
     "list_pages": handle_list_pages,
     "fetch_url": handle_fetch_url,
+    "audit_vault": handle_audit_vault,
     "write_page": handle_write_page,
     "append_section": handle_append_section,
     "update_frontmatter": handle_update_frontmatter,

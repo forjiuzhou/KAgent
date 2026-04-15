@@ -62,7 +62,7 @@ class TestPromptStructure:
     def test_tools_has_all_tools(self) -> None:
         from noteweaver.tools.definitions import TOOL_SCHEMAS, CHAT_TOOL_SCHEMAS
 
-        assert len(TOOL_SCHEMAS) == 10
+        assert len(TOOL_SCHEMAS) == 11
         for tool in [
             "read_page",
             "search",

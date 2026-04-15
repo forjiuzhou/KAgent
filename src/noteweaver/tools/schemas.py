@@ -244,6 +244,24 @@ TOOL_SCHEMAS: list[dict] = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "audit_vault",
+            "description": (
+                "Run a full health audit on the vault. Returns structured "
+                "findings: missing frontmatter, orphan pages, broken links, "
+                "missing summaries, hub candidates, stale imports, missing "
+                "connections, and similar tags. Use this to understand the "
+                "overall health of the knowledge base."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {},
+                "required": [],
+            },
+        },
+    },
     # ------------------------------------------------------------------
     # Sub-agent tool
     # ------------------------------------------------------------------

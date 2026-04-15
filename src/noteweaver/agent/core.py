@@ -57,6 +57,7 @@ from noteweaver.agent.prompts import (
     PROMPT_TOOLS,
     PROMPT_SKILLS_HEADER,
     SYSTEM_PROMPT_BASE,
+    JOB_WORKER_PROTOCOLS,
     _format_available_skills,
     create_provider,
 )
@@ -182,6 +183,30 @@ class KnowledgeAgent:
         skills = self.vault.load_skills()
         if skills:
             prompt += "\n\n" + _format_available_skills(skills)
+
+        return prompt
+
+    # ------------------------------------------------------------------
+    # Job worker system prompt
+    # ------------------------------------------------------------------
+
+    def _build_job_system_prompt(self) -> str:
+        """Build system prompt for a job worker agent.
+
+        Loads schema.md + preferences.md from .schema/, but replaces
+        protocols.md with job-specific worker protocols.
+        """
+        prompt = PROMPT_IDENTITY + "\n" + PROMPT_TOOLS + "\n" + JOB_WORKER_PROTOCOLS
+
+        schema_path = self.vault.schema_dir / "schema.md"
+        if schema_path.is_file():
+            schema_content = schema_path.read_text(encoding="utf-8")
+            prompt += f"\n\n{schema_content}"
+
+        prefs_path = self.vault.schema_dir / "preferences.md"
+        if prefs_path.is_file():
+            prefs_content = prefs_path.read_text(encoding="utf-8")
+            prompt += f"\n\n{prefs_content}"
 
         return prompt
 
@@ -492,6 +517,14 @@ class KnowledgeAgent:
                     )
             except (json.JSONDecodeError, OSError):
                 pass
+
+        try:
+            from noteweaver.job import format_active_jobs_summary
+            jobs_summary = format_active_jobs_summary(self.vault)
+            if jobs_summary:
+                system_content += "\n\n" + jobs_summary
+        except Exception:
+            pass
 
         result: list[dict] = [{"role": "system", "content": system_content}]
 

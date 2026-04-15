@@ -233,6 +233,46 @@ def handle_list_pages(
     return "\n".join(lines)
 
 
+def handle_audit_vault(vault: Vault) -> str:
+    """Run audit_vault and format the result as a readable report."""
+    from noteweaver.vault.audit import audit_vault
+
+    report = audit_vault(vault)
+    lines = [f"## Vault Audit\n\n{report.get('summary', 'No summary')}\n"]
+
+    sections = [
+        ("missing_frontmatter", "Missing Frontmatter", lambda items: [f"- {p}" for p in items]),
+        ("orphan_pages", "Orphan Pages", lambda items: [f"- {p}" for p in items]),
+        ("broken_links", "Broken Links", lambda items: [
+            f"- {bl['page']}: [[{bl['link_title']}]]" for bl in items
+        ]),
+        ("missing_summaries", "Missing Summaries", lambda items: [f"- {p}" for p in items]),
+        ("hub_candidates", "Hub Candidates", lambda items: [
+            f"- tag '{hc['tag']}' ({hc['page_count']} pages)" for hc in items
+        ]),
+        ("stale_imports", "Stale Imports", lambda items: [
+            f"- {si['path']} ({si['days_since_update']}d)" for si in items
+        ]),
+        ("missing_connections", "Missing Connections", lambda items: [
+            f"- {mc['page_a']} ↔ {mc['page_b']} (shared: {', '.join(mc['shared_tags'][:3])})"
+            for mc in items
+        ]),
+        ("similar_tags", "Similar Tags", lambda items: [
+            f"- '{st['tag_a']}' ≈ '{st['tag_b']}' ({st['reason']})" for st in items
+        ]),
+    ]
+    for key, title, formatter in sections:
+        items = report.get(key, [])
+        if items:
+            lines.append(f"### {title} ({len(items)})")
+            lines.extend(formatter(items[:20]))
+            if len(items) > 20:
+                lines.append(f"... and {len(items) - 20} more")
+            lines.append("")
+
+    return "\n".join(lines)
+
+
 def handle_fetch_url(vault: Vault, url: str) -> str:
     try:
         import httpx

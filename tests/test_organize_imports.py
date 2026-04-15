@@ -47,7 +47,7 @@ class TestToolRegistration:
         schema_names = {s["function"]["name"] for s in TOOL_SCHEMAS}
         assert "organize" not in schema_names
         assert "organize" in TOOL_HANDLERS
-        assert len(schema_names) == 10
+        assert len(schema_names) == 11
 
     def test_ingest_in_schemas(self) -> None:
         schema_names = {s["function"]["name"] for s in TOOL_SCHEMAS}
