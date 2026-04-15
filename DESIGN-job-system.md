@@ -140,6 +140,10 @@ missing frontmatter、missing summaries 等结构性问题。这是我们的"编
    和 Structure Protocols，把 Change Protocols 替换为后台执行约束。
    代码层面在 `_build_job_system_prompt()` 中实现。
 
+9. **Schema 变更必须在合同中声明** — 如果任务涉及修改 `.schema/` 下的文件
+   （schema.md、protocols.md、preferences.md），agent 在协商合同时必须明确写出，
+   用户确认合同时即知晓。Worker 的 job-specific protocols 里强制要求这一点。
+
 ### 3.3 Acceptance Criteria 的两层验证
 
 合同协商阶段就把每条 criteria 的验证方式定下来：
@@ -182,6 +186,7 @@ Prompt 里指导 worker：
 - 如果对上轮变更有疑惑，可以用工具查看详细 diff
 - 在写之前先读（保留 Observation Protocols）
 - 不要假设某个东西没有实现（Ralph 的教训：search before create）
+- 只做合同中约定的事。如果合同未声明 schema 变更，不要动 `.schema/` 下的文件
 
 ### 3.5 通知策略
 
