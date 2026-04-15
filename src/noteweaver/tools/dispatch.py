@@ -17,6 +17,8 @@ from noteweaver.tools.handlers_write import (
     handle_append_section,
     handle_update_frontmatter,
     handle_add_related_link,
+    handle_create_job,
+    handle_start_job,
 )
 from noteweaver.tools.legacy import (
     handle_survey_topic,
@@ -39,6 +41,9 @@ TOOL_HANDLERS: dict[str, Any] = {
     "append_section": handle_append_section,
     "update_frontmatter": handle_update_frontmatter,
     "add_related_link": handle_add_related_link,
+    # Job tools
+    "create_job": handle_create_job,
+    "start_job": handle_start_job,
     # spawn_subagent is intercepted by agent.chat() — stub for dispatch_tool
     "spawn_subagent": lambda vault, task="": (
         "Error: spawn_subagent must be called from agent.chat() context"

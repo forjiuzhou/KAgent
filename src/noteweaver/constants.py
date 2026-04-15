@@ -97,6 +97,7 @@ OBSERVATION_TOOL_NAMES = frozenset({
 WRITE_TOOL_NAMES = frozenset({
     "write_page", "append_section", "update_frontmatter", "add_related_link",
     "capture", "ingest", "organize", "restructure",
+    "create_job", "start_job",
 })
 
 # ======================================================================

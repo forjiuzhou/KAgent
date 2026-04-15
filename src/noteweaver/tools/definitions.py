@@ -37,6 +37,8 @@ from noteweaver.tools.handlers_write import (  # noqa: F401
     handle_append_section,
     handle_update_frontmatter,
     handle_add_related_link,
+    handle_create_job,
+    handle_start_job,
 )
 
 # Legacy handlers
