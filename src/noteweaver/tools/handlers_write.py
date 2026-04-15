@@ -1,14 +1,16 @@
-"""Write tool handlers: write_page, append_section, update_frontmatter, add_related_link."""
+"""Write tool handlers: write_page, append_section, update_frontmatter, add_related_link, create_job, start_job."""
 
 from __future__ import annotations
 
 import re
+from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
 import yaml
 
 from noteweaver.constants import INDEX_TOKEN_BUDGET
 from noteweaver.frontmatter import validate_frontmatter, extract_frontmatter
+from noteweaver.job import Job, JobStatus, JobStore, WriteScope, generate_job_id
 from noteweaver.tools.handlers_read import resolve_path_or_title
 
 if TYPE_CHECKING:
@@ -125,3 +127,67 @@ def handle_add_related_link(
 
     vault.write_file(path, new_content)
     return f"OK: added {link} to Related section of {path}"
+
+
+def handle_create_job(
+    vault: Vault,
+    goal: str,
+    acceptance_criteria: list[str],
+    evaluator_prompt: str,
+    write_scope: dict | None = None,
+    max_iterations: int = 10,
+) -> str:
+    """Create a background job in DRAFT status."""
+    if not goal:
+        return "Error: goal is required"
+    if not acceptance_criteria:
+        return "Error: at least one acceptance criterion is required"
+    if not evaluator_prompt:
+        return "Error: evaluator_prompt is required"
+
+    ws = WriteScope.from_dict(write_scope) if write_scope else WriteScope()
+
+    now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    job = Job(
+        id=generate_job_id(),
+        status=JobStatus.DRAFT,
+        created_at=now,
+        updated_at=now,
+        goal=goal,
+        acceptance_criteria=list(acceptance_criteria),
+        evaluator_prompt=evaluator_prompt,
+        write_scope=ws,
+        max_iterations=max_iterations,
+    )
+
+    store = JobStore(vault.root / ".meta")
+    store.save(job)
+
+    criteria_text = "\n".join(f"  {i+1}. {c}" for i, c in enumerate(job.acceptance_criteria))
+    return (
+        f"OK: created job [{job.id}] in DRAFT status.\n"
+        f"Goal: {job.goal}\n"
+        f"Acceptance criteria:\n{criteria_text}\n"
+        f"Max iterations: {job.max_iterations}\n"
+        f"Call start_job('{job.id}') after user confirms."
+    )
+
+
+def handle_start_job(vault: Vault, job_id: str) -> str:
+    """Transition a DRAFT job to READY for background execution."""
+    if not job_id:
+        return "Error: job_id is required"
+
+    store = JobStore(vault.root / ".meta")
+    job = store.load(job_id)
+    if job is None:
+        return f"Error: job '{job_id}' not found"
+
+    updated = store.update_status(job_id, JobStatus.READY)
+    if updated is None:
+        return (
+            f"Error: cannot start job '{job_id}' — "
+            f"current status is {job.status.value} (must be draft)"
+        )
+
+    return f"OK: job [{job_id}] is now READY for background execution."

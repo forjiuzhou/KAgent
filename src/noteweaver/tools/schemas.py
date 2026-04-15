@@ -245,6 +245,86 @@ TOOL_SCHEMAS: list[dict] = [
         },
     },
     # ------------------------------------------------------------------
+    # Job tools
+    # ------------------------------------------------------------------
+    {
+        "type": "function",
+        "function": {
+            "name": "create_job",
+            "description": (
+                "Create a background job from a negotiated contract. The job "
+                "starts in DRAFT status. After the user confirms, call "
+                "start_job to transition it to READY for background execution."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "goal": {
+                        "type": "string",
+                        "description": "What this job should accomplish",
+                    },
+                    "acceptance_criteria": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "List of verifiable acceptance criteria",
+                    },
+                    "evaluator_prompt": {
+                        "type": "string",
+                        "description": "Evaluation method for the quality reviewer",
+                    },
+                    "write_scope": {
+                        "type": "object",
+                        "description": "Constraints on what the job may write",
+                        "properties": {
+                            "allowed_path_prefixes": {
+                                "type": "array",
+                                "items": {"type": "string"},
+                                "description": "Path prefixes the job may write to, e.g. ['wiki/concepts/', 'sources/']",
+                            },
+                            "allowed_tools": {
+                                "type": "array",
+                                "items": {"type": "string"},
+                                "description": "Tool names the job may use, e.g. ['write_page', 'append_section']",
+                            },
+                            "max_pages": {
+                                "type": "integer",
+                                "description": "Maximum number of pages the job may create or modify. Default: 50",
+                                "default": 50,
+                            },
+                        },
+                    },
+                    "max_iterations": {
+                        "type": "integer",
+                        "description": "Maximum generator/evaluator iterations. Default: 10",
+                        "default": 10,
+                    },
+                },
+                "required": ["goal", "acceptance_criteria", "evaluator_prompt"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "start_job",
+            "description": (
+                "Transition a DRAFT job to READY so it will be picked up "
+                "by the background scheduler. Only call this after the user "
+                "has confirmed the job contract."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "job_id": {
+                        "type": "string",
+                        "description": "The ID of the job to start",
+                    },
+                },
+                "required": ["job_id"],
+            },
+        },
+    },
+    # ------------------------------------------------------------------
     # Sub-agent tool
     # ------------------------------------------------------------------
     {

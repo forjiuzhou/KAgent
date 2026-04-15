@@ -33,6 +33,10 @@ class TestToolTierMapping:
         assert TOOL_TIERS["restructure"] == RiskTier.HIGH_WRITE
         assert TOOL_TIERS["write_page"] == RiskTier.HIGH_WRITE
 
+    def test_job_tools_low_write(self) -> None:
+        assert TOOL_TIERS["create_job"] == RiskTier.LOW_WRITE
+        assert TOOL_TIERS["start_job"] == RiskTier.LOW_WRITE
+
 
 class TestPolicyContext:
     def test_record_survey_topic(self) -> None:
@@ -188,3 +192,31 @@ class TestCheckPreDispatch:
         ctx = PolicyContext()
         v = check_pre_dispatch("unknown_tool", {}, ctx)
         assert v.allowed
+
+    def test_create_job_allowed_attended(self) -> None:
+        ctx = PolicyContext(attended=True)
+        v = check_pre_dispatch("create_job", {
+            "goal": "Import papers",
+            "acceptance_criteria": ["each paper has a page"],
+            "evaluator_prompt": "check quality",
+        }, ctx)
+        assert v.allowed
+
+    def test_start_job_allowed_attended(self) -> None:
+        ctx = PolicyContext(attended=True)
+        v = check_pre_dispatch("start_job", {"job_id": "job-20260414-abcd"}, ctx)
+        assert v.allowed
+
+    def test_create_job_blocked_unattended(self) -> None:
+        ctx = PolicyContext(attended=False)
+        v = check_pre_dispatch("create_job", {
+            "goal": "Import papers",
+            "acceptance_criteria": ["each paper has a page"],
+            "evaluator_prompt": "check quality",
+        }, ctx)
+        assert not v.allowed
+
+    def test_start_job_blocked_unattended(self) -> None:
+        ctx = PolicyContext(attended=False)
+        v = check_pre_dispatch("start_job", {"job_id": "job-20260414-abcd"}, ctx)
+        assert not v.allowed

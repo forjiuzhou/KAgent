@@ -36,7 +36,7 @@ class TestToolSchemas:
         assert schema_names <= handler_names
 
     def test_schema_count(self) -> None:
-        assert len(TOOL_SCHEMAS) == 10
+        assert len(TOOL_SCHEMAS) == 12
 
 
 class TestDispatch:
@@ -495,3 +495,89 @@ class TestDispatch:
             {"path": "wiki/index.md", "content": big_index},
         )
         assert "Warning" in result
+
+    def test_create_job(self, vault: Vault) -> None:
+        result = dispatch_tool(
+            vault,
+            "create_job",
+            {
+                "goal": "Import 20 papers into the wiki",
+                "acceptance_criteria": [
+                    "Each paper has a concept page",
+                    "No orphan pages",
+                ],
+                "evaluator_prompt": "Check page quality and cross-links",
+                "write_scope": {
+                    "allowed_path_prefixes": ["wiki/concepts/", "sources/"],
+                    "allowed_tools": ["write_page", "append_section"],
+                    "max_pages": 30,
+                },
+                "max_iterations": 5,
+            },
+        )
+        assert "OK" in result
+        assert "DRAFT" in result
+        assert "Import 20 papers" in result
+        assert "start_job" in result
+
+    def test_create_job_missing_goal(self, vault: Vault) -> None:
+        result = dispatch_tool(
+            vault,
+            "create_job",
+            {
+                "goal": "",
+                "acceptance_criteria": ["criterion"],
+                "evaluator_prompt": "check",
+            },
+        )
+        assert "Error" in result
+
+    def test_create_job_missing_criteria(self, vault: Vault) -> None:
+        result = dispatch_tool(
+            vault,
+            "create_job",
+            {
+                "goal": "Do something",
+                "acceptance_criteria": [],
+                "evaluator_prompt": "check",
+            },
+        )
+        assert "Error" in result
+
+    def test_start_job(self, vault: Vault) -> None:
+        create_result = dispatch_tool(
+            vault,
+            "create_job",
+            {
+                "goal": "Organize vault structure",
+                "acceptance_criteria": ["All pages categorized"],
+                "evaluator_prompt": "Check categorization",
+            },
+        )
+        assert "OK" in create_result
+        job_id = create_result.split("[")[1].split("]")[0]
+
+        result = dispatch_tool(vault, "start_job", {"job_id": job_id})
+        assert "OK" in result
+        assert "READY" in result
+
+    def test_start_job_not_found(self, vault: Vault) -> None:
+        result = dispatch_tool(vault, "start_job", {"job_id": "job-nonexistent"})
+        assert "Error" in result
+        assert "not found" in result
+
+    def test_start_job_wrong_status(self, vault: Vault) -> None:
+        create_result = dispatch_tool(
+            vault,
+            "create_job",
+            {
+                "goal": "Test",
+                "acceptance_criteria": ["Done"],
+                "evaluator_prompt": "Check",
+            },
+        )
+        job_id = create_result.split("[")[1].split("]")[0]
+        dispatch_tool(vault, "start_job", {"job_id": job_id})
+        result = dispatch_tool(vault, "start_job", {"job_id": job_id})
+        assert "Error" in result
+        assert "draft" in result.lower() or "cannot" in result.lower()
