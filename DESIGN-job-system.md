@@ -133,43 +133,143 @@ Plan 在代码里的实际角色非常窄：
 | `start_job` tool | 程序验证谓词 |
 | System prompt 中自动注入的 active jobs 状态 | 调度策略 |
 
-### 3.4 验收：程序验证前置，LLM 评判后置
+### 3.4 验收：每轮双层检查，程序验证做快速筛
 
-不是两种检查并列，而是漏斗：
+每轮 step 结束后做两层检查，**各自只看本轮产出**：
 
 ```
-step 完成一轮执行
+step 完成一轮执行（比如导入了 5 篇）
     │
-    ▼
-[程序验证] ← 不调 LLM，零成本
+    ├── [程序验证] 只检查本轮产出，零成本
+    │     "5 个新页面 frontmatter 完整 ✓，0 个孤儿页 ✓"
+    │     → 如果基本结构都不对，直接反馈，不叫 evaluator
     │
-    ├── 结构性标准未满足 → 直接反馈给 generator，不叫 evaluator
-    │   （"还有 3 个文件没导入"、"2 个页面缺 frontmatter"）
-    │
-    └── 结构性标准全部通过 → 再叫 evaluator
-        │
-        ▼
-    [Evaluator sub-agent] ← 调 LLM，有成本
-        判断质量性标准
-        （分类合理性、摘要质量、链接语义关联度）
+    └── [Evaluator] 检查本轮产出的质量
+          "5 个页面的分类、摘要、链接质量如何？"
+          → 发现问题 → 反馈给 generator
+          → generator 在下一轮先修正，再继续新增
+```
+
+**不等到结构性标准全部通过才叫 evaluator。** 否则错误会积重难返——
+比如分类逻辑从第 1 轮就是错的，但直到第 4 轮全部完成才被 evaluator 发现，
+20 个页面都要重做。
+
+程序验证的作用是**快速筛**：如果连 frontmatter 都没写，
+就不浪费 token 去叫 evaluator 评判内容质量。
+但只要本轮产出的基本结构是对的，就应该立刻让 evaluator 看质量。
+
+每轮的完整流程：
+
+```
+1. Generator 执行一批操作
+2. 程序验证本轮产出 → 基本结构不通过 → 反馈给 generator，进入下一轮
+                     → 基本结构通过 ↓
+3. Evaluator 评判本轮产出的质量 → 反馈
+4. 综合程序验证 + evaluator 反馈 → 更新 job progress
+5. 全部 acceptance_criteria 满足？ → 是 → COMPLETED
+                                  → 否 → 下一轮（generator 带着反馈继续）
 ```
 
 这和 Anthropic 的经验一致：他们的 evaluator 通过 Playwright 先跑功能测试（程序验证），
-只有功能通过了才做设计/质量评分。
+通过后再做设计/质量评分。但 evaluator 从第一轮就参与，不是等到最后才介入。
 
-### 3.5 Evaluator prompt 的来源
+### 3.5 Context Separation（上下文隔离）
 
-Planner 阶段（chat 中协商），evaluator prompt 应该由谁写？
+Anthropic blog 的核心发现：
 
-- **选项 A**：Generator agent 自己写。风险：rubric 对自己宽容。
-- **选项 B**：让用户写。风险：用户不知道怎么写 LLM prompt。
-- **选项 C**：Planner 阶段 spawn "rubric 制定" sub-agent，为 evaluator 生成严格的
-  评判 prompt。Generator 只知道 acceptance_criteria 的自然语言描述，不知道 evaluator
-  具体怎么打分。避免 "teaching to the test"。
+> *"Separating the agent doing the work from the agent judging it proves to be
+>  a strong lever to address this issue."*
 
-**MVP 用选项 A**。因为 context separation 本身就是最大的去偏利器
-（Anthropic blog 验证），prompt 调优是第二步。
-后续可以升级到选项 C。
+Context separation 指的是 **evaluator 和 generator 运行在完全隔离的上下文窗口里**。
+Evaluator 看不到 generator 的思考过程、工具调用历史、中间推理。
+它只看到：验收标准 + vault 的当前状态（也就是 generator 的实际产出物）。
+
+这样 evaluator 不会被 generator 的"叙事"带跑。比如 generator 在执行过程中想着
+"我觉得这个分类虽然不太常规但有道理"，如果 evaluator 能看到这段推理，它可能被说服。
+但如果 evaluator 只看到最终产出——一个页面被放在了一个奇怪的分类下——
+它会更客观地判断"这个分类不合理"。
+
+**不是隐藏信息，而是 evaluator 只从产出物本身判断质量，不从 generator 的意图推断质量。**
+
+### 3.6 Evaluator prompt 的来源：协商生成
+
+Evaluator prompt 不应该由 generator 单方面写（它会对自己宽容），
+也不应该由用户写（用户不知道怎么写 LLM prompt）。
+
+正确的做法是 **planner 阶段让 evaluator 自己参与，审查标准并定义自己的评判方法**。
+这类似 Anthropic 的 sprint contract negotiation：
+
+> *"Before each sprint, the generator and evaluator negotiated a sprint contract:
+>  agreeing on what 'done' looked like for that chunk of work."*
+
+但更进一步：evaluator 不只是审查 contract，还同时产出它后续要用的评判 prompt。
+
+#### Planner 阶段的协商流程
+
+```
+1. 用户提出需求："导入 20 篇论文"
+
+2. Agent（generator 角色）在 chat 里生成初始合同草案:
+   - goal, acceptance_criteria, write_scope
+
+3. Agent spawn 一个 evaluator 角色的 sub-agent:
+   - 输入：goal + acceptance_criteria 草案
+   - 它有一个系统预置的 meta prompt（见下文）
+   - 它的任务：
+     a) 审查这些标准是否足够具体、可验证
+     b) 是否有遗漏的质量维度
+     c) 为每条标准写出"我会如何判定 pass/fail"的具体方法
+     d) 补充它认为必要的额外标准
+
+4. Evaluator 返回修改建议:
+   "标准 3 '每页至少 2 个 wiki-link' 太机械了，
+    应该改成 '每页的链接指向语义相关的概念，而非随意凑数'。
+    建议新增标准 6：各 hub 的页面分布不应严重倾斜（单个 hub ≤70% 页面）。
+    我的评判方法：逐页检查链接目标是否与源页面主题相关..."
+
+5. Agent 综合 evaluator 的建议，在 chat 里展示给用户:
+   "审查员建议了以下调整...你觉得如何？"
+
+6. 用户确认（或再微调）
+
+7. 最终确认的 criteria + evaluator 自己写的评判方法
+   → 一起存进 Job
+```
+
+关键点：
+
+- **Evaluator 有系统预置的 meta prompt**（"你是质量审查员，你的职责是..."），
+  这是系统级常量，不是每个 job 临时写的
+- **Evaluator 在 planner 阶段就参与**，审查 criteria 质量，补充 generator 忽略的维度
+- **Evaluator 产出的"我会怎么判定"成为它后续执行阶段的 prompt** ——
+  它自己定义自己的评判方法
+- **Generator 看不到 evaluator 的具体评判方法**（context separation），
+  它只知道最终版的 acceptance_criteria 自然语言描述
+
+#### Evaluator meta prompt（系统预置）
+
+```
+你是一个知识库质量审查员。你的职责是独立、严格地评判知识管理任务的产出质量。
+
+## 你的工作方式
+
+1. 你只从产出物本身判断质量，不关心执行者的意图或过程。
+2. 你使用读工具（read_page, search, list_pages, get_backlinks）检查 vault 状态。
+3. 你逐条评判每个验收标准，给出：
+   - status: pass / fail / partial
+   - evidence: 具体证据（引用实际页面内容）
+   - feedback: 如果 fail，给出可操作的改进建议
+
+## 你的审查原则
+
+- 宁严勿松：如果不确定，判 fail 并说明原因
+- 要求证据：每个 pass 都要有具体依据，不能"看起来还行"
+- 关注连贯性：不只看单个页面，还看页面之间的关系是否合理
+- 区分"能用"和"好用"：结构完整不等于质量好
+```
+
+这个 meta prompt 是所有 job 共享的。每个 job 特有的是 evaluator 在 planner 阶段
+针对具体任务生成的评判方法（存在 `evaluator_prompt` 字段里）。
 
 ---
 
@@ -198,8 +298,8 @@ class Job:
 
     # --- 合同 ---
     goal: str
-    acceptance_criteria: list[str]
-    evaluator_prompt: str
+    acceptance_criteria: list[str]         # 用户 + evaluator 共同确认的自然语言标准
+    evaluator_prompt: str                  # evaluator 在 planner 阶段自己写的评判方法（每 job 特有）
     write_scope: WriteScope
     max_iterations: int
 
@@ -289,12 +389,14 @@ class KnowledgeAgent:
 
     def step_job(self, job_id: str) -> StepResult:
         """推进一个 job 一步。由 gateway cron 调用。（新增）"""
-        # 1. 加载 Job
+        # 1. 加载 Job（goal, criteria, last_evaluation, write_scope）
         # 2. 构建 generator prompt（目标 + 上次反馈 + vault 状态）
         # 3. 跑一轮 LLM + tool 循环（面向目标的 context，不是对话历史）
-        # 4. 程序验证
-        # 5. 如果结构性标准全部通过 → spawn evaluator sub-agent
-        # 6. 根据评判结果更新 job progress
+        # 4. 程序验证本轮产出
+        #    → 基本结构不通过 → 记录反馈，结束本轮
+        #    → 基本结构通过 ↓
+        # 5. Spawn evaluator sub-agent（干净上下文 + evaluator_prompt）
+        # 6. 综合程序验证 + evaluator 反馈 → 更新 job progress
         # 7. 持久化 → 等待下一次调度
         ...
 ```
@@ -560,12 +662,24 @@ CLI/gateway 直接调 `agent.run_skill("organize_wiki")`，
 
 ## 十三、开放问题
 
+### 已解决
+
+- ~~验收应该等结构性标准全部通过才叫 evaluator 吗？~~ **否。**
+  每轮都做双层检查，程序验证只是快速筛，evaluator 从第一轮就参与。
+  否则错误积重难返。（§3.4）
+
+- ~~Evaluator prompt 由谁写？~~ **Evaluator 在 planner 阶段自己写。**
+  Generator 提出初始草案 → spawn evaluator sub-agent 审查并补充
+  → evaluator 同时产出它后续要用的评判方法 → 用户确认。（§3.6）
+
+### 待定
+
 1. **Job 类型是否需要显式枚举？** MVP 可以不枚举，任何 goal + criteria 组合都是一个 job。
    但预置模板（bulk_import, organize_corpus）能降低协商成本。
 
-2. **Evaluator 应该跑几轮？** 如果 evaluator 说"第 5 篇摘要不好"，generator 修完后
-   是否需要 evaluator 再验一次？建议：改了就再验，但单个 step 内最多 evaluator 2 次，
-   避免无限乒乓。
+2. **单轮 step 内 evaluator 最多跑几次？** 如果 evaluator 说"第 5 篇摘要不好"，
+   generator 修完后是否在同一轮内再验？建议：单轮内最多 evaluator 2 次，避免乒乓。
+   修不好的问题带到下一轮。
 
 3. **Job 失败的恢复策略？** 进程崩溃后，RUNNING 的 job 应该自动恢复还是等用户确认？
    建议 MVP：自动恢复（幂等性由每 step 一个 git commit 保证）。
@@ -576,3 +690,13 @@ CLI/gateway 直接调 `agent.run_skill("organize_wiki")`，
 5. **Deep research 是否在 MVP scope 内？** 建议不在。它需要 `fetch_url`（外部网络），
    验收标准难以客观化，write_scope 难以预先界定。等 bulk_import 和 organize_corpus
    跑通后再做。
+
+6. **Evaluator 在 planner 阶段和 generator 的协商需要几轮？** 
+   Anthropic 的 sprint contract 是"iterate until they agreed"。
+   但协商轮数太多会拖慢 job 创建。建议 MVP：最多 2 轮
+   （generator 提草案 → evaluator 修改 → generator 整合展示给用户）。
+
+7. **Evaluator meta prompt 是否需要按 job 类型差异化？**
+   比如 bulk_import 的 evaluator 更关注结构完整性，
+   deep_research 的更关注论证质量。MVP 可以用统一的 meta prompt，
+   差异化靠每个 job 特有的 evaluator_prompt 字段承载。
