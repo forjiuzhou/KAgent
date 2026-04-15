@@ -29,6 +29,16 @@ from noteweaver.session import (
     load_last_digest_date,
     save_last_digest_date,
 )
+from noteweaver.job import (
+    get_next_ready_job,
+    get_running_job,
+    update_contract_status,
+    build_worker_prompt,
+    parse_progress,
+    extract_audit_criteria,
+    check_audit_criteria,
+    detect_stall,
+)
 
 log = logging.getLogger(__name__)
 
@@ -198,13 +208,130 @@ class Gateway:
                 except Exception as e:
                     log.warning("Failed to notify %s: %s", chat_id, e)
 
+    def _run_job_iteration(self, job: dict) -> dict:
+        """Execute one iteration of a job. Returns result dict.
+
+        This is the harness that:
+        1. Runs audit_vault() for backpressure
+        2. Gets git diff from last iteration
+        3. Reads contract + progress
+        4. Assembles prompt and spawns fresh worker agent
+        5. Worker does its work via chat()
+        6. Git commit
+        7. Runs audit again and checks hard criteria
+        8. Determines if job is complete/failed/stalled
+        """
+        from noteweaver.agent import KnowledgeAgent
+        from noteweaver.vault.audit import audit_vault
+        from noteweaver.tools.handlers_read import handle_audit_vault
+
+        job_dir = job["dir"]
+        job_id = job["id"]
+        iteration = job["iteration_count"] + 1
+        max_iters = job["max_iterations"]
+
+        log.info("Job [%s] starting iteration %d/%d", job_id, iteration, max_iters)
+
+        update_contract_status(job_dir, "running")
+
+        pre_audit = audit_vault(self.vault)
+        audit_text = handle_audit_vault(self.vault)
+
+        diff_files: list[str] = []
+        try:
+            if hasattr(self.vault, '_repo') and self.vault._repo is not None:
+                diff_output = self.vault._repo.git.diff("--name-only", "HEAD~1")
+                diff_files = [f for f in diff_output.split("\n") if f.strip()]
+        except Exception:
+            pass
+
+        contract_content = job["contract_content"]
+        progress_content = job["progress_content"]
+
+        prompt = build_worker_prompt(
+            contract_content=contract_content,
+            progress_content=progress_content,
+            diff_files=diff_files,
+            audit_summary=audit_text,
+            iteration=iteration,
+        )
+        prompt = prompt.replace("{job_id}", job_id)
+
+        worker = KnowledgeAgent(
+            vault=self.vault,
+            model=self.agent.model,
+            provider=self.agent.provider,
+        )
+        worker.messages = [
+            {"role": "system", "content": worker._build_job_system_prompt()}
+        ]
+        worker.set_attended(True)
+
+        tool_count = 0
+        reply_parts: list[str] = []
+        try:
+            for chunk in worker.chat(prompt):
+                if chunk.startswith("  ↳ "):
+                    tool_count += 1
+                elif not chunk.startswith("  📋 "):
+                    reply_parts.append(chunk)
+        except Exception as e:
+            log.error("Job [%s] worker error in iteration %d: %s", job_id, iteration, e)
+            return {
+                "iteration": iteration,
+                "success": False,
+                "error": str(e),
+                "completed": False,
+                "failed": False,
+            }
+
+        log.info("Job [%s] iteration %d: %d tool calls", job_id, iteration, tool_count)
+
+        post_audit = audit_vault(self.vault)
+
+        progress_path = job_dir / "progress.md"
+        if progress_path.is_file():
+            progress_content = progress_path.read_text(encoding="utf-8")
+        progress_data = parse_progress(progress_content)
+        declares_complete = progress_data["declares_complete"]
+
+        audit_criteria = extract_audit_criteria(job["criteria"])
+        criteria_results = check_audit_criteria(audit_criteria, post_audit)
+        all_audit_pass = all(cr["passed"] for cr in criteria_results) if criteria_results else True
+
+        completed = declares_complete and all_audit_pass
+        failed = iteration >= max_iters and not completed
+
+        if completed:
+            update_contract_status(job_dir, "completed")
+            log.info("Job [%s] COMPLETED at iteration %d", job_id, iteration)
+        elif failed:
+            update_contract_status(job_dir, "failed")
+            log.info("Job [%s] FAILED at max iterations %d", job_id, iteration)
+        else:
+            pass
+
+        return {
+            "iteration": iteration,
+            "success": True,
+            "tool_count": tool_count,
+            "completed": completed,
+            "failed": failed,
+            "declares_complete": declares_complete,
+            "all_audit_pass": all_audit_pass,
+            "criteria_results": criteria_results,
+            "reply": "\n".join(reply_parts)[:500],
+        }
+
     async def _run_cron(self) -> None:
-        """Background cron: periodic digest, lint, and notification.
+        """Background cron: periodic digest, lint, job loop, and notification.
 
         Digest and lint run on their own intervals.  Digest results are
         queued as pending notifications.  Notifications are delivered at
         a configurable hour (NW_NOTIFY_HOUR, default 9) so users aren't
         disturbed at night.
+
+        Job loop runs on every cron poll when the main agent is idle.
         """
         from datetime import datetime
 
@@ -218,6 +345,7 @@ class Gateway:
         last_digest = _time.time()
         last_lint = _time.time()
         last_notify_date = ""
+        recent_job_diffs: dict[str, list[list[str]]] = {}
 
         while True:
             await asyncio.sleep(GATEWAY_CRON_POLL_SECONDS)
@@ -291,6 +419,48 @@ class Gateway:
                 except Exception as e:
                     log.error("Cron audit failed: %s", e)
                 last_lint = now
+
+            # --- Job loop (only when main agent is idle) ---
+            if not self._lock.locked():
+                async with self._lock:
+                    try:
+                        job = get_running_job(self.vault) or get_next_ready_job(self.vault)
+                        if job:
+                            job_id = job["id"]
+                            result = self._run_job_iteration(job)
+
+                            diff_files: list[str] = []
+                            try:
+                                if hasattr(self.vault, '_repo') and self.vault._repo is not None:
+                                    diff_output = self.vault._repo.git.diff(
+                                        "--name-only", "HEAD~1",
+                                    )
+                                    diff_files = [
+                                        f for f in diff_output.split("\n") if f.strip()
+                                    ]
+                            except Exception:
+                                pass
+                            recent_job_diffs.setdefault(job_id, []).insert(0, diff_files)
+                            recent_job_diffs[job_id] = recent_job_diffs[job_id][:5]
+
+                            if result.get("completed"):
+                                self._pending_notifications.append(
+                                    f"✅ Job [{job_id}] completed at iteration "
+                                    f"{result['iteration']}."
+                                )
+                            elif result.get("failed"):
+                                self._pending_notifications.append(
+                                    f"❌ Job [{job_id}] reached max iterations "
+                                    f"({result['iteration']}). Review progress."
+                                )
+                            elif detect_stall(job, recent_job_diffs.get(job_id, [])):
+                                self._pending_notifications.append(
+                                    f"⚠️ Job [{job_id}] appears stalled "
+                                    f"(no changes for last iterations). "
+                                    "Consider reviewing the contract."
+                                )
+                    except Exception as e:
+                        log.error("Job loop failed: %s", e)
 
             # --- Notification delivery at configured hour ---
             current_hour = datetime.now().hour

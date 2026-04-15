@@ -27,6 +27,7 @@ from noteweaver.tools.handlers_read import (  # noqa: F401
     handle_get_backlinks,
     handle_list_pages,
     handle_fetch_url,
+    handle_audit_vault,
     resolve_path_or_title as _resolve_path_or_title,
     extract_section as _extract_section,
 )
