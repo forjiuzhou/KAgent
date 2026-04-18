@@ -35,6 +35,7 @@ from noteweaver.constants import (
     STRUCTURE_PATHS as _STRUCTURE_PATHS,
     PREFERENCES_PATH as _PREFERENCES_PATH,
     MIN_SYNTHESIS_LINKS,
+    is_job_progress_path,
 )
 
 if TYPE_CHECKING:
@@ -245,6 +246,9 @@ def _check_read_before_write(
     if not path:
         return PolicyVerdict(allowed=True)
 
+    if is_job_progress_path(path):
+        return PolicyVerdict(allowed=True)
+
     if path in ctx.pages_read or path in ctx.pages_written:
         return PolicyVerdict(allowed=True)
 
@@ -264,6 +268,9 @@ def _check_write_page(
     ctx: PolicyContext,
 ) -> PolicyVerdict:
     """Full gate for write_page to content targets."""
+    if is_job_progress_path(path):
+        return PolicyVerdict(allowed=True)
+
     if path in _STRUCTURE_PATHS:
         return PolicyVerdict(allowed=True)
 
