@@ -12,6 +12,24 @@ from pathlib import Path
 
 WIKILINK_PATTERN = re.compile(r"\[\[([^\]]+)\]\]")
 
+_FRONTMATTER_RE = re.compile(r"^---\s*\n(.*?)\n---\s*\n", re.DOTALL)
+
+
+def _related_from_frontmatter(content: str) -> set[str]:
+    """Extract titles from the ``related`` frontmatter field."""
+    m = _FRONTMATTER_RE.match(content)
+    if not m:
+        return set()
+    try:
+        import yaml
+        fm = yaml.safe_load(m.group(1)) or {}
+    except Exception:
+        return set()
+    raw = fm.get("related") or []
+    if not isinstance(raw, list):
+        return set()
+    return {str(r) for r in raw if r}
+
 
 class BacklinkIndex:
     """SQLite-backed index of [[wiki-link]] relationships."""
@@ -30,13 +48,25 @@ class BacklinkIndex:
             );
             CREATE INDEX IF NOT EXISTS idx_source ON links(source_path);
             CREATE INDEX IF NOT EXISTS idx_target ON links(target_title);
+            CREATE TABLE IF NOT EXISTS source_provenance (
+                wiki_path TEXT NOT NULL,
+                source_ref TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_sp_wiki ON source_provenance(wiki_path);
+            CREATE INDEX IF NOT EXISTS idx_sp_source ON source_provenance(source_ref);
         """)
 
     def update_page(self, path: str, content: str) -> None:
-        """Re-index all outgoing links from a single page."""
+        """Re-index all outgoing links from a single page.
+
+        Extracts targets from both ``[[wiki-links]]`` in body text and
+        the ``related`` list in YAML frontmatter so that backlink queries
+        are complete regardless of where the link is declared.
+        """
         self._conn.execute("DELETE FROM links WHERE source_path = ?", (path,))
-        targets = WIKILINK_PATTERN.findall(content)
-        for target in set(targets):
+        targets = set(WIKILINK_PATTERN.findall(content))
+        targets |= _related_from_frontmatter(content)
+        for target in targets:
             self._conn.execute(
                 "INSERT INTO links (source_path, target_title) VALUES (?, ?)",
                 (path, target),
@@ -83,8 +113,9 @@ class BacklinkIndex:
         """Full rebuild from a list of {path, content} dicts."""
         self._conn.execute("DELETE FROM links")
         for p in pages:
-            targets = WIKILINK_PATTERN.findall(p["content"])
-            for target in set(targets):
+            targets = set(WIKILINK_PATTERN.findall(p["content"]))
+            targets |= _related_from_frontmatter(p["content"])
+            for target in targets:
                 self._conn.execute(
                     "INSERT INTO links (source_path, target_title) VALUES (?, ?)",
                     (p["path"], target),
@@ -101,6 +132,43 @@ class BacklinkIndex:
             "pages_with_outlinks": unique_sources,
             "distinct_targets": unique_targets,
         }
+
+    # ------------------------------------------------------------------
+    # Source provenance helpers
+    # ------------------------------------------------------------------
+
+    def update_source_index(self, wiki_pages: list[dict]) -> None:
+        """Rebuild the source-provenance index from wiki frontmatter.
+
+        *wiki_pages* is a list of ``{"path": ..., "sources": [...]}``
+        where ``sources`` comes from the frontmatter ``sources`` field.
+        This lets us answer "which wiki pages cite this source?" and
+        "which sources have no wiki page yet?"
+        """
+        self._conn.execute("DELETE FROM source_provenance")
+        for wp in wiki_pages:
+            for src in wp.get("sources") or []:
+                self._conn.execute(
+                    "INSERT INTO source_provenance (wiki_path, source_ref) VALUES (?, ?)",
+                    (wp["path"], str(src)),
+                )
+        self._conn.commit()
+
+    def wiki_pages_citing_source(self, source_ref: str) -> list[str]:
+        """Return wiki pages whose frontmatter ``sources`` includes *source_ref*."""
+        cursor = self._conn.execute(
+            "SELECT DISTINCT wiki_path FROM source_provenance WHERE source_ref = ?",
+            (source_ref,),
+        )
+        return [row[0] for row in cursor]
+
+    def uncited_sources(self, all_source_paths: list[str]) -> list[str]:
+        """Return source paths that are not cited by any wiki page."""
+        cited = set()
+        cursor = self._conn.execute("SELECT DISTINCT source_ref FROM source_provenance")
+        for row in cursor:
+            cited.add(row[0])
+        return sorted(s for s in all_source_paths if s not in cited)
 
     def close(self) -> None:
         self._conn.close()

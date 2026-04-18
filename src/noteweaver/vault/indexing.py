@@ -58,15 +58,32 @@ def rebuild_search_index(vault: Vault) -> int:
 
 
 def rebuild_backlinks(vault: Vault) -> int:
-    """Rebuild backlink index from all vault files."""
+    """Rebuild backlink index from all vault files.
+
+    Also rebuilds the source-provenance index from wiki frontmatter
+    so the agent can query which sources have been cited.
+    """
+    from noteweaver.frontmatter import extract_frontmatter
+
     pages = []
-    for rel_path in vault.list_files("wiki"):
-        try:
-            content = vault.read_file(rel_path)
-            pages.append({"path": rel_path, "content": content})
-        except (FileNotFoundError, PermissionError):
-            continue
+    source_entries: list[dict] = []
+    for rel_dir in ("wiki", "sources"):
+        for rel_path in vault.list_files(rel_dir):
+            try:
+                content = vault.read_file(rel_path)
+                pages.append({"path": rel_path, "content": content})
+                if rel_path.startswith("wiki/"):
+                    fm = extract_frontmatter(content) or {}
+                    sources = fm.get("sources") or []
+                    if isinstance(sources, list) and sources:
+                        source_entries.append({
+                            "path": rel_path,
+                            "sources": [str(s) for s in sources],
+                        })
+            except (FileNotFoundError, PermissionError):
+                continue
     vault.backlinks.rebuild(pages)
+    vault.backlinks.update_source_index(source_entries)
     return len(pages)
 
 

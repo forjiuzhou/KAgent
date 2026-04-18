@@ -1,7 +1,8 @@
 """Tool schemas for LLM function calling (OpenAI format).
 
-Read tools:  read_page, search, get_backlinks, list_pages, fetch_url
+Read tools:  read_page, search, get_backlinks, list_pages, fetch_url, audit_vault
 Write tools: write_page, append_section, update_frontmatter, add_related_link
+Job:         create_job
 Sub-agent:   spawn_subagent
 """
 
@@ -265,6 +266,48 @@ TOOL_SCHEMAS: list[dict] = [
     # ------------------------------------------------------------------
     # Sub-agent tool
     # ------------------------------------------------------------------
+    {
+        "type": "function",
+        "function": {
+            "name": "create_job",
+            "description": (
+                "Create a background job for work that requires many tool calls "
+                "(batch imports, deep research, wiki-wide cleanup). The job runs "
+                "asynchronously via the gateway cron loop — a dedicated worker "
+                "agent processes iterations against the contract. Use this when "
+                "the task is too large for a single chat turn."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "description": {
+                        "type": "string",
+                        "description": (
+                            "Short human-readable description of the job "
+                            "(used in the job ID slug)"
+                        ),
+                    },
+                    "goal": {
+                        "type": "string",
+                        "description": "Detailed goal paragraph for the worker agent.",
+                    },
+                    "criteria": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": (
+                            "Acceptance criteria. Prefix mechanical checks with "
+                            "[audit: metric_name op value] for automatic verification."
+                        ),
+                    },
+                    "max_iterations": {
+                        "type": "integer",
+                        "description": "Max worker iterations. Default: 30.",
+                    },
+                },
+                "required": ["description", "goal", "criteria"],
+            },
+        },
+    },
     {
         "type": "function",
         "function": {

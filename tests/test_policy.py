@@ -188,3 +188,17 @@ class TestCheckPreDispatch:
         ctx = PolicyContext()
         v = check_pre_dispatch("unknown_tool", {}, ctx)
         assert v.allowed
+
+    def test_create_job_always_allowed(self) -> None:
+        ctx = PolicyContext(attended=True)
+        v = check_pre_dispatch("create_job", {
+            "description": "test", "goal": "g", "criteria": ["c"],
+        }, ctx)
+        assert v.allowed
+
+    def test_create_job_allowed_unattended(self) -> None:
+        ctx = PolicyContext(attended=False)
+        v = check_pre_dispatch("create_job", {
+            "description": "test", "goal": "g", "criteria": ["c"],
+        }, ctx)
+        assert v.allowed

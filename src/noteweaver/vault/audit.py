@@ -134,6 +134,7 @@ def audit_vault(vault: Vault) -> dict:
     broken_links: list[dict] = []
     missing_connections: list[dict] = []
     similar_tags: list[dict] = []
+    related_inconsistencies: list[dict] = []
 
     titles_to_path: dict[str, str] = {}
     hubs: set[str] = set()
@@ -253,6 +254,36 @@ def audit_vault(vault: Vault) -> dict:
                     "tag_a": ta, "tag_b": tb, "reason": reason,
                 })
 
+    for p in all_pages:
+        fm = p["fm"]
+        fm_related = set()
+        for r in (fm.get("related") or []):
+            fm_related.add(str(r))
+        body_links = set(WIKILINK_PATTERN.findall(p["content"]))
+        related_section_links = _extract_related_section_links(p["content"])
+        fm_only = fm_related - body_links
+        body_only = related_section_links - fm_related
+        if fm_only or body_only:
+            entry: dict = {"path": p["path"]}
+            if fm_only:
+                entry["in_frontmatter_only"] = sorted(fm_only)
+            if body_only:
+                entry["in_body_only"] = sorted(body_only)
+            related_inconsistencies.append(entry)
+
+    source_entries: list[dict] = []
+    for p in all_pages:
+        fm = p["fm"]
+        sources = fm.get("sources") or []
+        if isinstance(sources, list) and sources:
+            source_entries.append({
+                "path": p["path"],
+                "sources": [str(s) for s in sources],
+            })
+    vault.backlinks.update_source_index(source_entries)
+    all_source_paths = vault.list_files("sources")
+    uncited_sources = vault.backlinks.uncited_sources(all_source_paths) if all_source_paths else []
+
     counts = []
     if missing_frontmatter:
         counts.append(f"{len(missing_frontmatter)} missing frontmatter")
@@ -270,11 +301,16 @@ def audit_vault(vault: Vault) -> dict:
         counts.append(f"{len(missing_connections)} missing connection(s)")
     if similar_tags:
         counts.append(f"{len(similar_tags)} similar tag pair(s)")
+    if related_inconsistencies:
+        counts.append(f"{len(related_inconsistencies)} related inconsistency(ies)")
+    if uncited_sources:
+        counts.append(f"{len(uncited_sources)} uncited source(s)")
 
     total = sum([
         len(missing_frontmatter), len(stale_imports), len(hub_candidates),
         len(orphan_pages), len(missing_summaries), len(broken_links),
-        len(missing_connections), len(similar_tags),
+        len(missing_connections), len(similar_tags), len(related_inconsistencies),
+        len(uncited_sources),
     ])
     summary = (
         f"{total} issue(s) found: {', '.join(counts)}"
@@ -290,6 +326,8 @@ def audit_vault(vault: Vault) -> dict:
         "broken_links": broken_links,
         "missing_connections": missing_connections,
         "similar_tags": similar_tags,
+        "related_inconsistencies": related_inconsistencies,
+        "uncited_sources": uncited_sources,
         "summary": summary,
     }
 
@@ -371,3 +409,22 @@ def _days_since(date_str: str, today_str: str) -> int | None:
         return (t - d).days
     except (ValueError, TypeError):
         return None
+
+
+def _extract_related_section_links(content: str) -> set[str]:
+    """Extract ``[[wiki-links]]`` that appear inside the ``## Related`` section."""
+    from noteweaver.backlinks import WIKILINK_PATTERN
+
+    lines = content.split("\n")
+    in_related = False
+    related_text = []
+    for line in lines:
+        stripped = line.strip()
+        if stripped.startswith("## Related"):
+            in_related = True
+            continue
+        if in_related and stripped.startswith("## "):
+            break
+        if in_related:
+            related_text.append(line)
+    return set(WIKILINK_PATTERN.findall("\n".join(related_text)))

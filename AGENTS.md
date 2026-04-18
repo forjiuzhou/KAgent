@@ -30,9 +30,9 @@ src/noteweaver/            Python package (~9300 LOC)
 │   ├── context.py           LLM-facing context builders
 │   └── organize.py          Import organization, rebuild_index
 ├── tools/                 Tool schemas, handlers, dispatch
-│   ├── schemas.py           10 tool schemas (TOOL_SCHEMAS)
-│   ├── handlers_read.py     5 read tool handlers
-│   ├── handlers_write.py    4 write tool handlers
+│   ├── schemas.py           12 tool schemas (TOOL_SCHEMAS)
+│   ├── handlers_read.py     6 read tool handlers
+│   ├── handlers_write.py    5 write tool handlers
 │   ├── legacy.py            Deprecated legacy handlers
 │   ├── dispatch.py          TOOL_HANDLERS registry + dispatch_tool()
 │   ├── definitions.py       Re-export layer (backward compat)
@@ -42,6 +42,7 @@ src/noteweaver/            Python package (~9300 LOC)
 ├── cli.py                 CLI commands + main()
 ├── session.py             Shared session logic (agent construction, finalization)
 ├── gateway.py             Long-running Telegram gateway + cron
+├── job.py                 Background job system (contract, progress, worker prompt)
 ├── trace.py               Structured trace for observability
 ├── config.py              Config from .meta/config.yaml + env vars
 ├── plan.py                Plan data model (legacy)
@@ -50,7 +51,7 @@ src/noteweaver/            Python package (~9300 LOC)
 ├── frontmatter.py         YAML frontmatter validation
 └── constants.py           Shared constants
 
-tests/                     648 tests, all offline, ~10s
+tests/                     ~720 tests, all offline, ~10s
 references/                Read-only reference projects (DO NOT MODIFY)
 deploy/                    Docker/systemd deployment scripts
 DESIGN.md                  Product philosophy (~1000 lines, not code architecture)
@@ -60,7 +61,7 @@ DESIGN.md                  Product philosophy (~1000 lines, not code architectur
 
 **Primary interface: Gateway** (Telegram) — user messages go to `agent.chat()`.
 CLI is secondary. All features work through `agent.chat()`.
-**Three layers**: 9 primitive tools → skills (multi-step workflows) → chat.
+**Three layers**: 10 primitive tools + create_job + spawn_subagent → skills (multi-step workflows) → chat.
 Agent proposes changes in natural language → user approves → agent writes.
 Schema from `.schema/` is always in the system prompt.
 
@@ -91,6 +92,7 @@ Schema from `.schema/` is always in the system prompt.
 | Change vault audit | `vault/audit.py` |
 | Change LLM context builders | `vault/context.py` |
 | Change git behavior | `vault/git.py` |
+| Change job system | `job.py` (contracts, progress) + `gateway.py` (cron execution) + `tools/handlers_write.py` (`handle_create_job`) |
 
 ## Test Patterns
 
@@ -127,7 +129,7 @@ def agent(vault: Vault) -> KnowledgeAgent:
 - `$HOME/.local/bin` must be on PATH for `nw` CLI
 - `nw lint` and `nw digest` need API keys (they run the agent loop)
 - Tests use `auto_git=False` — real vault auto-inits Git
-- 10 tools in TOOL_SCHEMAS (9 + spawn_subagent) — `tools/schemas.py` is truth
-- Legacy tools (capture, organize, restructure, ingest, survey_topic) in `tools/legacy.py` — deprecated
+- 12 tools in TOOL_SCHEMAS (6 read + 4 write + create_job + spawn_subagent) — `tools/schemas.py` is truth
+- Legacy tools (capture, organize, restructure, ingest, survey_topic) in `tools/legacy.py` — 5 deprecated handlers
 - Skills are in `skills/` — use `agent.run_skill("name")` or CLI `nw import-sources` / `nw lint`
 - DESIGN.md is product philosophy, not code architecture

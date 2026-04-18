@@ -95,3 +95,82 @@ class TestVaultBacklinkIntegration:
         )
         metrics = vault.health_metrics()
         assert metrics["total_links"] > 0
+
+
+class TestFrontmatterRelatedInBacklinks:
+    """frontmatter ``related`` entries should appear in the backlink graph."""
+
+    def test_related_field_indexed_on_update(self, index: BacklinkIndex) -> None:
+        content = (
+            "---\ntitle: A\ntype: note\nrelated:\n  - B\n  - C\n---\n"
+            "Body text with no wiki-links."
+        )
+        index.update_page("a.md", content)
+        assert index.backlinks_for("B") == ["a.md"]
+        assert index.backlinks_for("C") == ["a.md"]
+
+    def test_related_field_indexed_on_rebuild(self, index: BacklinkIndex) -> None:
+        content = "---\ntitle: X\ntype: note\nrelated:\n  - Y\n---\nBody."
+        index.rebuild([{"path": "x.md", "content": content}])
+        assert index.backlinks_for("Y") == ["x.md"]
+
+    def test_related_merged_with_body_links(self, index: BacklinkIndex) -> None:
+        content = (
+            "---\ntitle: A\ntype: note\nrelated:\n  - B\n---\n"
+            "See [[C]] in the body."
+        )
+        index.update_page("a.md", content)
+        out = set(index.outlinks_for("a.md"))
+        assert out == {"B", "C"}
+
+    def test_related_deduped_with_body_links(self, index: BacklinkIndex) -> None:
+        content = (
+            "---\ntitle: A\ntype: note\nrelated:\n  - B\n---\n"
+            "Also in body: [[B]]"
+        )
+        index.update_page("a.md", content)
+        assert index.reference_count("B") == 1
+
+    def test_write_file_indexes_related(self, vault: Vault) -> None:
+        vault.write_file(
+            "wiki/concepts/a.md",
+            "---\ntitle: A\ntype: note\nrelated:\n  - Hidden Link\n---\nBody text.",
+        )
+        assert vault.backlinks.backlinks_for("Hidden Link") == ["wiki/concepts/a.md"]
+
+
+class TestSourceProvenance:
+    """Source provenance index: which wiki pages cite which sources."""
+
+    def test_update_source_index(self, index: BacklinkIndex) -> None:
+        index.update_source_index([
+            {"path": "wiki/concepts/a.md", "sources": ["sources/paper.pdf"]},
+            {"path": "wiki/concepts/b.md", "sources": ["sources/paper.pdf", "sources/other.md"]},
+        ])
+        result = index.wiki_pages_citing_source("sources/paper.pdf")
+        assert set(result) == {"wiki/concepts/a.md", "wiki/concepts/b.md"}
+
+    def test_uncited_sources(self, index: BacklinkIndex) -> None:
+        index.update_source_index([
+            {"path": "wiki/concepts/a.md", "sources": ["sources/used.pdf"]},
+        ])
+        uncited = index.uncited_sources(["sources/used.pdf", "sources/orphan.md"])
+        assert uncited == ["sources/orphan.md"]
+
+    def test_uncited_sources_empty(self, index: BacklinkIndex) -> None:
+        index.update_source_index([])
+        uncited = index.uncited_sources(["sources/a.md", "sources/b.md"])
+        assert uncited == ["sources/a.md", "sources/b.md"]
+
+    def test_rebuild_backlinks_builds_provenance(self, vault: Vault) -> None:
+        vault.save_source("sources/raw.md", "Some raw content")
+        vault.write_file(
+            "wiki/concepts/a.md",
+            "---\ntitle: A\ntype: canonical\nsources:\n  - sources/raw.md\n"
+            "summary: s\n---\nContent from [[Other]].",
+        )
+        vault.rebuild_backlinks()
+        citing = vault.backlinks.wiki_pages_citing_source("sources/raw.md")
+        assert "wiki/concepts/a.md" in citing
+        uncited = vault.backlinks.uncited_sources(vault.list_files("sources"))
+        assert "sources/raw.md" not in uncited
