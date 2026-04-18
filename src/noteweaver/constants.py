@@ -134,3 +134,16 @@ GATEWAY_CRON_POLL_SECONDS = 300
 JOB_DEFAULT_MAX_ITERATIONS = 30
 JOB_STALL_THRESHOLD = 3
 JOB_DIR = ".meta/jobs"
+
+
+def is_job_progress_path(rel_path: str) -> bool:
+    """True only for ``.meta/jobs/<job_id>/progress.md`` (worker job log)."""
+    rel = rel_path.replace("\\", "/").strip("/")
+    parts = rel.split("/")
+    return (
+        len(parts) == 4
+        and parts[0] == ".meta"
+        and parts[1] == "jobs"
+        and bool(parts[2])
+        and parts[3] == "progress.md"
+    )

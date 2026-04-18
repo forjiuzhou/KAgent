@@ -64,6 +64,16 @@ class TestReadWrite:
         vault.write_file("wiki/concepts/x.md", "v2")
         assert vault.read_file("wiki/concepts/x.md") == "v2"
 
+    def test_write_job_progress_allowed(self, vault: Vault) -> None:
+        vault.write_file(".meta/jobs/test-job/progress.md", "## Iteration 1\nDone.\n")
+        assert vault.read_file(".meta/jobs/test-job/progress.md").startswith("## Iteration")
+
+    def test_write_meta_other_than_job_progress_rejected(self, vault: Vault) -> None:
+        with pytest.raises(PermissionError, match="Can only write"):
+            vault.write_file(".meta/jobs/x/contract.md", "bad")
+        with pytest.raises(PermissionError, match="Can only write"):
+            vault.write_file(".meta/sessions/foo.json", "{}")
+
 
 class TestListFiles:
     def test_list_empty_dir(self, vault: Vault) -> None:
