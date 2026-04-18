@@ -531,3 +531,36 @@ class TestDispatch:
             "criteria": ["x"],
         })
         assert "Error" in result
+
+    def test_write_page_job_progress(self, vault: Vault) -> None:
+        dispatch_tool(vault, "create_job", {
+            "description": "p",
+            "goal": "g",
+            "criteria": ["c"],
+        })
+        from noteweaver.job import list_jobs
+        job_id = list_jobs(vault)[0]["id"]
+        path = f".meta/jobs/{job_id}/progress.md"
+        result = dispatch_tool(vault, "write_page", {
+            "path": path,
+            "content": "## Iteration 1\n\n### 自评\n建议标记完成\n",
+        })
+        assert "OK" in result
+        assert "建议标记完成" in vault.read_file(path)
+
+    def test_append_section_job_progress(self, vault: Vault) -> None:
+        dispatch_tool(vault, "create_job", {
+            "description": "q",
+            "goal": "g",
+            "criteria": ["c"],
+        })
+        from noteweaver.job import list_jobs
+        job_id = list_jobs(vault)[0]["id"]
+        path = f".meta/jobs/{job_id}/progress.md"
+        result = dispatch_tool(vault, "append_section", {
+            "path": path,
+            "heading": "Iteration 2",
+            "content": "More work.",
+        })
+        assert "OK" in result
+        assert "Iteration 2" in vault.read_file(path)

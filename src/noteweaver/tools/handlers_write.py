@@ -7,7 +7,11 @@ from typing import TYPE_CHECKING
 
 import yaml
 
-from noteweaver.constants import INDEX_TOKEN_BUDGET, JOB_DEFAULT_MAX_ITERATIONS
+from noteweaver.constants import (
+    INDEX_TOKEN_BUDGET,
+    JOB_DEFAULT_MAX_ITERATIONS,
+    is_job_progress_path,
+)
 from noteweaver.frontmatter import validate_frontmatter, extract_frontmatter
 from noteweaver.tools.handlers_read import resolve_path_or_title
 
@@ -17,8 +21,14 @@ if TYPE_CHECKING:
 
 def handle_write_page(vault: Vault, path: str, content: str) -> str:
     try:
+        if is_job_progress_path(path):
+            vault.write_file(path, content)
+            return f"OK: written to {path} ({len(content)} chars)"
         if not path.startswith("wiki/"):
-            return f"Error: write_page can only write to wiki/. Rejected path: {path}"
+            return (
+                f"Error: write_page can only write to wiki/ or "
+                f".meta/jobs/<job_id>/progress.md. Rejected path: {path}"
+            )
         validation = validate_frontmatter(path, content)
         if not validation.valid:
             return "Error: frontmatter validation failed:\n" + "\n".join(
@@ -48,8 +58,11 @@ def handle_append_section(
     except PermissionError as e:
         return f"Error: {e}"
 
-    if not resolved.startswith("wiki/"):
-        return f"Error: can only write to wiki/ pages. Path: {resolved}"
+    if not resolved.startswith("wiki/") and not is_job_progress_path(resolved):
+        return (
+            f"Error: can only append to wiki/ pages or "
+            f".meta/jobs/<job_id>/progress.md. Path: {resolved}"
+        )
 
     section_text = f"\n## {heading}\n\n{content}\n"
 

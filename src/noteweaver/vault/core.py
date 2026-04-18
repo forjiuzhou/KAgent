@@ -26,6 +26,8 @@ from noteweaver.constants import (
     STRUCTURE_PATHS,
     SKIP_DIRS,
     SKIP_FILES,
+    JOB_DIR,
+    is_job_progress_path,
 )
 
 from noteweaver.vault.seeds import (
@@ -287,16 +289,30 @@ class Vault:
         return heading_match or filename_match
 
     def write_file(self, rel_path: str, content: str) -> None:
-        """Write a file in the wiki area. Refuses to write into sources/."""
+        """Write wiki/ or .schema/ files, or a single job progress file under .meta/jobs/."""
         path = self._resolve(rel_path)
         if self._is_in_sources(path):
             raise PermissionError(
                 f"Cannot write to sources/ — it is immutable. Path: {rel_path}"
             )
-        if not rel_path.startswith("wiki/") and not rel_path.startswith(".schema/"):
+        job_progress = is_job_progress_path(rel_path)
+        if not (
+            rel_path.startswith("wiki/")
+            or rel_path.startswith(".schema/")
+            or job_progress
+        ):
             raise PermissionError(
-                f"Can only write to wiki/ or .schema/. Path: {rel_path}"
+                f"Can only write to wiki/, .schema/, or "
+                f"{JOB_DIR}/<job_id>/progress.md. Path: {rel_path}"
             )
+        if job_progress:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(content, encoding="utf-8")
+            if self._operation_depth > 0:
+                self._operation_dirty = True
+            else:
+                self._git_commit(f"Update {rel_path}")
+            return
         if rel_path.startswith("wiki/") and rel_path not in self._SKIP_UPDATED:
             content = self._touch_updated(content)
         if rel_path.startswith("wiki/"):

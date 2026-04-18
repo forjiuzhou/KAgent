@@ -147,18 +147,26 @@ TOOL_SCHEMAS: list[dict] = [
                 "Create or overwrite a full wiki page. You MUST read the "
                 "target page first (read_page) before overwriting an existing "
                 "page. Always include YAML frontmatter with title, type, "
-                "created/updated dates, summary, tags."
+                "created/updated dates, summary, tags. "
+                "For background jobs only: you may also write "
+                "`.meta/jobs/<job_id>/progress.md` (plain markdown, no frontmatter)."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
                     "path": {
                         "type": "string",
-                        "description": "Path in wiki/, e.g. 'wiki/concepts/attention.md'",
+                        "description": (
+                            "Path in wiki/, e.g. 'wiki/concepts/attention.md', "
+                            "or `.meta/jobs/<job_id>/progress.md` for job progress."
+                        ),
                     },
                     "content": {
                         "type": "string",
-                        "description": "Full markdown content including YAML frontmatter",
+                        "description": (
+                            "Full markdown content including YAML frontmatter for wiki pages; "
+                            "plain markdown for job progress files."
+                        ),
                     },
                 },
                 "required": ["path", "content"],
@@ -173,14 +181,18 @@ TOOL_SCHEMAS: list[dict] = [
                 "Append a new section to an existing wiki page. The section "
                 "is inserted before the ## Related section if one exists, "
                 "otherwise appended at the end. Use this for incremental "
-                "additions to existing pages."
+                "additions to existing pages. For background jobs, you may "
+                "append to `.meta/jobs/<job_id>/progress.md`."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
                     "path": {
                         "type": "string",
-                        "description": "Path of the existing wiki page",
+                        "description": (
+                            "Path of the existing wiki page, or "
+                            "`.meta/jobs/<job_id>/progress.md` for job progress."
+                        ),
                     },
                     "heading": {
                         "type": "string",

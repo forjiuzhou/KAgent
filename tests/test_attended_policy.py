@@ -7,6 +7,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from noteweaver.constants import is_job_progress_path
 from noteweaver.tools.policy import (
     PolicyContext,
     WriteTarget,
@@ -57,6 +58,11 @@ class TestClassifyWriteTarget:
 
     def test_sources_is_source(self) -> None:
         assert classify_write_target("ingest", "sources/articles/x.md") == WriteTarget.SOURCE
+
+    def test_job_progress_is_runtime(self) -> None:
+        p = ".meta/jobs/my-job-20260101-ab/progress.md"
+        assert is_job_progress_path(p)
+        assert classify_write_target("write_page", p) == WriteTarget.RUNTIME
 
 
 # ======================================================================
@@ -167,6 +173,26 @@ class TestAttendedPolicy:
         v = check_pre_dispatch(
             "write_page",
             {"path": "wiki/journals/2025-04-09.md", "content": "..."},
+            ctx,
+        )
+        assert v.allowed
+
+    def test_write_job_progress_without_prior_read(self) -> None:
+        ctx = PolicyContext(attended=True)
+        p = ".meta/jobs/x-20260101-ab/progress.md"
+        v = check_pre_dispatch(
+            "write_page",
+            {"path": p, "content": "## Iteration 1\n"},
+            ctx,
+        )
+        assert v.allowed
+
+    def test_append_job_progress_without_prior_read(self) -> None:
+        ctx = PolicyContext(attended=True)
+        p = ".meta/jobs/x-20260101-ab/progress.md"
+        v = check_pre_dispatch(
+            "append_section",
+            {"path": p, "heading": "H", "content": "c"},
             ctx,
         )
         assert v.allowed
