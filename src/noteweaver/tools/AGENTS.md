@@ -1,18 +1,18 @@
 # tools/ — Tool Schemas, Handlers, and Dispatch
 
-The tools package defines the 9 primitive operations the agent can perform, plus dispatch logic and safety policy. External code uses `from noteweaver.tools.definitions import TOOL_SCHEMAS, dispatch_tool`.
+The tools package defines the 10 primitive vault operations plus `create_job` and `spawn_subagent`, along with dispatch logic and safety policy. External code uses `from noteweaver.tools.definitions import TOOL_SCHEMAS, dispatch_tool`.
 
 ## Module Responsibilities
 
 | Module | Lines | Role |
 |--------|-------|------|
-| `schemas.py` | ~300 | 10 tool schemas (`TOOL_SCHEMAS`), `OBSERVATION_SCHEMAS`, `CHAT_TOOL_SCHEMAS`, `SUBMIT_PLAN_SCHEMA`. |
-| `handlers_read.py` | ~270 | 5 read handlers: `handle_read_page`, `handle_search`, `handle_get_backlinks`, `handle_list_pages`, `handle_fetch_url`. Also `resolve_path_or_title` and `extract_section` helpers. |
-| `handlers_write.py` | ~130 | 4 write handlers: `handle_write_page`, `handle_append_section`, `handle_update_frontmatter`, `handle_add_related_link`. |
-| `legacy.py` | ~575 | 6 deprecated handlers: `handle_survey_topic`, `handle_capture`, `handle_ingest`, `handle_organize`, `handle_restructure`. Kept for backward compat. |
-| `dispatch.py` | ~70 | `TOOL_HANDLERS` registry + `dispatch_tool()`. |
+| `schemas.py` | ~350 | 12 tool schemas (`TOOL_SCHEMAS`), `OBSERVATION_SCHEMAS`, `CHAT_TOOL_SCHEMAS`, `SUBMIT_PLAN_SCHEMA`. |
+| `handlers_read.py` | ~290 | 6 read handlers: `handle_read_page`, `handle_search`, `handle_get_backlinks`, `handle_list_pages`, `handle_fetch_url`, `handle_audit_vault`. Also `resolve_path_or_title` and `extract_section` helpers. |
+| `handlers_write.py` | ~170 | 5 write handlers: `handle_write_page`, `handle_append_section`, `handle_update_frontmatter`, `handle_add_related_link`, `handle_create_job`. |
+| `legacy.py` | ~575 | 5 deprecated handlers: `handle_survey_topic`, `handle_capture`, `handle_ingest`, `handle_organize`, `handle_restructure`. Kept for backward compat. |
+| `dispatch.py` | ~75 | `TOOL_HANDLERS` registry + `dispatch_tool()`. |
 | `definitions.py` | ~60 | Re-export layer — all names from the old monolithic file still importable here. |
-| `policy.py` | ~370 | `check_pre_dispatch()`, `PolicyContext`, `TOOL_TIERS`, safety gates. |
+| `policy.py` | ~375 | `check_pre_dispatch()`, `PolicyContext`, `TOOL_TIERS`, safety gates. |
 
 ## Adding a New Tool (checklist)
 

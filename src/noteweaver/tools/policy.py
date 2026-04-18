@@ -57,6 +57,9 @@ _WIKI_LINK_RE = re.compile(r"\[\[([^\]]+)\]\]")
 
 def classify_write_target(tool_name: str, path: str) -> WriteTarget:
     """Classify what a write operation is targeting."""
+    if tool_name == "create_job":
+        return WriteTarget.RUNTIME
+
     if path.startswith(".meta/"):
         return WriteTarget.RUNTIME
 
@@ -105,6 +108,7 @@ TOOL_TIERS: dict[str, RiskTier] = {
     "append_section": RiskTier.MEDIUM_WRITE,
     "update_frontmatter": RiskTier.MEDIUM_WRITE,
     "add_related_link": RiskTier.LOW_WRITE,
+    "create_job": RiskTier.LOW_WRITE,
     # Sub-agent tool
     "spawn_subagent": RiskTier.READ,
     # Legacy tools (kept for backward compatibility)

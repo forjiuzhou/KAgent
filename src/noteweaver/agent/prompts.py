@@ -56,6 +56,7 @@ PROMPT_TOOLS = """\
 | `get_backlinks(title)` | Pages linking to a title. |
 | `list_pages(directory?)` | List pages with structured page cards. |
 | `fetch_url(url)` | Preview a URL's content. |
+| `audit_vault()` | Full health audit: orphans, broken links, uncited sources, etc. |
 
 ### Write Tools
 | Tool | Purpose |
@@ -64,6 +65,18 @@ PROMPT_TOOLS = """\
 | `append_section(path, heading, content)` | Add a section to an existing page. |
 | `update_frontmatter(path, fields)` | Update metadata fields on a page. |
 | `add_related_link(path, link_to)` | Add a [[wiki-link]] to Related section. |
+
+### Job Tool
+| Tool | Purpose |
+|------|---------|
+| `create_job(description, goal, criteria, max_iterations?)` | Create a background job. |
+
+Use `create_job` when the user asks to create a task, job, or background work, \
+or when a request would require too many tool calls for a single chat turn \
+(e.g. batch import of many sources, wiki-wide cleanup, deep research across \
+many pages). After creating the job, discuss the contract details with the user \
+— they may want to adjust the goal or acceptance criteria before the worker \
+starts. The gateway cron loop will pick up the job and run it automatically.
 
 ### Reading Strategy (progressive disclosure)
 

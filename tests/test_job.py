@@ -419,7 +419,7 @@ class TestAuditToolSchema:
 
     def test_schema_count_updated(self) -> None:
         from noteweaver.tools.schemas import TOOL_SCHEMAS
-        assert len(TOOL_SCHEMAS) == 11
+        assert len(TOOL_SCHEMAS) == 12
 
     def test_audit_vault_in_observation_schemas(self) -> None:
         from noteweaver.tools.schemas import OBSERVATION_SCHEMAS

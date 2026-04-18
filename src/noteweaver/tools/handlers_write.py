@@ -1,4 +1,4 @@
-"""Write tool handlers: write_page, append_section, update_frontmatter, add_related_link."""
+"""Write tool handlers: write_page, append_section, update_frontmatter, add_related_link, create_job."""
 
 from __future__ import annotations
 
@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING
 
 import yaml
 
-from noteweaver.constants import INDEX_TOKEN_BUDGET
+from noteweaver.constants import INDEX_TOKEN_BUDGET, JOB_DEFAULT_MAX_ITERATIONS
 from noteweaver.frontmatter import validate_frontmatter, extract_frontmatter
 from noteweaver.tools.handlers_read import resolve_path_or_title
 
@@ -125,3 +125,47 @@ def handle_add_related_link(
 
     vault.write_file(path, new_content)
     return f"OK: added {link} to Related section of {path}"
+
+
+def handle_create_job(
+    vault: Vault,
+    description: str,
+    goal: str,
+    criteria: list[str],
+    max_iterations: int | None = None,
+) -> str:
+    """Create a background job under ``.meta/jobs/``."""
+    from datetime import datetime, timezone
+    from noteweaver.job import generate_job_id
+    from noteweaver.constants import JOB_DIR
+
+    if not description or not goal or not criteria:
+        return "Error: description, goal, and criteria are all required."
+
+    job_id = generate_job_id(description)
+    max_iter = max_iterations or JOB_DEFAULT_MAX_ITERATIONS
+
+    criteria_lines = "\n".join(f"- {c}" for c in criteria)
+    created = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+
+    contract = (
+        f"# Job: {description}\n\n"
+        f"## Status\nready\n\n"
+        f"## Goal\n{goal}\n\n"
+        f"## Acceptance Criteria\n{criteria_lines}\n\n"
+        f"## Max Iterations\n{max_iter}\n\n"
+        f"## Created\n{created}\n"
+    )
+
+    progress = f"# Progress: {description}\n\n"
+
+    job_dir = vault.root / JOB_DIR / job_id
+    job_dir.mkdir(parents=True, exist_ok=True)
+    (job_dir / "contract.md").write_text(contract, encoding="utf-8")
+    (job_dir / "progress.md").write_text(progress, encoding="utf-8")
+
+    return (
+        f"OK: job created — {job_id}\n"
+        f"Contract: {JOB_DIR}/{job_id}/contract.md\n"
+        f"The gateway cron will pick it up automatically."
+    )

@@ -170,6 +170,65 @@ class TestAuditVault:
         report = vault.audit_vault()
         assert "issue(s) found" in report["summary"]
 
+    def test_related_inconsistency_fm_only(self, vault: Vault) -> None:
+        vault.write_file(
+            "wiki/concepts/a.md",
+            _page("A", related="", extra="Body text without wiki-links."),
+        )
+        # Manually add a related entry to frontmatter that is NOT in body
+        import re as _re
+        p = vault._resolve("wiki/concepts/a.md")
+        c = p.read_text(encoding="utf-8")
+        c = c.replace("---\n\n", "related:\n  - Ghost Page\n---\n\n", 1)
+        p.write_text(c, encoding="utf-8")
+        report = vault.audit_vault()
+        matches = [
+            r for r in report["related_inconsistencies"]
+            if r["path"] == "wiki/concepts/a.md"
+        ]
+        assert len(matches) == 1
+        assert "Ghost Page" in matches[0]["in_frontmatter_only"]
+
+    def test_related_inconsistency_body_only(self, vault: Vault) -> None:
+        vault.write_file(
+            "wiki/concepts/b.md",
+            _page("B", related="- [[Body Only Link]]"),
+        )
+        report = vault.audit_vault()
+        matches = [
+            r for r in report["related_inconsistencies"]
+            if r["path"] == "wiki/concepts/b.md"
+        ]
+        assert len(matches) == 1
+        assert "Body Only Link" in matches[0]["in_body_only"]
+
+    def test_no_related_inconsistency_when_synced(self, vault: Vault) -> None:
+        vault.write_file(
+            "wiki/concepts/c.md",
+            "---\ntitle: C\ntype: note\nsummary: s\nrelated:\n  - D\n"
+            "created: 2025-01-01\nupdated: 2025-01-01\n---\n\n"
+            "# C\n\nSee [[D]].\n\n## Related\n- [[D]]\n",
+        )
+        report = vault.audit_vault()
+        matches = [
+            r for r in report["related_inconsistencies"]
+            if r["path"] == "wiki/concepts/c.md"
+        ]
+        assert len(matches) == 0
+
+    def test_uncited_sources_in_audit(self, vault: Vault) -> None:
+        vault.save_source("sources/cited.md", "Cited content")
+        vault.save_source("sources/orphan.md", "Orphan content")
+        vault.write_file(
+            "wiki/concepts/uses-source.md",
+            "---\ntitle: Uses Source\ntype: canonical\nsummary: s\n"
+            "sources:\n  - sources/cited.md\n"
+            "created: 2025-01-01\nupdated: 2025-01-01\n---\n\nContent.",
+        )
+        report = vault.audit_vault()
+        assert "sources/orphan.md" in report["uncited_sources"]
+        assert "sources/cited.md" not in report["uncited_sources"]
+
 
 class TestAuditReport:
     def test_save_and_load(self, vault: Vault) -> None:

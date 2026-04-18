@@ -36,7 +36,7 @@ class TestToolSchemas:
         assert schema_names <= handler_names
 
     def test_schema_count(self) -> None:
-        assert len(TOOL_SCHEMAS) == 11
+        assert len(TOOL_SCHEMAS) == 12
 
 
 class TestDispatch:
@@ -495,3 +495,39 @@ class TestDispatch:
             {"path": "wiki/index.md", "content": big_index},
         )
         assert "Warning" in result
+
+    def test_create_job_basic(self, vault: Vault) -> None:
+        result = dispatch_tool(vault, "create_job", {
+            "description": "整理AI论文",
+            "goal": "把 sources/ 下的 AI 论文全部整理进知识库",
+            "criteria": [
+                "每篇论文有对应 wiki 页面",
+                "frontmatter 完整 [audit: missing_frontmatter = 0]",
+            ],
+        })
+        assert "OK: job created" in result
+        from noteweaver.job import list_jobs
+        jobs = list_jobs(vault)
+        assert len(jobs) == 1
+        assert jobs[0]["status"] == "ready"
+        assert "AI" in jobs[0]["goal"] or "论文" in jobs[0]["goal"]
+
+    def test_create_job_custom_iterations(self, vault: Vault) -> None:
+        result = dispatch_tool(vault, "create_job", {
+            "description": "quick task",
+            "goal": "Do something small",
+            "criteria": ["Done"],
+            "max_iterations": 5,
+        })
+        assert "OK" in result
+        from noteweaver.job import list_jobs
+        jobs = list_jobs(vault)
+        assert jobs[0]["max_iterations"] == 5
+
+    def test_create_job_missing_fields(self, vault: Vault) -> None:
+        result = dispatch_tool(vault, "create_job", {
+            "description": "",
+            "goal": "something",
+            "criteria": ["x"],
+        })
+        assert "Error" in result
